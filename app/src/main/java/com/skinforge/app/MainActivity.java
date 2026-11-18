@@ -1,6 +1,8 @@
 package com.skinforge.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -10,6 +12,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.text.InputFilter;
@@ -29,13 +32,19 @@ import android.widget.Spinner;
 import android.widget.TextView;
 
 import com.skinforge.core.AutoSplit;
+import com.skinforge.core.ImgArchive;
 import com.skinforge.core.Projector;
 import com.skinforge.core.RwModel;
 import com.skinforge.core.TxdWriter;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,7 +70,8 @@ public class MainActivity extends Activity {
 
     private Bitmap picture;
     private int[] picturePx;
-    private byte[] dffBytes;
+    private final List<String> partNames = new ArrayList<>();
+    private final List<byte[]> partBytes = new ArrayList<>();
     private RwModel model;
     private LinkedHashMap<String, int[]> result;
     private int resultSize;
@@ -117,9 +127,10 @@ public class MainActivity extends Activity {
 
         // ---- 2. base skin
         root.addView(heading("2. Базовый скин"));
-        root.addView(note("Файл .dff любого скина для GTA San Andreas — он даёт фигуру и анимацию. "
-                + "Чем ближе он к персонажу (костюм, причёска, телосложение), тем лучше результат."));
-        Button pickDff = button("Выбрать файл .dff");
+        root.addView(note("Файл .dff любого скина для GTA San Andreas или архив .img с моделями "
+                + "(например, player.img с частями Си-Джея) — он даёт фигуру и анимацию. "
+                + "Чем ближе базовый скин к персонажу, тем лучше результат."));
+        Button pickDff = button("Выбрать файл .dff или .img");
         pickDff.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -337,35 +348,141 @@ public class MainActivity extends Activity {
         editor.setBox(which, cx - half, b[1], cx + half, b[3]);
     }
 
-    private void loadDff(Uri uri) {
+    private void loadDff(final Uri uri) {
         try {
-            byte[] bytes = readAll(uri, 64 * 1024 * 1024);
-            RwModel m = RwModel.parse(bytes);
-            List<String> names = m.textureNames();
-            boolean hasUv = false;
-            int verts = 0, tris = 0;
-            for (RwModel.Geom g : m.geoms) {
-                if (g.uv != null) hasUv = true;
-                verts += g.numVerts;
-                tris += g.numTris;
+            byte[] head = readRange(uri, 0, 8);
+            if (ImgArchive.isImg(head)) {
+                final ImgArchive img = ImgArchive.parse(readRange(uri, 0, ImgArchive.directorySize(head)));
+                final List<ImgArchive.Entry> dffs = new ArrayList<>();
+                for (ImgArchive.Entry e : img.entries)
+                    if (e.name.toLowerCase().endsWith(".dff") && e.size > 0) dffs.add(e);
+                if (dffs.isEmpty()) throw new Exception("в архиве нет моделей .dff");
+                Collections.sort(dffs, new Comparator<ImgArchive.Entry>() {
+                    public int compare(ImgArchive.Entry x, ImgArchive.Entry y) {
+                        return x.name.compareToIgnoreCase(y.name);
+                    }
+                });
+                // the default body of CJ is made of these four parts
+                List<String> body = Arrays.asList("head.dff", "torso.dff", "legs.dff", "feet.dff");
+                String[] names = new String[dffs.size()];
+                final boolean[] picked = new boolean[dffs.size()];
+                for (int i = 0; i < names.length; i++) {
+                    names[i] = dffs.get(i).name;
+                    picked[i] = body.contains(names[i].toLowerCase());
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Какие модели перекрасить?")
+                        .setMultiChoiceItems(names, picked, new DialogInterface.OnMultiChoiceClickListener() {
+                            public void onClick(DialogInterface d, int which, boolean on) {
+                                picked[which] = on;
+                            }
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .setPositiveButton("Готово", new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface d, int w) {
+                                try {
+                                    List<String> n = new ArrayList<>();
+                                    List<byte[]> b = new ArrayList<>();
+                                    for (int i = 0; i < picked.length; i++)
+                                        if (picked[i]) {
+                                            ImgArchive.Entry e = dffs.get(i);
+                                            if (e.size > 48 * 1024 * 1024) throw new Exception("модель слишком большая");
+                                            n.add(e.name);
+                                            b.add(readRange(uri, e.offset, e.size));
+                                        }
+                                    if (n.isEmpty()) throw new Exception("не выбрано ни одной модели");
+                                    useModels(n, b, displayName(uri));
+                                } catch (Throwable e) {
+                                    dffError(e);
+                                }
+                            }
+                        })
+                        .show();
+                return;
             }
-            if (!hasUv || names.isEmpty())
-                throw new Exception("в этой модели нет текстурной развёртки — выберите другой скин");
-            dffBytes = bytes;
-            model = m;
             String file = displayName(uri);
-            StringBuilder sb = new StringBuilder();
-            sb.append(file).append(" — ").append(verts).append(" вершин, ").append(tris).append(" треугольников.\nТекстуры: ");
-            for (int i = 0; i < names.size(); i++) sb.append(i > 0 ? ", " : "").append(names.get(i));
-            dffStatus.setText(sb.toString());
-            dffStatus.setTextColor(0xFF9BD3A5);
-            if (file.toLowerCase().endsWith(".dff") && "myskin".equals(nameEdit.getText().toString()))
-                nameEdit.setText(file.substring(0, file.length() - 4));
+            List<String> n = new ArrayList<>();
+            List<byte[]> b = new ArrayList<>();
+            n.add(file.toLowerCase().endsWith(".dff") ? file : file + ".dff");
+            b.add(readAll(uri, 64 * 1024 * 1024));
+            useModels(n, b, null);
         } catch (Throwable e) {
-            dffBytes = null;
-            model = null;
-            dffStatus.setText("Не удалось прочитать модель: " + message(e));
-            dffStatus.setTextColor(0xFFFF8A80);
+            dffError(e);
+        }
+    }
+
+    /** Parses the chosen models and joins them into one body for projection. */
+    private void useModels(List<String> names, List<byte[]> bytes, String archive) throws Exception {
+        RwModel all = new RwModel();
+        int verts = 0, tris = 0;
+        StringBuilder skipped = new StringBuilder();
+        List<String> okNames = new ArrayList<>();
+        List<byte[]> okBytes = new ArrayList<>();
+        for (int i = 0; i < names.size(); i++) {
+            try {
+                RwModel m = RwModel.parse(bytes.get(i));
+                boolean hasUv = false;
+                for (RwModel.Geom g : m.geoms) if (g.uv != null) hasUv = true;
+                if (!hasUv || m.textureNames().isEmpty()) throw new Exception("нет текстурной развёртки");
+                for (RwModel.Geom g : m.geoms) {
+                    verts += g.numVerts;
+                    tris += g.numTris;
+                }
+                all.geoms.addAll(m.geoms);
+                okNames.add(names.get(i));
+                okBytes.add(bytes.get(i));
+            } catch (Throwable e) {
+                skipped.append("\n").append(names.get(i)).append(" пропущен: ").append(message(e));
+            }
+        }
+        if (all.geoms.isEmpty()) throw new Exception("ни одна модель не подошла" + skipped);
+        partNames.clear();
+        partNames.addAll(okNames);
+        partBytes.clear();
+        partBytes.addAll(okBytes);
+        model = all;
+        StringBuilder sb = new StringBuilder();
+        if (archive != null) sb.append(archive).append(": ");
+        for (int i = 0; i < okNames.size(); i++) sb.append(i > 0 ? ", " : "").append(okNames.get(i));
+        sb.append(" — ").append(verts).append(" вершин, ").append(tris).append(" треугольников.\nТекстуры: ");
+        List<String> tex = all.textureNames();
+        for (int i = 0; i < tex.size(); i++) sb.append(i > 0 ? ", " : "").append(tex.get(i));
+        sb.append(skipped);
+        dffStatus.setText(sb.toString());
+        dffStatus.setTextColor(0xFF9BD3A5);
+        if (okNames.size() == 1 && "myskin".equals(nameEdit.getText().toString())) {
+            String f = okNames.get(0);
+            nameEdit.setText(f.substring(0, f.length() - 4));
+        }
+    }
+
+    private void dffError(Throwable e) {
+        partNames.clear();
+        partBytes.clear();
+        model = null;
+        dffStatus.setText("Не удалось прочитать модель: " + message(e));
+        dffStatus.setTextColor(0xFFFF8A80);
+    }
+
+    /** Reads part of a file without loading the rest (archives can be about a gigabyte). */
+    private byte[] readRange(Uri uri, long offset, int length) throws Exception {
+        ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r");
+        if (pfd == null) throw new Exception("файл недоступен");
+        FileInputStream in = new FileInputStream(pfd.getFileDescriptor());
+        try {
+            in.getChannel().position(offset);
+            byte[] out = new byte[length];
+            int got = 0;
+            while (got < length) {
+                int n = in.read(out, got, length - got);
+                if (n <= 0) break;
+                got += n;
+            }
+            if (got < Math.min(length, 8)) throw new Exception("файл обрезан");
+            return out;
+        } finally {
+            in.close();
+            pfd.close();
         }
     }
 
@@ -495,14 +612,16 @@ public class MainActivity extends Activity {
     }
 
     private void save(Uri tree) {
-        if (result == null || dffBytes == null) return;
+        if (result == null || partBytes.isEmpty()) return;
         try {
             String name = skinName();
             Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
             Uri dir = DocumentsContract.createDocument(getContentResolver(), parent,
                     DocumentsContract.Document.MIME_TYPE_DIR, name + "_skin");
             if (dir == null) throw new Exception("не удалось создать папку");
-            write(dir, "application/octet-stream", name + ".dff", dffBytes);
+            boolean single = partNames.size() == 1;
+            for (int i = 0; i < partNames.size(); i++)
+                write(dir, "application/octet-stream", single ? name + ".dff" : partNames.get(i), partBytes.get(i));
             write(dir, "application/octet-stream", name + ".txd", TxdWriter.write(result, resultSize));
             for (Map.Entry<String, int[]> e : result.entrySet()) {
                 Bitmap b = Bitmap.createBitmap(e.getValue(), resultSize, resultSize, Bitmap.Config.ARGB_8888);
@@ -513,7 +632,7 @@ public class MainActivity extends Activity {
             }
             write(dir, "text/plain", "README.txt", readme(name).getBytes("UTF-8"));
             saveStatus.setTextColor(0xFF9BD3A5);
-            saveStatus.setText("Сохранено в папку «" + name + "_skin»: " + name + ".dff, " + name
+            saveStatus.setText("Сохранено в папку «" + name + "_skin»: модели .dff, " + name
                     + ".txd, текстуры PNG и README.txt с инструкцией по установке.");
         } catch (Throwable e) {
             toastNote(saveStatus, "Не удалось сохранить: " + message(e));
@@ -535,16 +654,19 @@ public class MainActivity extends Activity {
         StringBuilder t = new StringBuilder();
         t.append("Скин «").append(name).append("» для GTA San Andreas\n\n");
         t.append("Файлы:\n");
-        t.append("  ").append(name).append(".dff — модель (копия базового скина)\n");
+        if (partNames.size() == 1) t.append("  ").append(name).append(".dff — модель (копия базового скина)\n");
+        else for (String p : partNames) t.append("  ").append(p).append(" — часть тела (копия из архива)\n");
         t.append("  ").append(name).append(".txd — текстуры в формате ПК-версии\n");
         for (String k : result.keySet()) t.append("  ").append(k).append(".png — текстура «").append(k).append("»\n");
         t.append("\nУстановка в Android-версию:\n");
         t.append("1. Сделайте резервную копию папки игры.\n");
-        t.append("2. Модель: добавьте или замените ").append(name).append(".dff в gta3.img (например, через IMG Tool).\n");
-        t.append("3. Текстуры: Android-версия берёт их из кэша texdb, а не из .txd. Через TXD Tool откройте\n");
-        t.append("   texdb/gta3/gta3.txt и добавьте (или замените) текстуры из PNG-файлов под теми же именами.\n");
-        t.append("4. Чтобы играть этим скином вместо Си-Джея, назовите скин именем заменяемого педа\n");
-        t.append("   и выберите его CLEO-скриптом смены скина (Skin Selector).\n");
+        t.append("2. Текстуры: Android-версия берёт их из кэша texdb, а не из .txd. Через TXD Tool откройте\n");
+        t.append("   кэш (texdb/player/player.txt для Си-Джея, texdb/gta3/gta3.txt для педов) и замените\n");
+        t.append("   текстуры PNG-файлами из этой папки под теми же именами.\n");
+        t.append("3. Модели менять не нужно, если вы брали их из своей же игры: они те же самые.\n");
+        t.append("   Если базовый скин был сторонним, добавьте .dff в нужный .img через IMG Tool.\n");
+        t.append("4. Отдельный пед: чтобы играть им вместо Си-Джея, выберите его CLEO-скриптом\n");
+        t.append("   смены скина (Skin Selector).\n");
         t.append("\nФайл .txd пригодится для ПК-версии и для загрузчиков модов, которые читают .txd.\n");
         return t.toString();
     }
