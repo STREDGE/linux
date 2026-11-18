@@ -1,0 +1,551 @@
+package com.skinforge.app;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
+import android.text.InputFilter;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.TextView;
+
+import com.skinforge.core.AutoSplit;
+import com.skinforge.core.Projector;
+import com.skinforge.core.RwModel;
+import com.skinforge.core.TxdWriter;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class MainActivity extends Activity {
+
+    private static final int REQ_PICTURE = 1, REQ_DFF = 2, REQ_FOLDER = 3;
+    private static final int[] SIZES = {512, 1024};
+
+    private float dp;
+    private final Handler ui = new Handler(Looper.getMainLooper());
+
+    private BoxEditorView editor;
+    private CheckBox sideOn, backOn, flipFront, sideRight;
+    private TextView dffStatus, widthLabel, resultStatus, saveStatus;
+    private Spinner sizeSpinner;
+    private SeekBar widthBar;
+    private EditText nameEdit;
+    private Button makeButton, saveButton;
+    private ProgressBar progress;
+    private ImageView previewImage, textureImage;
+    private TextView textureCaption;
+
+    private Bitmap picture;
+    private int[] picturePx;
+    private byte[] dffBytes;
+    private RwModel model;
+    private LinkedHashMap<String, int[]> result;
+    private int resultSize;
+    private boolean busy;
+
+    @Override
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        dp = getResources().getDisplayMetrics().density;
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int pad = px(16);
+        root.setPadding(pad, pad, pad, px(32));
+        scroll.addView(root);
+        setContentView(scroll);
+
+        // ---- 1. picture
+        root.addView(heading("1. Картинка персонажа"));
+        root.addView(note("Лучше всего подходит развёртка: персонаж в полный рост спереди, сбоку и сзади. "
+                + "Хватит и одного вида спереди."));
+        Button pick = button("Выбрать картинку");
+        pick.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.setType("image/*");
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                startActivityForResult(i, REQ_PICTURE);
+            }
+        });
+        root.addView(pick);
+        editor = new BoxEditorView(this);
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        elp.topMargin = px(8);
+        root.addView(editor, elp);
+        root.addView(note("Подгоните рамки: верх — по макушке, низ — по подошвам, пунктир — по середине тела. "
+                + "Тяните за углы или двигайте рамку целиком."));
+        sideOn = check("Есть вид сбоку", false);
+        backOn = check("Есть вид сзади", false);
+        root.addView(sideOn);
+        root.addView(backOn);
+        sideOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                enableView(BoxEditorView.SIDE, on);
+            }
+        });
+        backOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                enableView(BoxEditorView.BACK, on);
+            }
+        });
+
+        // ---- 2. base skin
+        root.addView(heading("2. Базовый скин"));
+        root.addView(note("Файл .dff любого скина для GTA San Andreas — он даёт фигуру и анимацию. "
+                + "Чем ближе он к персонажу (костюм, причёска, телосложение), тем лучше результат."));
+        Button pickDff = button("Выбрать файл .dff");
+        pickDff.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.setType("*/*");
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                startActivityForResult(i, REQ_DFF);
+            }
+        });
+        root.addView(pickDff);
+        dffStatus = note("Файл не выбран");
+        root.addView(dffStatus);
+
+        // ---- 3. settings
+        root.addView(heading("3. Настройки"));
+        root.addView(label("Имя скина (так будут называться файлы)"));
+        nameEdit = new EditText(this);
+        nameEdit.setSingleLine(true);
+        nameEdit.setText("myskin");
+        nameEdit.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
+        root.addView(nameEdit);
+        root.addView(label("Размер текстуры"));
+        sizeSpinner = new Spinner(this);
+        ArrayAdapter<String> ad = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
+                new String[]{"512 × 512 — легче для игры", "1024 × 1024 — чётче"});
+        ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sizeSpinner.setAdapter(ad);
+        sizeSpinner.setSelection(1);
+        root.addView(sizeSpinner);
+        widthLabel = label("Ширина наложения: 100%");
+        root.addView(widthLabel);
+        widthBar = new SeekBar(this);
+        widthBar.setMax(80);
+        widthBar.setProgress(40);
+        widthBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                widthLabel.setText("Ширина наложения: " + (60 + p) + "%");
+            }
+
+            public void onStartTrackingTouch(SeekBar s) {
+            }
+
+            public void onStopTrackingTouch(SeekBar s) {
+            }
+        });
+        root.addView(widthBar);
+        root.addView(note("Меньше 100% — если картинка на модели выглядит растянутой вширь, больше — если сжатой."));
+        sideRight = check("На виде сбоку персонаж смотрит вправо", true);
+        root.addView(sideRight);
+        flipFront = check("Развернуть модель (если лицо оказалось на спине)", false);
+        root.addView(flipFront);
+
+        // ---- 4. make
+        makeButton = button("Создать скин");
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = px(20);
+        root.addView(makeButton, mlp);
+        makeButton.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                make();
+            }
+        });
+        progress = new ProgressBar(this);
+        progress.setVisibility(View.GONE);
+        root.addView(progress);
+        resultStatus = note("");
+        root.addView(resultStatus);
+        previewImage = new ImageView(this);
+        previewImage.setAdjustViewBounds(true);
+        root.addView(previewImage, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        textureCaption = label("Текстура");
+        textureCaption.setVisibility(View.GONE);
+        root.addView(textureCaption);
+        textureImage = new ImageView(this);
+        textureImage.setAdjustViewBounds(true);
+        root.addView(textureImage, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // ---- 5. save
+        saveButton = button("Сохранить файлы мода");
+        saveButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = px(16);
+        root.addView(saveButton, slp);
+        saveButton.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER);
+            }
+        });
+        saveStatus = note("");
+        root.addView(saveStatus);
+    }
+
+    // ------------------------------------------------------------ UI helpers
+
+    private int px(float v) {
+        return Math.round(v * dp);
+    }
+
+    private TextView heading(String s) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(18);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(0xFFF2F2F2);
+        t.setPadding(0, px(22), 0, px(4));
+        return t;
+    }
+
+    private TextView label(String s) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(14);
+        t.setTextColor(0xFFD5D8DD);
+        t.setPadding(0, px(12), 0, px(2));
+        return t;
+    }
+
+    private TextView note(String s) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(13);
+        t.setTextColor(0xFF9BA1AB);
+        t.setPadding(0, px(4), 0, px(6));
+        return t;
+    }
+
+    private Button button(String s) {
+        Button b = new Button(this);
+        b.setText(s);
+        b.setAllCaps(false);
+        return b;
+    }
+
+    private CheckBox check(String s, boolean on) {
+        CheckBox c = new CheckBox(this);
+        c.setText(s);
+        c.setChecked(on);
+        return c;
+    }
+
+    /** Turns a view box on; gives it a sensible place if it has never been set. */
+    private void enableView(int which, boolean on) {
+        if (on && picture != null) {
+            float[] b = editor.getBox(which);
+            if (b[2] - b[0] < 1) {
+                float[] f = editor.getBox(BoxEditorView.FRONT);
+                float w = f[2] - f[0];
+                float cx = picture.getWidth() * (which == BoxEditorView.SIDE ? 0.5f : 0.8f);
+                editor.setBox(which, cx - w / 2, f[1], cx + w / 2, f[3]);
+            }
+        }
+        editor.setEnabled(which, on);
+    }
+
+    // ---------------------------------------------------------------- inputs
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (res != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        if (req == REQ_PICTURE) loadPicture(uri);
+        else if (req == REQ_DFF) loadDff(uri);
+        else if (req == REQ_FOLDER) save(uri);
+    }
+
+    private void loadPicture(Uri uri) {
+        try {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            InputStream in = getContentResolver().openInputStream(uri);
+            BitmapFactory.decodeStream(in, null, o);
+            in.close();
+            int sample = 1;
+            while (Math.max(o.outWidth, o.outHeight) / sample > 2600) sample *= 2;
+            o = new BitmapFactory.Options();
+            o.inSampleSize = sample;
+            o.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            in = getContentResolver().openInputStream(uri);
+            Bitmap b = BitmapFactory.decodeStream(in, null, o);
+            in.close();
+            if (b == null) throw new Exception("формат не распознан");
+            picture = b;
+            int w = b.getWidth(), h = b.getHeight();
+            picturePx = new int[w * h];
+            b.getPixels(picturePx, 0, w, 0, 0, w, h);
+            editor.setPicture(b);
+
+            List<float[]> boxes = AutoSplit.detect(picturePx, w, h);
+            for (int i = 0; i < 3; i++) editor.setBox(i, 0, 0, 0, 0);
+            if (boxes.isEmpty()) {
+                editor.setBox(BoxEditorView.FRONT, w * 0.2f, h * 0.04f, w * 0.8f, h * 0.96f);
+                sideOn.setChecked(false);
+                backOn.setChecked(false);
+            } else {
+                placeBox(BoxEditorView.FRONT, boxes.get(0), w);
+                if (boxes.size() == 3) placeBox(BoxEditorView.SIDE, boxes.get(1), w);
+                if (boxes.size() >= 2) placeBox(BoxEditorView.BACK, boxes.get(boxes.size() - 1), w);
+                sideOn.setChecked(boxes.size() == 3);
+                backOn.setChecked(boxes.size() >= 2);
+            }
+            editor.setEnabled(BoxEditorView.SIDE, sideOn.isChecked());
+            editor.setEnabled(BoxEditorView.BACK, backOn.isChecked());
+        } catch (Throwable e) {
+            toastNote(resultStatus, "Не удалось открыть картинку: " + message(e));
+        }
+    }
+
+    /** Detected boxes are narrow (often just the head); widen them so they are easy to grab. */
+    private void placeBox(int which, float[] b, int picW) {
+        float cx = (b[0] + b[2]) / 2, half = Math.max((b[2] - b[0]) / 2, (b[3] - b[1]) * 0.2f);
+        editor.setBox(which, cx - half, b[1], cx + half, b[3]);
+    }
+
+    private void loadDff(Uri uri) {
+        try {
+            byte[] bytes = readAll(uri, 64 * 1024 * 1024);
+            RwModel m = RwModel.parse(bytes);
+            List<String> names = m.textureNames();
+            boolean hasUv = false;
+            int verts = 0, tris = 0;
+            for (RwModel.Geom g : m.geoms) {
+                if (g.uv != null) hasUv = true;
+                verts += g.numVerts;
+                tris += g.numTris;
+            }
+            if (!hasUv || names.isEmpty())
+                throw new Exception("в этой модели нет текстурной развёртки — выберите другой скин");
+            dffBytes = bytes;
+            model = m;
+            String file = displayName(uri);
+            StringBuilder sb = new StringBuilder();
+            sb.append(file).append(" — ").append(verts).append(" вершин, ").append(tris).append(" треугольников.\nТекстуры: ");
+            for (int i = 0; i < names.size(); i++) sb.append(i > 0 ? ", " : "").append(names.get(i));
+            dffStatus.setText(sb.toString());
+            dffStatus.setTextColor(0xFF9BD3A5);
+            if (file.toLowerCase().endsWith(".dff") && "myskin".equals(nameEdit.getText().toString()))
+                nameEdit.setText(file.substring(0, file.length() - 4));
+        } catch (Throwable e) {
+            dffBytes = null;
+            model = null;
+            dffStatus.setText("Не удалось прочитать модель: " + message(e));
+            dffStatus.setTextColor(0xFFFF8A80);
+        }
+    }
+
+    private byte[] readAll(Uri uri, int limit) throws Exception {
+        InputStream in = getContentResolver().openInputStream(uri);
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                if (out.size() > limit) throw new Exception("файл слишком большой");
+            }
+            return out.toByteArray();
+        } finally {
+            in.close();
+        }
+    }
+
+    private String displayName(Uri uri) {
+        String name = null;
+        try {
+            Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (c != null) {
+                if (c.moveToFirst()) name = c.getString(0);
+                c.close();
+            }
+        } catch (Exception ignored) {
+        }
+        return name == null ? "model.dff" : name;
+    }
+
+    private static String message(Throwable e) {
+        if (e instanceof OutOfMemoryError) return "не хватило памяти — выберите текстуру 512";
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+    }
+
+    private void toastNote(TextView t, String s) {
+        t.setText(s);
+        t.setTextColor(0xFFFF8A80);
+    }
+
+    // ------------------------------------------------------------------ make
+
+    private void make() {
+        if (busy) return;
+        if (picture == null) {
+            toastNote(resultStatus, "Сначала выберите картинку персонажа (шаг 1).");
+            return;
+        }
+        if (model == null) {
+            toastNote(resultStatus, "Сначала выберите базовый скин .dff (шаг 2).");
+            return;
+        }
+        final int w = picture.getWidth(), h = picture.getHeight();
+        final Projector.View front = view(BoxEditorView.FRONT, w, h);
+        final Projector.View side = sideOn.isChecked() ? view(BoxEditorView.SIDE, w, h) : null;
+        final Projector.View back = backOn.isChecked() ? view(BoxEditorView.BACK, w, h) : null;
+        final Projector.Options o = new Projector.Options();
+        o.size = SIZES[sizeSpinner.getSelectedItemPosition()];
+        o.flipFront = flipFront.isChecked();
+        o.sideFacesRight = sideRight.isChecked();
+        o.widthScale = (60 + widthBar.getProgress()) / 100f;
+        final RwModel m = model;
+
+        busy = true;
+        makeButton.setEnabled(false);
+        progress.setVisibility(View.VISIBLE);
+        resultStatus.setTextColor(0xFF9BA1AB);
+        resultStatus.setText("Переношу картинку на модель…");
+        new Thread(new Runnable() {
+            public void run() {
+                LinkedHashMap<String, int[]> tex = null;
+                Bitmap preview = null, texBmp = null;
+                String error = null;
+                try {
+                    tex = Projector.project(m, front, side, back, o);
+                    Projector.Frame f = Projector.analyze(m, o.flipFront);
+                    int pw = 300, ph = 600;
+                    float[] yaws = {0, 45, 180, 225};
+                    preview = Bitmap.createBitmap(pw * yaws.length, ph, Bitmap.Config.ARGB_8888);
+                    for (int i = 0; i < yaws.length; i++)
+                        preview.setPixels(Projector.render(m, tex, o.size, f, yaws[i], pw, ph), 0, pw, i * pw, 0, pw, ph);
+                    int[] first = tex.values().iterator().next();
+                    texBmp = Bitmap.createBitmap(first, o.size, o.size, Bitmap.Config.ARGB_8888);
+                } catch (Throwable e) {
+                    error = message(e);
+                }
+                final LinkedHashMap<String, int[]> fTex = tex;
+                final Bitmap fPreview = preview, fTexBmp = texBmp;
+                final String fError = error;
+                ui.post(new Runnable() {
+                    public void run() {
+                        busy = false;
+                        makeButton.setEnabled(true);
+                        progress.setVisibility(View.GONE);
+                        if (fError != null) {
+                            toastNote(resultStatus, "Не получилось: " + fError);
+                            return;
+                        }
+                        result = fTex;
+                        resultSize = o.size;
+                        previewImage.setImageBitmap(fPreview);
+                        textureImage.setImageBitmap(fTexBmp);
+                        textureCaption.setVisibility(View.VISIBLE);
+                        saveButton.setVisibility(View.VISIBLE);
+                        saveStatus.setText("");
+                        resultStatus.setTextColor(0xFF9BD3A5);
+                        resultStatus.setText("Готово. Ниже модель спереди и сзади. Если что-то съехало — "
+                                + "поправьте рамки или настройки и нажмите «Создать скин» ещё раз.");
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private Projector.View view(int which, int w, int h) {
+        float[] b = editor.getBox(which);
+        return new Projector.View(picturePx, w, h, b[0], b[1], b[2], b[3]);
+    }
+
+    // ------------------------------------------------------------------ save
+
+    private String skinName() {
+        String n = nameEdit.getText().toString().trim().replaceAll("[^A-Za-z0-9_\\-]", "");
+        return n.isEmpty() ? "myskin" : n;
+    }
+
+    private void save(Uri tree) {
+        if (result == null || dffBytes == null) return;
+        try {
+            String name = skinName();
+            Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
+            Uri dir = DocumentsContract.createDocument(getContentResolver(), parent,
+                    DocumentsContract.Document.MIME_TYPE_DIR, name + "_skin");
+            if (dir == null) throw new Exception("не удалось создать папку");
+            write(dir, "application/octet-stream", name + ".dff", dffBytes);
+            write(dir, "application/octet-stream", name + ".txd", TxdWriter.write(result, resultSize));
+            for (Map.Entry<String, int[]> e : result.entrySet()) {
+                Bitmap b = Bitmap.createBitmap(e.getValue(), resultSize, resultSize, Bitmap.Config.ARGB_8888);
+                ByteArrayOutputStream png = new ByteArrayOutputStream();
+                b.compress(Bitmap.CompressFormat.PNG, 100, png);
+                b.recycle();
+                write(dir, "image/png", e.getKey() + ".png", png.toByteArray());
+            }
+            write(dir, "text/plain", "README.txt", readme(name).getBytes("UTF-8"));
+            saveStatus.setTextColor(0xFF9BD3A5);
+            saveStatus.setText("Сохранено в папку «" + name + "_skin»: " + name + ".dff, " + name
+                    + ".txd, текстуры PNG и README.txt с инструкцией по установке.");
+        } catch (Throwable e) {
+            toastNote(saveStatus, "Не удалось сохранить: " + message(e));
+        }
+    }
+
+    private void write(Uri dir, String mime, String name, byte[] data) throws Exception {
+        Uri doc = DocumentsContract.createDocument(getContentResolver(), dir, mime, name);
+        if (doc == null) throw new Exception("не удалось создать файл " + name);
+        OutputStream out = getContentResolver().openOutputStream(doc);
+        try {
+            out.write(data);
+        } finally {
+            out.close();
+        }
+    }
+
+    private String readme(String name) {
+        StringBuilder t = new StringBuilder();
+        t.append("Скин «").append(name).append("» для GTA San Andreas\n\n");
+        t.append("Файлы:\n");
+        t.append("  ").append(name).append(".dff — модель (копия базового скина)\n");
+        t.append("  ").append(name).append(".txd — текстуры в формате ПК-версии\n");
+        for (String k : result.keySet()) t.append("  ").append(k).append(".png — текстура «").append(k).append("»\n");
+        t.append("\nУстановка в Android-версию:\n");
+        t.append("1. Сделайте резервную копию папки игры.\n");
+        t.append("2. Модель: добавьте или замените ").append(name).append(".dff в gta3.img (например, через IMG Tool).\n");
+        t.append("3. Текстуры: Android-версия берёт их из кэша texdb, а не из .txd. Через TXD Tool откройте\n");
+        t.append("   texdb/gta3/gta3.txt и добавьте (или замените) текстуры из PNG-файлов под теми же именами.\n");
+        t.append("4. Чтобы играть этим скином вместо Си-Джея, назовите скин именем заменяемого педа\n");
+        t.append("   и выберите его CLEO-скриптом смены скина (Skin Selector).\n");
+        t.append("\nФайл .txd пригодится для ПК-версии и для загрузчиков модов, которые читают .txd.\n");
+        return t.toString();
+    }
+}
