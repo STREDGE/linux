@@ -423,7 +423,8 @@ public class MainActivity extends Activity {
                 RwModel m = RwModel.parse(bytes.get(i));
                 boolean hasUv = false;
                 for (RwModel.Geom g : m.geoms) if (g.uv != null) hasUv = true;
-                if (!hasUv || m.textureNames().isEmpty()) throw new Exception("нет текстурной развёртки");
+                if (!hasUv) throw new Exception("нет текстурной развёртки (UV)");
+                m.nameUntextured(defaultTexture(names.get(i)));
                 for (RwModel.Geom g : m.geoms) {
                     verts += g.numVerts;
                     tris += g.numTris;
@@ -454,6 +455,16 @@ public class MainActivity extends Activity {
             String f = okNames.get(0);
             nameEdit.setText(f.substring(0, f.length() - 4));
         }
+    }
+
+    /** Texture a model uses when its file does not name one. */
+    private static String defaultTexture(String file) {
+        String base = file.toLowerCase();
+        if (base.endsWith(".dff")) base = base.substring(0, base.length() - 4);
+        if (base.equals("head")) return "player_face";
+        if (base.equals("torso")) return "player_torso";
+        if (base.equals("legs")) return "player_legs";
+        return base;
     }
 
     private void dffError(Throwable e) {

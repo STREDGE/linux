@@ -47,6 +47,23 @@ public final class RwModel {
         return m;
     }
 
+    /**
+     * Gives a texture name to every surface that has none. CJ's body parts are like this:
+     * the game picks their texture at run time, so the files carry no name.
+     */
+    public void nameUntextured(String name) {
+        for (Geom g : geoms) {
+            if (g.uv == null) continue;
+            if (g.matTex.length == 0) {
+                g.matTex = new String[]{name};
+                java.util.Arrays.fill(g.triMat, 0);
+                continue;
+            }
+            for (int i = 0; i < g.matTex.length; i++) if (g.matTex[i] == null) g.matTex[i] = name;
+            for (int i = 0; i < g.numTris; i++) if (g.triMat[i] < 0) g.triMat[i] = 0;
+        }
+    }
+
     /** All distinct texture names used by the model, in order of appearance. */
     public List<String> textureNames() {
         List<String> out = new ArrayList<>();
