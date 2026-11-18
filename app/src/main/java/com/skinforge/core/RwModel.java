@@ -64,6 +64,15 @@ public final class RwModel {
         }
     }
 
+    /** Makes every surface of the model use one texture name, whatever the file says. */
+    public void forceTexture(String name) {
+        for (Geom g : geoms) {
+            if (g.uv == null) continue;
+            g.matTex = new String[]{name};
+            java.util.Arrays.fill(g.triMat, 0);
+        }
+    }
+
     /** All distinct texture names used by the model, in order of appearance. */
     public List<String> textureNames() {
         List<String> out = new ArrayList<>();

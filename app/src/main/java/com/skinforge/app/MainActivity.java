@@ -35,6 +35,7 @@ import com.skinforge.core.AutoSplit;
 import com.skinforge.core.ImgArchive;
 import com.skinforge.core.Projector;
 import com.skinforge.core.RwModel;
+import com.skinforge.core.TexDb;
 import com.skinforge.core.TxdWriter;
 
 import java.io.ByteArrayOutputStream;
@@ -45,13 +46,25 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_PICTURE = 1, REQ_DFF = 2, REQ_FOLDER = 3;
+    private static final int REQ_PICTURE = 1, REQ_DFF = 2, REQ_FOLDER = 3, REQ_TEXDB = 4;
+
+    /** CJ's default look: body parts and starting clothes, with the cache textures each one uses. */
+    private static final String[][] CJ_PARTS = {
+            {"head", "player_face_face", "face", "wedge_face", "head_head8bit"},
+            {"vest", "vest_vest"},
+            {"jeans", "jeansdenim_legs"},
+            {"sneaker", "sneakerbincblk_sneakerbincblk"},
+            {"torso", "player_torso_torso", "player_torso_torso_fat", "player_torso_torso_ripped", "torso_torso", "torso8bit"},
+            {"legs", "player_legs_legs", "legs_legs"},
+            {"feet", "player_feet_foot", "feet_feet8bit"},
+    };
     private static final int[] SIZES = {512, 1024};
 
     private float dp;
@@ -73,8 +86,15 @@ public class MainActivity extends Activity {
     private final List<String> partNames = new ArrayList<>();
     private final List<byte[]> partBytes = new ArrayList<>();
     private RwModel model;
-    private LinkedHashMap<String, int[]> result;
-    private int resultSize;
+    private LinkedHashMap<String, Projector.Tex> result;
+
+    // "replace CJ" mode: the game's texdb folder picked by the user
+    private boolean cjMode;
+    private Uri cjTree;
+    private String cjPlayerDirId;
+    private TexDb cjDb;
+    private final LinkedHashMap<String, List<String>> cjTargets = new LinkedHashMap<>();
+    private final HashMap<String, int[]> cjDims = new HashMap<>();
     private boolean busy;
 
     @Override
@@ -127,10 +147,18 @@ public class MainActivity extends Activity {
 
         // ---- 2. base skin
         root.addView(heading("2. Базовый скин"));
-        root.addView(note("Файл .dff любого скина для GTA San Andreas или архив .img с моделями "
-                + "(например, player.img с частями Си-Джея) — он даёт фигуру и анимацию. "
-                + "Чем ближе базовый скин к персонажу, тем лучше результат."));
-        Button pickDff = button("Выбрать файл .dff или .img");
+        root.addView(note("Чтобы заменить самого Си-Джея, укажите папку texdb игры (или её копию): "
+                + "в ней должны лежать player.img и папка player. Приложение само возьмёт голову, "
+                + "майку, джинсы и кроссовки, в которых Си-Джей начинает игру."));
+        Button pickTexdb = button("Заменить Си-Джея: выбрать папку texdb");
+        pickTexdb.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_TEXDB);
+            }
+        });
+        root.addView(pickTexdb);
+        root.addView(note("Или свой скин: отдельный файл .dff либо архив .img, из которого вы сами выберете модели."));
+        Button pickDff = button("Свой скин: выбрать .dff или .img");
         pickDff.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -151,10 +179,10 @@ public class MainActivity extends Activity {
         nameEdit.setText("myskin");
         nameEdit.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
         root.addView(nameEdit);
-        root.addView(label("Размер текстуры"));
+        root.addView(label("Качество текстур"));
         sizeSpinner = new Spinner(this);
         ArrayAdapter<String> ad = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
-                new String[]{"512 × 512 — легче для игры", "1024 × 1024 — чётче"});
+                new String[]{"Обычное качество — легче для игры", "Высокое качество — чётче"});
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         sizeSpinner.setAdapter(ad);
         sizeSpinner.setSelection(1);
@@ -298,6 +326,7 @@ public class MainActivity extends Activity {
         if (req == REQ_PICTURE) loadPicture(uri);
         else if (req == REQ_DFF) loadDff(uri);
         else if (req == REQ_FOLDER) save(uri);
+        else if (req == REQ_TEXDB) loadTexdb(uri);
     }
 
     private void loadPicture(Uri uri) {
@@ -437,6 +466,8 @@ public class MainActivity extends Activity {
             }
         }
         if (all.geoms.isEmpty()) throw new Exception("ни одна модель не подошла" + skipped);
+        cjMode = false;
+        makeButton.setText("Создать скин");
         partNames.clear();
         partNames.addAll(okNames);
         partBytes.clear();
@@ -467,7 +498,154 @@ public class MainActivity extends Activity {
         return base;
     }
 
+    // ------------------------------------------------------- replace CJ mode
+
+    /** Document id of a child of a folder inside the picked tree, by name (case-insensitive). */
+    private String childId(Uri tree, String dirId, String name) {
+        for (String[] c : listDir(tree, dirId)) if (c[1].equalsIgnoreCase(name)) return c[0];
+        return null;
+    }
+
+    /** Children of a folder inside the picked tree as {document id, name}. */
+    private List<String[]> listDir(Uri tree, String dirId) {
+        List<String[]> out = new ArrayList<>();
+        Cursor c = getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, dirId),
+                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                null, null, null);
+        if (c != null) {
+            while (c.moveToNext()) out.add(new String[]{c.getString(0), c.getString(1)});
+            c.close();
+        }
+        return out;
+    }
+
+    private void loadTexdb(Uri tree) {
+        try {
+            String dirId = DocumentsContract.getTreeDocumentId(tree);
+            String inner = childId(tree, dirId, "texdb");
+            if (inner != null) dirId = inner;
+            String imgId = childId(tree, dirId, "player.img");
+            String playerId = childId(tree, dirId, "player");
+            if (imgId == null) throw new Exception("в выбранной папке нет файла player.img");
+            if (playerId == null) throw new Exception("в выбранной папке нет папки player с кэшем текстур");
+            String txtId = childId(tree, playerId, "player.txt");
+            if (txtId == null) throw new Exception("в папке player нет файла player.txt");
+            boolean anySet = false;
+            for (String[] c : listDir(tree, playerId))
+                if (c[1].toLowerCase().matches("player\\.[a-z0-9]+\\.dat")) anySet = true;
+            if (!anySet) throw new Exception("в папке player нет файлов player.*.dat");
+
+            TexDb db = TexDb.parseTxt(readAll(DocumentsContract.buildDocumentUriUsingTree(tree, txtId), 8 * 1024 * 1024));
+            Uri img = DocumentsContract.buildDocumentUriUsingTree(tree, imgId);
+            byte[] head = readRange(img, 0, 8);
+            if (!ImgArchive.isImg(head)) throw new Exception("player.img не похож на архив игры");
+            ImgArchive arc = ImgArchive.parse(readRange(img, 0, ImgArchive.directorySize(head)));
+
+            RwModel all = new RwModel();
+            LinkedHashMap<String, List<String>> targets = new LinkedHashMap<>();
+            HashMap<String, int[]> dims = new HashMap<>();
+            List<String> taken = new ArrayList<>();
+            StringBuilder found = new StringBuilder(), skipped = new StringBuilder();
+            for (String[] part : CJ_PARTS) {
+                String key = part[0];
+                ImgArchive.Entry e = null;
+                for (ImgArchive.Entry x : arc.entries) if (x.name.equalsIgnoreCase(key + ".dff")) e = x;
+                List<String> names = new ArrayList<>();
+                int[] d = null;
+                for (int i = 1; i < part.length; i++) {
+                    TexDb.Entry t = db.resolve(part[i]);
+                    if (t == null || t.width <= 0 || t.height <= 0 || taken.contains(t.name.toLowerCase())) continue;
+                    taken.add(t.name.toLowerCase());
+                    names.add(t.name);
+                    if (d == null) d = new int[]{t.width, t.height};
+                }
+                if (e == null || names.isEmpty()) {
+                    skipped.append("\n").append(key).append(e == null ? ": нет модели в player.img" : ": нет текстуры в player.txt");
+                    continue;
+                }
+                try {
+                    if (e.size > 48 * 1024 * 1024) throw new Exception("модель слишком большая");
+                    RwModel m = RwModel.parse(readRange(img, e.offset, e.size));
+                    boolean hasUv = false;
+                    for (RwModel.Geom g : m.geoms) if (g.uv != null) hasUv = true;
+                    if (!hasUv) throw new Exception("нет текстурной развёртки (UV)");
+                    m.forceTexture(key);
+                    all.geoms.addAll(m.geoms);
+                    targets.put(key, names);
+                    dims.put(key, d);
+                    found.append(found.length() > 0 ? ", " : "").append(key);
+                } catch (Throwable ex) {
+                    skipped.append("\n").append(key).append(": ").append(message(ex));
+                }
+            }
+            if (all.geoms.isEmpty()) throw new Exception("не удалось взять ни одной части Си-Джея" + skipped);
+
+            cjMode = true;
+            cjTree = tree;
+            cjPlayerDirId = playerId;
+            cjDb = db;
+            cjTargets.clear();
+            cjTargets.putAll(targets);
+            cjDims.clear();
+            cjDims.putAll(dims);
+            model = all;
+            partNames.clear();
+            partBytes.clear();
+            makeButton.setText("Заменить Си-Джея");
+            saveButton.setVisibility(View.GONE);
+            dffStatus.setTextColor(0xFF9BD3A5);
+            dffStatus.setText("Папка игры прочитана. Части Си-Джея: " + found
+                    + (skipped.length() > 0 ? "\nПропущено:" + skipped : ""));
+        } catch (Throwable e) {
+            dffError(e);
+        }
+    }
+
+    /** Writes a patched copy of the player texture cache next to the original; returns the new folder's name. */
+    private String saveCj(LinkedHashMap<String, Projector.Tex> tex) throws Exception {
+        HashMap<String, Projector.Tex> replace = new HashMap<>();
+        for (Map.Entry<String, List<String>> e : cjTargets.entrySet()) {
+            Projector.Tex t = tex.get(e.getKey());
+            if (t == null) continue;
+            for (String name : e.getValue()) replace.put(name, t);
+        }
+        if (replace.isEmpty()) throw new Exception("нет текстур для замены");
+        HashMap<String, String> files = new HashMap<>();
+        for (String[] c : listDir(cjTree, cjPlayerDirId)) files.put(c[1].toLowerCase(), c[0]);
+
+        Uri root = DocumentsContract.buildDocumentUriUsingTree(cjTree, DocumentsContract.getTreeDocumentId(cjTree));
+        Uri outRoot = DocumentsContract.createDocument(getContentResolver(), root,
+                DocumentsContract.Document.MIME_TYPE_DIR, "SkinForge_CJ");
+        if (outRoot == null) throw new Exception("не удалось создать папку для результата");
+        Uri outDir = DocumentsContract.createDocument(getContentResolver(), outRoot,
+                DocumentsContract.Document.MIME_TYPE_DIR, "player");
+        if (outDir == null) throw new Exception("не удалось создать папку player");
+        int sets = 0;
+        for (Map.Entry<String, String> f : files.entrySet()) {
+            String name = f.getKey();
+            if (!name.matches("player\\.[a-z0-9]+\\.dat")) continue;
+            String base = name.substring(0, name.length() - 4);
+            String tocId = files.get(base + ".toc"), tmbId = files.get(base + ".tmb");
+            if (tocId == null) continue;
+            byte[] dat = readAll(DocumentsContract.buildDocumentUriUsingTree(cjTree, f.getValue()), 400 * 1024 * 1024);
+            byte[] toc = readAll(DocumentsContract.buildDocumentUriUsingTree(cjTree, tocId), 16 * 1024 * 1024);
+            byte[] tmb = tmbId == null ? null
+                    : readAll(DocumentsContract.buildDocumentUriUsingTree(cjTree, tmbId), 64 * 1024 * 1024);
+            byte[][] r = cjDb.rebuild(dat, toc, tmb, replace);
+            dat = null;
+            write(outDir, "application/octet-stream", base + ".dat", r[0]);
+            write(outDir, "application/octet-stream", base + ".toc", r[1]);
+            if (r[2] != null) write(outDir, "application/octet-stream", base + ".tmb", r[2]);
+            sets++;
+        }
+        if (sets == 0) throw new Exception("не найдено ни одного набора player.*.dat с оглавлением .toc");
+        write(outDir, "application/octet-stream", "player.txt", cjDb.writeTxt(replace));
+        return displayName(outRoot);
+    }
+
     private void dffError(Throwable e) {
+        cjMode = false;
+        makeButton.setText("Создать скин");
         partNames.clear();
         partBytes.clear();
         model = null;
@@ -553,7 +731,15 @@ public class MainActivity extends Activity {
         final Projector.View side = sideOn.isChecked() ? view(BoxEditorView.SIDE, w, h) : null;
         final Projector.View back = backOn.isChecked() ? view(BoxEditorView.BACK, w, h) : null;
         final Projector.Options o = new Projector.Options();
-        o.size = SIZES[sizeSpinner.getSelectedItemPosition()];
+        final boolean high = sizeSpinner.getSelectedItemPosition() == 1;
+        o.size = SIZES[high ? 1 : 0];
+        final boolean cj = cjMode;
+        final HashMap<String, int[]> sizes = new HashMap<>();
+        if (cj) {
+            int mul = high ? 4 : 2;
+            for (Map.Entry<String, int[]> e : cjDims.entrySet())
+                sizes.put(e.getKey(), new int[]{Math.min(1024, e.getValue()[0] * mul), Math.min(1024, e.getValue()[1] * mul)});
+        }
         o.flipFront = flipFront.isChecked();
         o.sideFacesRight = sideRight.isChecked();
         o.widthScale = (60 + widthBar.getProgress()) / 100f;
@@ -563,28 +749,29 @@ public class MainActivity extends Activity {
         makeButton.setEnabled(false);
         progress.setVisibility(View.VISIBLE);
         resultStatus.setTextColor(0xFF9BA1AB);
-        resultStatus.setText("Переношу картинку на модель…");
+        resultStatus.setText(cj ? "Переношу картинку на Си-Джея и собираю файлы для игры…" : "Переношу картинку на модель…");
         new Thread(new Runnable() {
             public void run() {
-                LinkedHashMap<String, int[]> tex = null;
+                LinkedHashMap<String, Projector.Tex> tex = null;
                 Bitmap preview = null, texBmp = null;
-                String error = null;
+                String error = null, savedTo = null;
                 try {
-                    tex = Projector.project(m, front, side, back, o);
+                    tex = Projector.project(m, front, side, back, o, sizes);
                     Projector.Frame f = Projector.analyze(m, o.flipFront);
                     int pw = 300, ph = 600;
                     float[] yaws = {0, 45, 180, 225};
                     preview = Bitmap.createBitmap(pw * yaws.length, ph, Bitmap.Config.ARGB_8888);
                     for (int i = 0; i < yaws.length; i++)
-                        preview.setPixels(Projector.render(m, tex, o.size, f, yaws[i], pw, ph), 0, pw, i * pw, 0, pw, ph);
-                    int[] first = tex.values().iterator().next();
-                    texBmp = Bitmap.createBitmap(first, o.size, o.size, Bitmap.Config.ARGB_8888);
+                        preview.setPixels(Projector.render(m, tex, f, yaws[i], pw, ph), 0, pw, i * pw, 0, pw, ph);
+                    Projector.Tex first = tex.values().iterator().next();
+                    texBmp = Bitmap.createBitmap(first.px, first.w, first.h, Bitmap.Config.ARGB_8888);
+                    if (cj) savedTo = saveCj(tex);
                 } catch (Throwable e) {
                     error = message(e);
                 }
-                final LinkedHashMap<String, int[]> fTex = tex;
+                final LinkedHashMap<String, Projector.Tex> fTex = tex;
                 final Bitmap fPreview = preview, fTexBmp = texBmp;
-                final String fError = error;
+                final String fError = error, fSavedTo = savedTo;
                 ui.post(new Runnable() {
                     public void run() {
                         busy = false;
@@ -595,15 +782,22 @@ public class MainActivity extends Activity {
                             return;
                         }
                         result = fTex;
-                        resultSize = o.size;
                         previewImage.setImageBitmap(fPreview);
                         textureImage.setImageBitmap(fTexBmp);
                         textureCaption.setVisibility(View.VISIBLE);
-                        saveButton.setVisibility(View.VISIBLE);
+                        saveButton.setVisibility(cj ? View.GONE : View.VISIBLE);
                         saveStatus.setText("");
                         resultStatus.setTextColor(0xFF9BD3A5);
-                        resultStatus.setText("Готово. Ниже модель спереди и сзади. Если что-то съехало — "
-                                + "поправьте рамки или настройки и нажмите «Создать скин» ещё раз.");
+                        if (cj) {
+                            resultStatus.setText("Готово. В выбранной папке появилась папка «" + fSavedTo
+                                    + "», внутри неё — папка player. Скопируйте эту папку player в игру: "
+                                    + "Android/data/com.rockstargames.gtasa/files/texdb/ с заменой файлов "
+                                    + "(старую папку player сначала сохраните на случай отката). "
+                                    + "Ниже — как Си-Джей будет выглядеть спереди и сзади.");
+                        } else {
+                            resultStatus.setText("Готово. Ниже модель спереди и сзади. Если что-то съехало — "
+                                    + "поправьте рамки или настройки и нажмите «Создать скин» ещё раз.");
+                        }
                     }
                 });
             }
@@ -633,9 +827,10 @@ public class MainActivity extends Activity {
             boolean single = partNames.size() == 1;
             for (int i = 0; i < partNames.size(); i++)
                 write(dir, "application/octet-stream", single ? name + ".dff" : partNames.get(i), partBytes.get(i));
-            write(dir, "application/octet-stream", name + ".txd", TxdWriter.write(result, resultSize));
-            for (Map.Entry<String, int[]> e : result.entrySet()) {
-                Bitmap b = Bitmap.createBitmap(e.getValue(), resultSize, resultSize, Bitmap.Config.ARGB_8888);
+            write(dir, "application/octet-stream", name + ".txd", TxdWriter.write(result));
+            for (Map.Entry<String, Projector.Tex> e : result.entrySet()) {
+                Projector.Tex t = e.getValue();
+                Bitmap b = Bitmap.createBitmap(t.px, t.w, t.h, Bitmap.Config.ARGB_8888);
                 ByteArrayOutputStream png = new ByteArrayOutputStream();
                 b.compress(Bitmap.CompressFormat.PNG, 100, png);
                 b.recycle();

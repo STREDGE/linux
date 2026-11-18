@@ -11,15 +11,15 @@ public final class TxdWriter {
     private TxdWriter() {
     }
 
-    public static byte[] write(Map<String, int[]> textures, int size) {
+    public static byte[] write(Map<String, Projector.Tex> textures) {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         ByteArrayOutputStream head = new ByteArrayOutputStream();
         u16(head, textures.size());
         u16(head, 2); // Direct3D 9
         chunk(body, 0x01, head.toByteArray());
-        for (Map.Entry<String, int[]> e : textures.entrySet()) {
+        for (Map.Entry<String, Projector.Tex> e : textures.entrySet()) {
             ByteArrayOutputStream tex = new ByteArrayOutputStream();
-            chunk(tex, 0x01, nativeTexture(e.getKey(), e.getValue(), size));
+            chunk(tex, 0x01, nativeTexture(e.getKey(), e.getValue()));
             chunk(tex, 0x03, new byte[0]);
             chunk(body, 0x15, tex.toByteArray());
         }
@@ -29,9 +29,9 @@ public final class TxdWriter {
         return out.toByteArray();
     }
 
-    private static byte[] nativeTexture(String name, int[] px, int size) {
+    private static byte[] nativeTexture(String name, Projector.Tex t) {
         int levels = 1;
-        for (int s = size; s > 1; s >>= 1) levels++;
+        for (int a = t.w, b = t.h; a > 1 || b > 1; a = Math.max(1, a / 2), b = Math.max(1, b / 2)) levels++;
         ByteArrayOutputStream o = new ByteArrayOutputStream();
         u32(o, 9);          // platform: Direct3D 9
         u32(o, 0x1106);     // trilinear filtering, wrap in U and V
@@ -39,18 +39,18 @@ public final class TxdWriter {
         fixed(o, "", 32);
         u32(o, 0x8600);     // 888 raster with mipmaps
         u32(o, 22);         // D3DFMT_X8R8G8B8
-        u16(o, size);
-        u16(o, size);
+        u16(o, t.w);
+        u16(o, t.h);
         o.write(32);
         o.write(levels);
         o.write(4);
         o.write(0);
-        int[] cur = px;
-        int s = size;
+        int[] cur = t.px;
+        int w = t.w, h = t.h;
         for (int l = 0; l < levels; l++) {
-            u32(o, s * s * 4);
-            byte[] row = new byte[s * s * 4];
-            for (int i = 0; i < s * s; i++) {
+            u32(o, w * h * 4);
+            byte[] row = new byte[w * h * 4];
+            for (int i = 0; i < w * h; i++) {
                 int c = cur[i];
                 row[4 * i] = (byte) c;
                 row[4 * i + 1] = (byte) (c >> 8);
@@ -58,25 +58,28 @@ public final class TxdWriter {
                 row[4 * i + 3] = (byte) 0xFF;
             }
             o.write(row, 0, row.length);
-            if (s > 1) {
-                cur = halve(cur, s);
-                s >>= 1;
+            if (w > 1 || h > 1) {
+                cur = halve(cur, w, h);
+                w = Math.max(1, w / 2);
+                h = Math.max(1, h / 2);
             }
         }
         return o.toByteArray();
     }
 
-    static int[] halve(int[] px, int s) {
-        int h = s / 2;
-        int[] out = new int[h * h];
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < h; x++) {
-                int a = px[2 * y * s + 2 * x], b = px[2 * y * s + 2 * x + 1],
-                        c = px[(2 * y + 1) * s + 2 * x], d = px[(2 * y + 1) * s + 2 * x + 1];
+    /** Next mip level: each side halved (never below one pixel). */
+    public static int[] halve(int[] px, int w, int h) {
+        int nw = Math.max(1, w / 2), nh = Math.max(1, h / 2);
+        int[] out = new int[nw * nh];
+        for (int y = 0; y < nh; y++)
+            for (int x = 0; x < nw; x++) {
+                int x0 = Math.min(w - 1, 2 * x), x1 = Math.min(w - 1, 2 * x + 1);
+                int y0 = Math.min(h - 1, 2 * y), y1 = Math.min(h - 1, 2 * y + 1);
+                int a = px[y0 * w + x0], b = px[y0 * w + x1], c = px[y1 * w + x0], d = px[y1 * w + x1];
                 int r = (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF) + ((c >> 16) & 0xFF) + ((d >> 16) & 0xFF) + 2) / 4;
                 int g = (((a >> 8) & 0xFF) + ((b >> 8) & 0xFF) + ((c >> 8) & 0xFF) + ((d >> 8) & 0xFF) + 2) / 4;
                 int bl = ((a & 0xFF) + (b & 0xFF) + (c & 0xFF) + (d & 0xFF) + 2) / 4;
-                out[y * h + x] = 0xFF000000 | r << 16 | g << 8 | bl;
+                out[y * nw + x] = 0xFF000000 | r << 16 | g << 8 | bl;
             }
         return out;
     }

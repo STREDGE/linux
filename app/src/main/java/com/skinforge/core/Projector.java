@@ -34,6 +34,18 @@ public final class Projector {
         public float widthScale = 1f;
     }
 
+    /** A finished texture. */
+    public static final class Tex {
+        public final int w, h;
+        public final int[] px;
+
+        public Tex(int w, int h, int[] px) {
+            this.w = w;
+            this.h = h;
+            this.px = px;
+        }
+    }
+
     /** Body-aligned coordinate frame of a model. */
     public static final class Frame {
         public final float[] up = new float[3], front = new float[3], left = new float[3];
@@ -118,12 +130,27 @@ public final class Projector {
      * {@code side} and {@code back} may be null; a missing back is filled with a
      * blurred copy of the front so clothes keep their colours without a second face.
      */
-    public static LinkedHashMap<String, int[]> project(RwModel m, View front, View side, View back, Options o) {
+    public static LinkedHashMap<String, Tex> project(RwModel m, View front, View side, View back, Options o) {
+        return project(m, front, side, back, o, null);
+    }
+
+    /**
+     * Same, with an explicit {width, height} for some textures (keyed by lower-case name);
+     * the rest are square, {@code o.size} wide.
+     */
+    public static LinkedHashMap<String, Tex> project(RwModel m, View front, View side, View back, Options o,
+                                                     Map<String, int[]> sizes) {
         Frame f = analyze(m, o.flipFront);
         View softFront = back == null ? blurred(front) : null;
-        int T = o.size;
         LinkedHashMap<String, float[]> acc = new LinkedHashMap<>();
-        for (String name : m.textureNames()) acc.put(name.toLowerCase(), new float[4 * T * T]);
+        LinkedHashMap<String, int[]> dims = new LinkedHashMap<>();
+        for (String name : m.textureNames()) {
+            String key = name.toLowerCase();
+            int[] d = sizes == null ? null : sizes.get(key);
+            if (d == null) d = new int[]{o.size, o.size};
+            dims.put(key, d);
+            acc.put(key, new float[4 * d[0] * d[1]]);
+        }
 
         float[] col = new float[3], tmp = new float[3];
         for (RwModel.Geom g : m.geoms) {
@@ -131,18 +158,20 @@ public final class Projector {
             for (int t = 0; t < g.numTris; t++) {
                 int mat = g.triMat[t];
                 if (mat < 0 || g.matTex[mat] == null) continue;
-                float[] a = acc.get(g.matTex[mat].toLowerCase());
+                String key = g.matTex[mat].toLowerCase();
+                float[] a = acc.get(key);
+                int W = dims.get(key)[0], H = dims.get(key)[1];
                 int i0 = g.tri[3 * t], i1 = g.tri[3 * t + 1], i2 = g.tri[3 * t + 2];
-                float x0 = g.uv[2 * i0] * T - 0.5f, y0 = g.uv[2 * i0 + 1] * T - 0.5f;
-                float x1 = g.uv[2 * i1] * T - 0.5f, y1 = g.uv[2 * i1 + 1] * T - 0.5f;
-                float x2 = g.uv[2 * i2] * T - 0.5f, y2 = g.uv[2 * i2 + 1] * T - 0.5f;
+                float x0 = g.uv[2 * i0] * W - 0.5f, y0 = g.uv[2 * i0 + 1] * H - 0.5f;
+                float x1 = g.uv[2 * i1] * W - 0.5f, y1 = g.uv[2 * i1 + 1] * H - 0.5f;
+                float x2 = g.uv[2 * i2] * W - 0.5f, y2 = g.uv[2 * i2 + 1] * H - 0.5f;
                 float area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
                 if (Math.abs(area) < 1e-6f || Float.isNaN(area)) continue;
                 int minX = (int) Math.floor(Math.min(x0, Math.min(x1, x2))) - 1;
                 int maxX = (int) Math.ceil(Math.max(x0, Math.max(x1, x2))) + 1;
                 int minY = (int) Math.floor(Math.min(y0, Math.min(y1, y2))) - 1;
                 int maxY = (int) Math.ceil(Math.max(y0, Math.max(y1, y2))) + 1;
-                if (maxX - minX > 4 * T || maxY - minY > 4 * T) continue;
+                if (maxX - minX > 4 * W || maxY - minY > 4 * H) continue;
                 float tol = Math.min(0.5f, 0.75f / (float) Math.sqrt(Math.abs(area)));
                 for (int y = minY; y <= maxY; y++) {
                     for (int x = minX; x <= maxX; x++) {
@@ -167,8 +196,8 @@ public final class Projector {
                         float conf = shade(f, front, side, back, softFront, o, px, py, pz, nx, ny, nz, col, tmp);
                         // texels just outside the triangle only fill gaps, they never outvote real coverage
                         if (!inside) conf *= 0.02f;
-                        int tx = ((x % T) + T) % T, ty = ((y % T) + T) % T;
-                        int k = 4 * (ty * T + tx);
+                        int tx = ((x % W) + W) % W, ty = ((y % H) + H) % H;
+                        int k = 4 * (ty * W + tx);
                         a[k] += col[0] * conf;
                         a[k + 1] += col[1] * conf;
                         a[k + 2] += col[2] * conf;
@@ -178,10 +207,11 @@ public final class Projector {
             }
         }
 
-        LinkedHashMap<String, int[]> out = new LinkedHashMap<>();
+        LinkedHashMap<String, Tex> out = new LinkedHashMap<>();
         for (String name : m.textureNames()) {
             if (out.containsKey(name)) continue;
-            out.put(name, resolve(acc.get(name.toLowerCase()), T));
+            int[] d = dims.get(name.toLowerCase());
+            out.put(name, new Tex(d[0], d[1], resolve(acc.get(name.toLowerCase()), d[0], d[1])));
         }
         return out;
     }
@@ -304,8 +334,8 @@ public final class Projector {
     }
 
     /** Turns accumulated colour into pixels and pads the gaps between UV islands. */
-    private static int[] resolve(float[] a, int T) {
-        int n = T * T;
+    private static int[] resolve(float[] a, int T, int TH) {
+        int n = T * TH;
         int[] px = new int[n];
         boolean[] has = new boolean[n];
         double sr = 0, sg = 0, sb = 0;
@@ -330,14 +360,14 @@ public final class Projector {
             boolean changed = false;
             System.arraycopy(has, 0, next, 0, n);
             System.arraycopy(px, 0, npx, 0, n);
-            for (int y = 0; y < T; y++)
+            for (int y = 0; y < TH; y++)
                 for (int x = 0; x < T; x++) {
                     int i = y * T + x;
                     if (has[i]) continue;
                     int r = 0, g = 0, b = 0, c = 0;
                     for (int d = 0; d < 4; d++) {
                         int xx = x + (d == 0 ? 1 : d == 1 ? -1 : 0), yy = y + (d == 2 ? 1 : d == 3 ? -1 : 0);
-                        if (xx < 0 || yy < 0 || xx >= T || yy >= T) continue;
+                        if (xx < 0 || yy < 0 || xx >= T || yy >= TH) continue;
                         int j = yy * T + xx;
                         if (!has[j]) continue;
                         r += (px[j] >> 16) & 0xFF;
@@ -369,7 +399,7 @@ public final class Projector {
      * Software render of the textured model, seen from {@code yawDeg} around the body
      * (0 = front, 180 = back). Returns ARGB pixels of size w * h.
      */
-    public static int[] render(RwModel m, Map<String, int[]> textures, int T, Frame f, float yawDeg, int w, int h) {
+    public static int[] render(RwModel m, Map<String, Tex> textures, Frame f, float yawDeg, int w, int h) {
         int[] out = new int[w * h];
         float[] zb = new float[w * h];
         java.util.Arrays.fill(out, 0xFF26282C);
@@ -383,14 +413,14 @@ public final class Projector {
         }
         float cRight = f.midLeft * cs - f.midFront * sn;
         float scale = 0.92f * h / f.height;
-        LinkedHashMap<String, int[]> lower = new LinkedHashMap<>();
-        for (Map.Entry<String, int[]> e : textures.entrySet()) lower.put(e.getKey().toLowerCase(), e.getValue());
+        LinkedHashMap<String, Tex> lower = new LinkedHashMap<>();
+        for (Map.Entry<String, Tex> e : textures.entrySet()) lower.put(e.getKey().toLowerCase(), e.getValue());
 
         float[] sx = new float[3], sy = new float[3], sz = new float[3], lit = new float[3];
         for (RwModel.Geom g : m.geoms) {
             for (int t = 0; t < g.numTris; t++) {
                 int mat = g.triMat[t];
-                int[] tex = (mat >= 0 && g.matTex[mat] != null && g.uv != null)
+                Tex tex = (mat >= 0 && g.matTex[mat] != null && g.uv != null)
                         ? lower.get(g.matTex[mat].toLowerCase()) : null;
                 for (int c = 0; c < 3; c++) {
                     int v = g.tri[3 * t + c];
@@ -422,10 +452,10 @@ public final class Projector {
                         if (tex != null) {
                             float u = w0 * g.uv[2 * a] + w1 * g.uv[2 * b] + w2 * g.uv[2 * c];
                             float v = w0 * g.uv[2 * a + 1] + w1 * g.uv[2 * b + 1] + w2 * g.uv[2 * c + 1];
-                            int tx = (int) Math.floor((u - Math.floor(u)) * T), ty = (int) Math.floor((v - Math.floor(v)) * T);
-                            if (tx >= T) tx = T - 1;
-                            if (ty >= T) ty = T - 1;
-                            colr = tex[ty * T + tx];
+                            int tx = (int) Math.floor((u - Math.floor(u)) * tex.w), ty = (int) Math.floor((v - Math.floor(v)) * tex.h);
+                            if (tx >= tex.w) tx = tex.w - 1;
+                            if (ty >= tex.h) ty = tex.h - 1;
+                            colr = tex.px[ty * tex.w + tx];
                         }
                         float l = w0 * lit[0] + w1 * lit[1] + w2 * lit[2];
                         int r = (int) (((colr >> 16) & 0xFF) * l), gg = (int) (((colr >> 8) & 0xFF) * l),

@@ -42,10 +42,10 @@ public class DesktopTest {
         Projector.Options o = new Projector.Options();
         o.size = 1024;
         long t0 = System.currentTimeMillis();
-        LinkedHashMap<String, int[]> tex = Projector.project(m, front, side, back, o);
+        LinkedHashMap<String, Projector.Tex> tex = Projector.project(m, front, side, back, o);
         System.out.println("project ms=" + (System.currentTimeMillis() - t0));
-        for (Map.Entry<String, int[]> e : tex.entrySet()) save(e.getValue(), o.size, o.size, new File(out, e.getKey() + ".png"));
-        Files.write(new File(out, "skin.txd").toPath(), TxdWriter.write(tex, o.size));
+        for (Map.Entry<String, Projector.Tex> e : tex.entrySet()) save(e.getValue().px, e.getValue().w, e.getValue().h, new File(out, e.getKey() + ".png"));
+        Files.write(new File(out, "skin.txd").toPath(), TxdWriter.write(tex));
 
         Projector.Frame f = Projector.analyze(m, false);
         System.out.println("up=" + Arrays.toString(f.up) + " front=" + Arrays.toString(f.front) + " left=" + Arrays.toString(f.left));
@@ -53,7 +53,7 @@ public class DesktopTest {
         float[] yaws = {0, 40, 90, 180, 270};
         BufferedImage sheet = new BufferedImage(pw * yaws.length, ph, BufferedImage.TYPE_INT_RGB);
         for (int i = 0; i < yaws.length; i++)
-            sheet.setRGB(i * pw, 0, pw, ph, Projector.render(m, tex, o.size, f, yaws[i], pw, ph), 0, pw);
+            sheet.setRGB(i * pw, 0, pw, ph, Projector.render(m, tex, f, yaws[i], pw, ph), 0, pw);
         ImageIO.write(sheet, "png", new File(out, "preview.png"));
     }
 
