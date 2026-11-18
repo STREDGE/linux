@@ -78,7 +78,10 @@ public class MainActivity extends Activity {
     private EditText nameEdit;
     private Button makeButton, saveButton;
     private ProgressBar progress;
-    private ImageView previewImage, textureImage;
+    private ImageView textureImage;
+    private PreviewView preview3d;
+    private TextView previewHint;
+    private RwModel previewModel;
     private TextView textureCaption;
 
     private Bitmap picture;
@@ -226,10 +229,12 @@ public class MainActivity extends Activity {
         root.addView(progress);
         resultStatus = note("");
         root.addView(resultStatus);
-        previewImage = new ImageView(this);
-        previewImage.setAdjustViewBounds(true);
-        root.addView(previewImage, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        preview3d = new PreviewView(this);
+        preview3d.setVisibility(View.GONE);
+        root.addView(preview3d, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, px(440)));
+        previewHint = note("Проведите пальцем влево или вправо, чтобы повернуть персонажа.");
+        previewHint.setVisibility(View.GONE);
+        root.addView(previewHint);
         textureCaption = label("Текстура");
         textureCaption.setVisibility(View.GONE);
         root.addView(textureCaption);
@@ -467,6 +472,7 @@ public class MainActivity extends Activity {
         }
         if (all.geoms.isEmpty()) throw new Exception("ни одна модель не подошла" + skipped);
         cjMode = false;
+        previewModel = null;
         makeButton.setText("Создать скин");
         partNames.clear();
         partNames.addAll(okNames);
@@ -542,6 +548,7 @@ public class MainActivity extends Activity {
             ImgArchive arc = ImgArchive.parse(readRange(img, 0, ImgArchive.directorySize(head)));
 
             RwModel all = new RwModel();
+            HashMap<String, RwModel> partModels = new HashMap<>();
             LinkedHashMap<String, List<String>> targets = new LinkedHashMap<>();
             HashMap<String, int[]> dims = new HashMap<>();
             List<String> taken = new ArrayList<>();
@@ -571,6 +578,7 @@ public class MainActivity extends Activity {
                     if (!hasUv) throw new Exception("нет текстурной развёртки (UV)");
                     m.forceTexture(key);
                     all.geoms.addAll(m.geoms);
+                    partModels.put(key, m);
                     targets.put(key, names);
                     dims.put(key, d);
                     found.append(found.length() > 0 ? ", " : "").append(key);
@@ -589,6 +597,15 @@ public class MainActivity extends Activity {
             cjDims.clear();
             cjDims.putAll(dims);
             model = all;
+            // the preview shows what is actually worn: clothes hide the body part under them
+            RwModel worn = new RwModel();
+            String[][] slots = {{"head", "head"}, {"vest", "torso"}, {"jeans", "legs"}, {"sneaker", "feet"}};
+            for (String[] slot : slots) {
+                RwModel pm = partModels.get(slot[0]);
+                if (pm == null) pm = partModels.get(slot[1]);
+                if (pm != null) worn.geoms.addAll(pm.geoms);
+            }
+            previewModel = worn.geoms.isEmpty() ? null : worn;
             partNames.clear();
             partBytes.clear();
             makeButton.setText("Заменить Си-Джея");
@@ -744,6 +761,7 @@ public class MainActivity extends Activity {
         o.sideFacesRight = sideRight.isChecked();
         o.widthScale = (60 + widthBar.getProgress()) / 100f;
         final RwModel m = model;
+        final RwModel shown = previewModel != null ? previewModel : model;
 
         busy = true;
         makeButton.setEnabled(false);
@@ -753,16 +771,13 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             public void run() {
                 LinkedHashMap<String, Projector.Tex> tex = null;
-                Bitmap preview = null, texBmp = null;
+                Bitmap texBmp = null;
+                Projector.Frame frame = null;
                 String error = null, savedTo = null;
                 try {
                     tex = Projector.project(m, front, side, back, o, sizes);
                     Projector.Frame f = Projector.analyze(m, o.flipFront);
-                    int pw = 300, ph = 600;
-                    float[] yaws = {0, 45, 180, 225};
-                    preview = Bitmap.createBitmap(pw * yaws.length, ph, Bitmap.Config.ARGB_8888);
-                    for (int i = 0; i < yaws.length; i++)
-                        preview.setPixels(Projector.render(m, tex, f, yaws[i], pw, ph), 0, pw, i * pw, 0, pw, ph);
+                    frame = f;
                     Projector.Tex first = tex.values().iterator().next();
                     texBmp = Bitmap.createBitmap(first.px, first.w, first.h, Bitmap.Config.ARGB_8888);
                     if (cj) savedTo = saveCj(tex);
@@ -770,7 +785,8 @@ public class MainActivity extends Activity {
                     error = message(e);
                 }
                 final LinkedHashMap<String, Projector.Tex> fTex = tex;
-                final Bitmap fPreview = preview, fTexBmp = texBmp;
+                final Bitmap fTexBmp = texBmp;
+                final Projector.Frame fFrame = frame;
                 final String fError = error, fSavedTo = savedTo;
                 ui.post(new Runnable() {
                     public void run() {
@@ -782,7 +798,9 @@ public class MainActivity extends Activity {
                             return;
                         }
                         result = fTex;
-                        previewImage.setImageBitmap(fPreview);
+                        preview3d.setVisibility(View.VISIBLE);
+                        previewHint.setVisibility(View.VISIBLE);
+                        preview3d.show(shown, fTex, fFrame);
                         textureImage.setImageBitmap(fTexBmp);
                         textureCaption.setVisibility(View.VISIBLE);
                         saveButton.setVisibility(cj ? View.GONE : View.VISIBLE);
@@ -793,9 +811,9 @@ public class MainActivity extends Activity {
                                     + "», внутри неё — папка player. Скопируйте эту папку player в игру: "
                                     + "Android/data/com.rockstargames.gtasa/files/texdb/ с заменой файлов "
                                     + "(старую папку player сначала сохраните на случай отката). "
-                                    + "Ниже — как Си-Джей будет выглядеть спереди и сзади.");
+                                    + "Ниже — как Си-Джей будет выглядеть в стартовой одежде.");
                         } else {
-                            resultStatus.setText("Готово. Ниже модель спереди и сзади. Если что-то съехало — "
+                            resultStatus.setText("Готово. Ниже модель, её можно вращать. Если что-то съехало — "
                                     + "поправьте рамки или настройки и нажмите «Создать скин» ещё раз.");
                         }
                     }
