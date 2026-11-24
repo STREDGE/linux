@@ -103,8 +103,15 @@ namespace
     };
     Finger g_f[kMaxFingers];
 
+    double g_lastPoll = 0;
     void PollTouches()
     {
+        // Два наших кадра в одном кадре игры (меню + экран настройки) не должны
+        // «съедать» друг у друга нажатия: опрос не чаще раза в 4 мс.
+        timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        double t = ts.tv_sec + ts.tv_nsec / 1e9;
+        if(t - g_lastPoll < 0.004) return;
+        g_lastPoll = t;
         for(auto& f : g_f) f.pressed = f.released = false;
         RefreshPoints();
         for(int i = 0; i < kMaxFingers; ++i)
@@ -158,6 +165,9 @@ namespace
 
     // ---------- состояние меню ----------
     bool      g_editRequested = false;  // открыть редактор раскладки при возврате в игру
+    // «Настройка сенсоров» игры (CAdjustableHUD): наши элементы двигаются там же
+    bool      g_inAdjDraw = false;      // сейчас рисуем внутри CAdjustableHUD::Draw
+    double    g_adjSeenAt = -10;        // когда экран настройки последний раз был открыт
     bool      g_resumeGame = false;     // закрыть меню паузы (как «Продолжить») в ближайшем обновлении меню
     void      (*Menu_SwitchOffToGame)() = nullptr;
     FLogger*  g_log = nullptr;
@@ -1153,8 +1163,15 @@ namespace
         coop::LockLocalControls(false);
     }
 
-    void DrawEditor(const coop::Team& team)
+    void DrawEditor(const coop::Team& team, bool ownBar = true)
     {
+        Box bar{ ImVec2(-1, -1), ImVec2(-1, -1) };
+        if(!ownBar)
+        {   // внутри «Настройки сенсоров» игры: свои кнопки игры там уже есть (Сохранить / Отмена / По умолчанию)
+            DrawHudItems(team, g_editLayout, true);
+        }
+        else
+        {
         // затемнение, чтобы было видно, что это режим настройки
         DL()->AddRectFilled(ImVec2(0, 0), ImVec2(W(), H()), C(Rgb{ 4, 6, 10 }, 0.35f));
         DrawHudItems(team, g_editLayout, true);
@@ -1173,7 +1190,7 @@ namespace
         ImVec2 tsz = TextSize(F_SMALL, title);
         float pw = fmaxf(total, tsz.x) + U(4), ph = bh + tsz.y + U(5);
         ImVec2 pa(W() * 0.5f - pw * 0.5f, H() - ph - U(3)), pb(pa.x + pw, pa.y + ph);
-        Box bar{ pa, pb };
+        bar = Box{ pa, pb };
         DL()->AddRectFilled(pa, pb, C(kNight, 0.92f), U(1.6f));
         DL()->AddRect(pa, pb, C(kGold), U(1.6f), 0, U(0.3f));
         Text(F_SMALL, ImVec2(W() * 0.5f - tsz.x * 0.5f, pa.y + U(1.2f)), C(kGold), title);
@@ -1192,6 +1209,7 @@ namespace
         if(click[2]) { g_editLayout = settings::DefaultLayout(); Feed(kGold, "Расположение по умолчанию"); }
         if(click[3]) { LeaveEdit(false); return; }
         if(click[4]) { LeaveEdit(true); return; }
+        }
 
         // ---- выделение и перетаскивание ----
         for(int i = 0; i < settings::L_COUNT; ++i)
@@ -1200,7 +1218,10 @@ namespace
             ImVec2 a(bx.a.x - U(0.8f), bx.a.y - U(0.8f)), b(bx.b.x + U(0.8f), bx.b.y + U(0.8f));
             bool s = i == g_editSel;
             DashedRect(a, b, C(s ? kGold : kWhite, s ? 1.0f : 0.6f), U(s ? 0.4f : 0.25f));
-            Text(F_SMALL, ImVec2(a.x, a.y - TextSize(F_SMALL, kItemNames[i]).y - U(0.4f)), C(s ? kGold : kWhite, 0.9f), kItemNames[i]);
+            float lh = TextSize(F_SMALL, kItemNames[i]).y;
+            float ly = a.y - lh - U(0.4f);
+            if(ly < U(0.5f)) ly = b.y + U(0.4f);   // у верхнего края — подпись под рамкой
+            Text(F_SMALL, ImVec2(a.x, ly), C(s ? kGold : kWhite, 0.9f), kItemNames[i]);
         }
         int fingersOn[settings::L_COUNT] = {}; int fingerA[settings::L_COUNT], fingerB[settings::L_COUNT];
         for(int f = 0; f < kMaxFingers; ++f)
@@ -1273,6 +1294,12 @@ namespace
         if(!g_layoutLoaded) { g_layout = settings::LoadLayout(); g_layoutLoaded = true; }
         coop::Team team = coop::GetTeam();
         if(g_editRequested) { g_editRequested = false; EnterEdit(); }
+        if(g_inAdjDraw)
+        {   // экран «Настройка сенсоров»: наши элементы среди кнопок игры, тянуть пальцем / щипок
+            DrawEditor(team, false);
+            imgui_rw::Render();
+            return;
+        }
         if(!fromMenu)
         {
             if(g_edit) DrawEditor(team);
@@ -1300,6 +1327,49 @@ DECL_HOOKv(MobileMenuRender, uintptr_t self)
     MobileMenuRender(self);
     coop::KeepWorldRunningInMenu();   // в коопе меню не ставит игру на паузу
     Frame(true);                      // меню CO-OP (если открыто) + запросы и уведомления
+}
+
+// ---- «Настройка сенсоров» самой игры ----
+static void AdjBegin()
+{
+    double now = NowSec();
+    if(now - g_adjSeenAt > 1.0)
+    {   // экран только что открылся: начинаем с сохранённой раскладки
+        if(!g_layoutLoaded) { g_layout = settings::LoadLayout(); g_layoutLoaded = true; }
+        g_editLayout = g_layout; g_editSel = settings::L_MIC;
+        for(auto& d : g_drag) d = Drag();
+        g_pinchItem = -1;
+        if(g_log) g_log->Info("Настройка сенсоров открыта: кнопки CO-OP можно двигать там же");
+    }
+    g_adjSeenAt = now;
+}
+
+DECL_HOOKv(AdjustableHudDraw, uintptr_t self)
+{
+    AdjustableHudDraw(self);
+    AdjBegin();
+    g_inAdjDraw = true;
+    Frame(true);
+    g_inAdjDraw = false;
+}
+
+// Кнопки самого экрана: self+0x64 — нажатая (2 сохранить, 3 отмена, 4 по умолчанию),
+// после обработки становится -1; self+0x52E == 1 — экран закрывается (так же делает helibrain).
+DECL_HOOKv(AdjustableHudUpdate, uintptr_t self)
+{
+    int before = self ? *(int*)(self + 0x64) : -1;
+    AdjustableHudUpdate(self);
+    if(!self) return;
+    AdjBegin();
+    int after = *(int*)(self + 0x64);
+    if(before >= 2 && before <= 4 && after == -1)
+    {
+        bool closing = *(uint8_t*)(self + 0x52E) == 1;
+        if(before == 4)                 { g_editLayout = settings::DefaultLayout(); if(g_log) g_log->Info("Настройка сенсоров: по умолчанию — кнопки CO-OP тоже"); }
+        else if(before == 2 && closing) { g_layout = g_editLayout; settings::SaveLayout(g_layout); if(g_log) g_log->Info("Настройка сенсоров: сохранено — кнопки CO-OP тоже"); }
+        else if(before == 3 && closing) { g_editLayout = g_layout; if(g_log) g_log->Info("Настройка сенсоров: отмена — кнопки CO-OP на прежних местах"); }
+        if(closing) g_adjSeenAt = -10;
+    }
 }
 
 // Пока открыт редактор раскладки, камера не обновляется: иначе пальцы,
@@ -1348,8 +1418,6 @@ DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
 // ---------- открытие ----------
 
 static void OnCoopButton(void*) { Open(); }
-// Настройки > Управление > «CO-OP buttons»: редактор расположения прямо поверх меню
-static void OnLayoutButton(uintptr_t) { if(!g_edit) g_editRequested = true; }
 
 void Open()
 {
@@ -1401,6 +1469,14 @@ bool Init(void* h, FLogger* log)
     aml->Hook(render, (void*)HookOf_MobileMenuRender, (void**)&MobileMenuRender);
     aml->Hook(update, (void*)HookOf_MobileMenuUpdate, (void**)&MobileMenuUpdate);
     Menu_SwitchOffToGame = (void(*)())aml->GetSym(h, "_Z20Menu_SwitchOffToGamev");
+    void* adjDraw = (void*)aml->GetSym(h, "_ZN14CAdjustableHUD4DrawEv");
+    void* adjUpd  = (void*)aml->GetSym(h, "_ZN14CAdjustableHUD6UpdateEv");
+    if(adjDraw && adjUpd)
+    {
+        aml->Hook(adjDraw, (void*)HookOf_AdjustableHudDraw,   (void**)&AdjustableHudDraw);
+        aml->Hook(adjUpd,  (void*)HookOf_AdjustableHudUpdate, (void**)&AdjustableHudUpdate);
+    }
+    else logger->Error("Нет CAdjustableHUD — кнопки CO-OP не появятся в «Настройке сенсоров»");
     void* camProcess = (void*)aml->GetSym(h, "_ZN7CCamera7ProcessEv");
     if(camProcess) aml->Hook(camProcess, (void*)HookOf_CameraProcess, (void**)&CameraProcess);
     void* r2d = (void*)aml->GetSym(h, "_Z13Render2dStuffv");
@@ -1414,7 +1490,6 @@ void AttachSAUtils(ISAUtils* sau)
 {
     sau->AddSettingsTabButton("CO-OP", OnCoopButton, STB_MainMenu, "menu_mainsettings", nullptr);
     sau->AddSettingsTabButton("CO-OP", OnCoopButton, STB_Pause,    "menu_mainsettings", nullptr);
-    sau->AddButton(SetType_Controller, "CO-OP buttons", OnLayoutButton);
     logger->Info("Кнопки CO-OP добавлены в главное меню и паузу");
 }
 

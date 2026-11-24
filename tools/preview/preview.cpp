@@ -131,7 +131,9 @@ namespace imgui_rw {
 }
 
 namespace overlay { void DebugRequestEdit(); extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t);
-                    extern void (*Render2dStuff)(); void HookOf_Render2dStuff(); }
+                    extern void (*Render2dStuff)(); void HookOf_Render2dStuff();
+                    extern void (*AdjustableHudDraw)(uintptr_t); void HookOf_AdjustableHudDraw(uintptr_t); }
+static void NoAdj(uintptr_t) {}
 static void NoR2d() {}
 static void HudFrames(double seconds) { int n = (int)(seconds * 30); for(int i = 0; i < n; ++i) { overlay::HookOf_Render2dStuff(); usleep(33000); } }
 namespace coop { void KeepWorldRunningInMenu() {} }
@@ -190,5 +192,10 @@ int main(int argc, char** argv)
     for(int i = 1; i <= 10; ++i) { g_fakePoints[0] = (int)(mx - i * W * 0.025f); g_fakePoints[1] = (int)(my + i * H * 0.04f); HudFrames(0.04); }
     HudFrames(0.2); Save("hud_editor.ppm");
     g_fakePoints[2] = 0; HudFrames(0.2);
+
+    // «Настройка сенсоров» игры: наши элементы среди кнопок игры
+    overlay::AdjustableHudDraw = NoAdj;
+    for(int i = 0; i < 10; ++i) { overlay::HookOf_AdjustableHudDraw(0); usleep(33000); }
+    Save("adjust.ppm");
     return 0;
 }
