@@ -148,8 +148,10 @@ namespace net
             close(m_sock);
         }
         FLogger* log = m_log;
+        VoiceSink sink = m_voiceSink;
         *this = Session();
         m_log = log;
+        m_voiceSink = sink;
     }
 
     bool Session::Connected() const
@@ -359,6 +361,18 @@ namespace net
                 }
                 break;
 
+            case PKT_VOICE:
+                if(len >= kVoiceHeaderSize)
+                {
+                    const VoicePacket* v = (const VoicePacket*)data;
+                    if(v->len && kVoiceHeaderSize + v->len == len)
+                    {
+                        if(!m_voiceIn++) Log(false, "Пошёл голос от друга");
+                        if(m_voiceSink) m_voiceSink(v->seq, v->spurt, v->data, v->len);
+                    }
+                }
+                break;
+
             case PKT_DENY: // хост/клиент ушёл
                 if(len == sizeof(DenyPacket)) DropPeer("друг вышел из коопа");
                 break;
@@ -371,5 +385,16 @@ namespace net
         pkt.hdr = MakeHeader(PKT_PLAYER_STATE);
         pkt.seq = ++m_stateSeq;
         SendTo(&pkt, sizeof(pkt));
+    }
+
+    void Session::SendVoice(uint16_t seq, uint8_t spurt, const uint8_t* data, int len)
+    {
+        if(m_link != Link::Connected || len <= 0 || len > kVoiceMaxBytes) return;
+        VoicePacket v;
+        v.hdr = MakeHeader(PKT_VOICE);
+        v.seq = seq; v.spurt = spurt; v.len = (uint8_t)len;
+        memcpy(v.data, data, len);
+        SendTo(&v, kVoiceHeaderSize + len);
+        if(!m_voiceOut++) Log(false, "Пошёл голос другу");
     }
 }

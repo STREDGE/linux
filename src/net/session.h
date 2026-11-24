@@ -65,6 +65,9 @@ namespace net
         uint64_t    PendingSinceUs() const { return m_pendingSinceUs; }
         void  AnswerJoin(bool accept);                 // хост: ответ на запрос
         bool  PopEvent(Event& out);
+        void  SendVoice(uint16_t seq, uint8_t spurt, const uint8_t* data, int len);
+        typedef void (*VoiceSink)(uint16_t seq, uint8_t spurt, const uint8_t* data, int len);
+        void  SetVoiceSink(VoiceSink fn) { m_voiceSink = fn; }
 
     private:
         void HandlePacket(const uint8_t* data, int len, const sockaddr_in& from);
@@ -103,6 +106,8 @@ namespace net
 
         RemoteState m_remote;
         std::vector<Event> m_events;
+        VoiceSink   m_voiceSink = nullptr;
+        uint32_t    m_voiceIn = 0, m_voiceOut = 0;
     };
 
     uint64_t NowUs();

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "game/gta.h"
+#include "voice/voice.h"
 
 using namespace gta;
 
@@ -361,6 +362,7 @@ namespace
 
         DespawnRemote("смена режима");
         g_session.Stop();
+        voice::Stop();
         memset(g_echo, 0, sizeof(g_echo));
         g_echoHead = 0;
         g_echoRemote = net::RemoteState();
@@ -381,6 +383,17 @@ namespace
                 if(!g_session.Start(c, g_log)) Log(true, "Сеть не запустилась — второй CJ не появится");
                 break;
         }
+    }
+
+    // Голос: зажата кнопка и друг на связи — пишем микрофон и шлём; пришедшее — в динамик
+    void PumpVoice()
+    {
+        voice::SetLoopback(false, 0);
+        voice::SetTransmit(g_localTalking && g_session.Connected());
+        voice::Pump();
+        uint8_t buf[net::kVoiceMaxBytes]; uint16_t seq; uint8_t spurt;
+        while(int n = voice::PopEncodedFrame(buf, sizeof(buf), &seq, &spurt))
+            g_session.SendVoice(seq, spurt, buf, n);
     }
 
     void OnFrameImpl();
@@ -438,6 +451,10 @@ namespace
         if(g_cfg.role == net::Role::Echo)
         {
             UpdateRemote(EchoUpdate(me, now), local, dt, now);
+            // Голос в одиночку: говоришь — через 0,5 с слышишь себя (как двойник повторяет движения)
+            voice::SetLoopback(true, (int)(kEchoDelayUs / 1000));
+            voice::SetTransmit(g_localTalking);
+            voice::Pump();
             if(g_remotePed && !g_echoAnnounced)
             {
                 g_echoAnnounced = true;
@@ -453,6 +470,7 @@ namespace
             g_session.SendPlayerState(me);
             g_nextSendUs = now + kSendIntervalUs;
         }
+        PumpVoice();
         UpdateRemote(g_session.Remote(), local, dt, now);
     }
 
@@ -528,6 +546,8 @@ bool Install(void* h, FLogger* log)
 
     g_userPause = (uint8_t*)aml->GetSym(h, "_ZN6CTimer11m_UserPauseE");
     g_cutsceneRunning = (uint8_t*)aml->GetSym(h, "_ZN12CCutsceneMgr10ms_runningE");
+    voice::Init(log);
+    g_session.SetVoiceSink(voice::PushReceivedFrame);
     if(!gta::Init(h, 0))
     {
         Log(true, "Не все функции игры найдены — кооп выключен");

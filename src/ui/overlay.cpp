@@ -19,6 +19,7 @@
 
 #include "coop/coop.h"
 #include "platform/android.h"
+#include "voice/voice.h"
 #include "settings.h"
 #include "ui/fonts_data.h"
 #include "ui/imgui_rw.h"
@@ -1020,7 +1021,8 @@ namespace
         DL()->AddRect(a, b, C(kGrove), h * 0.5f, 0, U(0.3f));
         for(int i = 0; i < 3; ++i)
         {
-            float v = 0.35f + 0.65f * fabsf(sinf((float)g_now * 9 + i * 1.3f));
+            float lv = (sample || !voice::Available()) ? 0.7f : voice::OutputLevel();
+            float v = 0.2f + 0.8f * lv * (0.5f + 0.5f * fabsf(sinf((float)g_now * 9 + i * 1.3f)));
             float bx = a.x + U(2.4f) + i * U(1.2f), bh = U(2.6f) * v;
             DL()->AddRectFilled(ImVec2(bx, (a.y + b.y) * 0.5f + U(1.3f) - bh), ImVec2(bx + U(0.7f), (a.y + b.y) * 0.5f + U(1.3f)), C(kGrove), U(0.3f));
         }
@@ -1063,7 +1065,9 @@ namespace
                 else if(mic == 1 && !g_micHintShown)
                 {
                     g_micHintShown = true;
-                    Feed(kGrove, "Микрофон разрешён — звук появится в следующей версии");
+                    if(!voice::Available())          Feed(kRed, "Голос не работает на этом телефоне (нужен Android 8+)");
+                    else if(t.role == net::Role::Echo) Feed(kGrove, "Говори — через полсекунды услышишь себя");
+                    else if(!t.mate.present || t.mate.lost) Feed(kGold, "Друг не подключён — говорить некому");
                 }
             }
         }
@@ -1093,7 +1097,8 @@ namespace
         if(held)
             for(int i = 0; i < 5; ++i)
             {
-                float v = 0.25f + 0.75f * fabsf(sinf((float)g_now * 10 + i * 1.7f));
+                float lv = voice::Available() ? voice::InputLevel() : 0.6f;
+                float v = 0.15f + 0.85f * lv * (0.55f + 0.45f * fabsf(sinf((float)g_now * 10 + i * 1.7f)));
                 float bx = c.x - U(3.2f) + i * U(1.5f), bh = U(3.6f) * v;
                 DL()->AddRectFilled(ImVec2(bx, b.y + U(4.6f) - bh), ImVec2(bx + U(0.9f), b.y + U(4.6f)), C(kRed), U(0.4f));
             }

@@ -54,6 +54,11 @@ namespace settings {
     Layout LoadLayout() { return DefaultLayout(); }
     void SaveLayout(const Layout&) {}
 }
+namespace voice {
+    bool Available() { return true; }
+    float InputLevel() { return 0.7f; }
+    float OutputLevel() { return 0.7f; }
+}
 namespace platform {
     bool FindTailscaleIPv4(char* o, size_t l) { snprintf(o, l, "100.101.24.7"); return true; }
     bool ClipboardGetText(char* o, size_t l) { snprintf(o, l, "вот адрес 100.87.12.40"); return true; }
