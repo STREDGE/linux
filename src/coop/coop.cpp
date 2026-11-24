@@ -23,6 +23,8 @@ namespace
     constexpr float    kSmoothRate       = 12.0f;      // скорость сглаживания (1/с)
     constexpr uint64_t kEchoDelayUs      = 1000000;    // эхо-режим: повтор с задержкой 1 с
     constexpr float    kEchoOffset       = 1.5f;       // эхо-режим: сдвиг вбок, м
+    constexpr uint64_t kEchoSampleUs     = 50000;      // эхо-режим: запись 20 раз в секунду (буфер 3,2 с)
+    constexpr uint64_t kStatusLogUs      = 15000000;   // раз в 15 с — строка состояния в лог
 
     net::Config  g_cfg;
     net::Session g_session;
@@ -41,6 +43,8 @@ namespace
     struct EchoSample { uint64_t t; net::PlayerStatePacket s; };
     EchoSample g_echo[64];
     int        g_echoHead = 0;
+    uint64_t   g_echoNextSampleUs = 0;
+    uint64_t   g_nextStatusUs = 0;
     net::RemoteState g_echoRemote;
 
     void Log(bool error, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -145,7 +149,7 @@ namespace
             Log(false, "Игра удалила второго CJ, создам заново");
         }
 
-        if(!fresh) { DespawnRemote("нет данных от друга"); return; }
+        if(!fresh) { DespawnRemote(g_cfg.role == net::Role::Echo ? "эхо: нет данных" : "нет данных от друга"); return; }
 
         const net::PlayerStatePacket& s = rs.pkt;
         float   age    = (float)(now - rs.receivedUs) / 1e6f;
@@ -201,8 +205,14 @@ namespace
 
     const net::RemoteState& EchoUpdate(const net::PlayerStatePacket& local, uint64_t now)
     {
-        g_echo[g_echoHead] = { now, local };
-        g_echoHead = (g_echoHead + 1) % 64;
+        // Пишем с фиксированной частотой, а не каждый кадр: при 60+ FPS
+        // 64 кадра — меньше секунды, и задержанного сэмпла не находилось.
+        if(now >= g_echoNextSampleUs)
+        {
+            g_echo[g_echoHead] = { now, local };
+            g_echoHead = (g_echoHead + 1) % 64;
+            g_echoNextSampleUs = now + kEchoSampleUs;
+        }
 
         // Ищем самый свежий сэмпл старше kEchoDelayUs
         const EchoSample* best = nullptr;
@@ -232,6 +242,17 @@ namespace
         if(!local) return;
 
         net::PlayerStatePacket me = CaptureLocal(local);
+
+        if(now >= g_nextStatusUs)
+        {
+            g_nextStatusUs = now + kStatusLogUs;
+            if(g_remotePed)
+                Log(false, "Статус: второй CJ есть, %s, до него %.0f м, FPS ~%.0f",
+                    g_inWorld ? "в мире" : "далеко (только метка)",
+                    Dist2D(GetPosition(local), g_shownPos), dt > 0 ? 1.0f / dt : 0.0f);
+            else
+                Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
+        }
 
         if(g_cfg.role == net::Role::Echo)
         {
