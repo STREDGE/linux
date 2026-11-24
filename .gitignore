@@ -3,3 +3,5 @@
 *.so
 !third_party/**/*.so
 echo-test/
+/tools/preview/preview_menu
+*.ppm

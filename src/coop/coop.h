@@ -22,6 +22,19 @@ namespace coop
     // Короткая строка состояния для меню (латиница — шрифт меню без кириллицы).
     void StatusText(char* out, size_t len);
 
+    // Состояние для своего меню и интерфейса
+    struct Status
+    {
+        net::Role role;
+        bool      pending;        // режим выбран, применится при загрузке игры
+        bool      running;        // сокет открыт
+        bool      connected;      // от друга идут пакеты
+        int       pingMs;         // -1 — неизвестен (у хоста)
+        bool      remoteSpawned;  // второй CJ на карте
+        char      host[64];
+    };
+    Status GetStatus();
+
     // Что мод делал последним (для записи о вылете)
     const char* Where();
 }

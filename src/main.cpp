@@ -12,9 +12,10 @@
 #include "coop/coop.h"
 #include "settings.h"
 #include "ui/menu.h"
+#include "ui/overlay.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.3.0, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.4.0, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -47,6 +48,7 @@ ON_GAME_CRASH()
 }
 
 static bool g_installed = false;
+static bool g_overlayOk = false;
 
 ON_MOD_LOAD()
 {
@@ -85,7 +87,12 @@ ON_MOD_LOAD()
     }
 
     g_installed = coop::Install(hGTASA, &g_fileLog);
-    if(g_installed) coop::SetConfig(st.net);
+    if(g_installed)
+    {
+        coop::SetConfig(st.net);
+        g_overlayOk = overlay::Init(hGTASA, &g_fileLog);
+        g_fileLog.Info(g_overlayOk ? "Своё меню Co-op готово" : "Своё меню не запустилось — будет простая вкладка SAUtils");
+    }
 
     logger->Info("SA Coop: загрузка завершена");
 }
@@ -101,6 +108,14 @@ ON_ALL_MODS_LOAD()
         g_fileLog.Error("SAUtils не найден — вкладки Co-op в настройках не будет");
         return;
     }
-    menu::Init(sautils);
-    g_fileLog.Info("Вкладка Co-op добавлена в настройки игры");
+    if(g_overlayOk)
+    {
+        overlay::AttachSAUtils(sautils);
+        g_fileLog.Info("Кнопка CO-OP добавлена в главное меню и в паузу");
+    }
+    else
+    {
+        menu::Init(sautils);
+        g_fileLog.Info("Вкладка Co-op добавлена в настройки игры");
+    }
 }

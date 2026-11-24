@@ -546,6 +546,19 @@ net::Config GetConfig()
     return g_hasPending ? g_pendingCfg : g_cfg;
 }
 
+Status GetStatus()
+{
+    Status st{};
+    { std::lock_guard<std::mutex> lock(g_cfgMutex); st.pending = g_hasPending; }
+    st.role = g_cfg.role;
+    st.running = g_session.Running();
+    st.connected = g_session.Connected();
+    st.pingMs = g_session.LastRttMs();
+    st.remoteSpawned = g_remotePed != 0;
+    strncpy(st.host, g_cfg.hostAddress, sizeof(st.host) - 1);
+    return st;
+}
+
 void StatusText(char* out, size_t len)
 {
     bool pending;
