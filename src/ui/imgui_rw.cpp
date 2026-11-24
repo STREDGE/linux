@@ -32,16 +32,21 @@ namespace
         rwRENDERSTATEVERTEXALPHAENABLE = 12,
         rwRENDERSTATEFOGENABLE         = 14,
         rwRENDERSTATECULLMODE          = 20,
+        rwRENDERSTATEALPHATESTFUNCTION    = 29,
+        rwRENDERSTATEALPHATESTFUNCTIONREF = 30,
     };
+    enum { rwALPHATESTFUNCTIONGREATER = 5 };
     enum { rwPRIMTYPETRILIST = 3 };
     enum { rwFILTERLINEAR = 2, rwTEXTUREADDRESSCLAMP = 3, rwCULLMODECULLNONE = 1 };
     enum { rwBLENDSRCALPHA = 5, rwBLENDINVSRCALPHA = 6 };
-    enum { rwRASTERTYPETEXTURE = 0x04, rwRASTERFORMAT8888 = 0x0500, rwRASTERLOCKWRITE = 0x02 };
+    enum { rwRASTERTYPETEXTURE = 0x04 };
 
     void*    (*RwRasterCreate)(int w, int h, int depth, int flags) = nullptr;
-    uint8_t* (*RwRasterLock)(void* raster, unsigned char level, int lockMode) = nullptr;
-    void*    (*RwRasterUnlock)(void* raster) = nullptr;
-    void*    (*RwTextureCreate)(void* raster) = nullptr;
+    void*    (*RwImageCreate)(int w, int h, int depth) = nullptr;
+    void*    (*RwImageAllocatePixels)(void* image) = nullptr;
+    int      (*RwImageDestroy)(void* image) = nullptr;
+    void*    (*RwImageFindRasterFormat)(void* image, int type, int* w, int* h, int* depth, int* flags) = nullptr;
+    void*    (*RwRasterSetFromImage)(void* raster, void* image) = nullptr;
     int      (*RwRenderStateSet)(int state, void* value) = nullptr;
     int      (*RwRenderStateGet)(int state, void* value) = nullptr;
     int      (*RwIm2DRenderIndexedPrimitive)(int prim, RwOpenGLVertex* v, int nv, uint16_t* idx, int ni) = nullptr;
@@ -67,9 +72,11 @@ bool Init(void* h)
 {
     bool ok = true;
     ok &= Sym(h, (void**)&RwRasterCreate,   "_Z14RwRasterCreateiiii");
-    ok &= Sym(h, (void**)&RwRasterLock,     "_Z12RwRasterLockP8RwRasterhi");
-    ok &= Sym(h, (void**)&RwRasterUnlock,   "_Z14RwRasterUnlockP8RwRaster");
-    ok &= Sym(h, (void**)&RwTextureCreate,  "_Z15RwTextureCreateP8RwRaster");
+    ok &= Sym(h, (void**)&RwImageCreate,           "_Z13RwImageCreateiii");
+    ok &= Sym(h, (void**)&RwImageAllocatePixels,   "_Z21RwImageAllocatePixelsP7RwImage");
+    ok &= Sym(h, (void**)&RwImageDestroy,          "_Z14RwImageDestroyP7RwImage");
+    ok &= Sym(h, (void**)&RwImageFindRasterFormat, "_Z23RwImageFindRasterFormatP7RwImageiPiS1_S1_S1_");
+    ok &= Sym(h, (void**)&RwRasterSetFromImage,    "_Z20RwRasterSetFromImageP8RwRasterP7RwImage");
     ok &= Sym(h, (void**)&RwRenderStateSet, "_Z16RwRenderStateSet13RwRenderStatePv");
     ok &= Sym(h, (void**)&RwRenderStateGet, "_Z16RwRenderStateGet13RwRenderStatePv");
     ok &= Sym(h, (void**)&RwIm2DRenderIndexedPrimitive,
@@ -92,13 +99,26 @@ bool EnsureDeviceObjects()
     int w = 0, h = 0;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
 
-    g_fontRaster = RwRasterCreate(w, h, 32, rwRASTERTYPETEXTURE | rwRASTERFORMAT8888);
-    if(!g_fontRaster) { logger->Error("ImGui/RW: не создан растр %dx%d", w, h); return false; }
-    uint8_t* dst = RwRasterLock(g_fontRaster, 0, rwRASTERLOCKWRITE);
-    if(!dst) { logger->Error("ImGui/RW: растр не заблокирован"); return false; }
-    memcpy(dst, pixels, (size_t)w * h * 4);
-    RwRasterUnlock(g_fontRaster);
-    RwTextureCreate(g_fontRaster); // текстура держит растр; рисуем через растр напрямую
+    // Через RwImage: RenderWare сам переводит картинку в свой формат текстуры
+    // (прямая запись в RwRasterLock на Android дала мусор — другой формат).
+    // RwImage (arm64): +0x4 ширина, +0x8 высота, +0xC глубина, +0x10 шаг строки, +0x18 пиксели.
+    void* img = RwImageCreate(w, h, 32);
+    if(!img || !RwImageAllocatePixels(img)) { logger->Error("ImGui/RW: RwImage %dx%d не создан", w, h); return false; }
+    int stride = *(int*)((uint8_t*)img + 0x10);
+    uint8_t* dst = *(uint8_t**)((uint8_t*)img + 0x18);
+    for(int y = 0; y < h; ++y) memcpy(dst + (size_t)stride * y, pixels + (size_t)w * 4 * y, (size_t)w * 4);
+
+    int rw = 0, rh = 0, rd = 0, rf = 0;
+    RwImageFindRasterFormat(img, rwRASTERTYPETEXTURE, &rw, &rh, &rd, &rf);
+    g_fontRaster = RwRasterCreate(rw, rh, rd, rf);
+    if(!g_fontRaster || !RwRasterSetFromImage(g_fontRaster, img))
+    {
+        logger->Error("ImGui/RW: растр %dx%d (глубина %d, флаги 0x%X) не создан", rw, rh, rd, rf);
+        RwImageDestroy(img);
+        return false;
+    }
+    RwImageDestroy(img);
+    logger->Info("ImGui/RW: растр %dx%d глубина %d флаги 0x%X, шаг %d", rw, rh, rd, rf, stride);
 
     io.Fonts->SetTexID((ImTextureID)g_fontRaster);
     io.Fonts->ClearTexData();
@@ -125,7 +145,7 @@ void Render()
     const int saveIds[] = { rwRENDERSTATETEXTURERASTER, rwRENDERSTATEZTESTENABLE, rwRENDERSTATEZWRITEENABLE,
                             rwRENDERSTATETEXTUREFILTER, rwRENDERSTATESRCBLEND, rwRENDERSTATEDESTBLEND,
                             rwRENDERSTATEVERTEXALPHAENABLE, rwRENDERSTATEFOGENABLE, rwRENDERSTATECULLMODE,
-                            rwRENDERSTATETEXTUREADDRESS };
+                            rwRENDERSTATETEXTUREADDRESS, rwRENDERSTATEALPHATESTFUNCTION, rwRENDERSTATEALPHATESTFUNCTIONREF };
     void* saved[sizeof(saveIds) / sizeof(saveIds[0])] = {};
     for(size_t i = 0; i < sizeof(saveIds) / sizeof(saveIds[0]); ++i) RwRenderStateGet(saveIds[i], &saved[i]);
 
@@ -138,6 +158,9 @@ void Render()
     RwRenderStateSet(rwRENDERSTATECULLMODE,          (void*)rwCULLMODECULLNONE);
     RwRenderStateSet(rwRENDERSTATETEXTUREFILTER,     (void*)rwFILTERLINEAR);
     RwRenderStateSet(rwRENDERSTATETEXTUREADDRESS,    (void*)rwTEXTUREADDRESSCLAMP);
+    // Порог прозрачности: пропускать почти всё, иначе полупрозрачный фон и свечение пропадут
+    RwRenderStateSet(rwRENDERSTATEALPHATESTFUNCTION,    (void*)rwALPHATESTFUNCTIONGREATER);
+    RwRenderStateSet(rwRENDERSTATEALPHATESTFUNCTIONREF, (void*)0);
 
     const float z = *NearScreenZ, rhw = *RecipNearClip;
     for(int n = 0; n < dd->CmdListsCount; ++n)
