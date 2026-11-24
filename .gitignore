@@ -2,3 +2,4 @@
 /libs/
 *.so
 !third_party/**/*.so
+echo-test/

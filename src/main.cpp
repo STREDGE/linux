@@ -67,6 +67,9 @@ ON_MOD_LOAD()
     net.role = strcasecmp(role, "client") == 0 ? net::Role::Client
              : strcasecmp(role, "host")   == 0 ? net::Role::Host
                                                : net::Role::Echo;
+#ifdef SACOOP_FORCE_ECHO
+    net.role = net::Role::Echo; // тестовая сборка: настройки Role не нужны
+#endif
     cfg->Save();
 
     g_fileLog.Info("SA Coop %s, символов найдено %d из %d", modinfo->VersionString(), found, total);
