@@ -77,7 +77,20 @@ namespace
     // и выключаются, если он изменён.
     struct GamePoint { int32_t x, y, state; uint8_t rest[0x1C - 12]; };
     static_assert(sizeof(GamePoint) == 0x1C, "Points");
-    GamePoint* g_points = nullptr;
+    // Массив берём через ячейку GOT, как сама игра (AND_TouchEvent): мод Touch x4
+    // подменяет её на свой массив на 4 пальца, и тогда исходный Points не обновляется.
+    constexpr uintptr_t kPointsGot = 0x851D38;   // GOT-ячейка «Points» в libGTASA 2.10 arm64
+    GamePoint*  g_pointsOrig = nullptr;
+    GamePoint** g_pointsGot  = nullptr;
+    GamePoint*  g_points     = nullptr;          // текущий массив (обновляется каждый кадр)
+    int         g_pointsN    = 2;
+
+    void RefreshPoints()
+    {
+        GamePoint* p = g_pointsGot ? *g_pointsGot : nullptr;
+        g_points  = p ? p : g_pointsOrig;
+        g_pointsN = (g_points && g_points != g_pointsOrig) ? 4 : 2; // чужой массив — Touch x4, 4 пальца
+    }
 
     struct Pointer
     {
@@ -90,6 +103,7 @@ namespace
     void PollTouches()
     {
         g_ptr.pressed = g_ptr.released = false;
+        RefreshPoints();
         if(!g_points) return;
         if(g_ptr.down)
         {
@@ -98,7 +112,7 @@ namespace
             else { g_ptr.down = false; g_ptr.released = true; g_ptr.finger = -1; }
             return;
         }
-        for(int f = 0; f < 2; ++f)
+        for(int f = 0; f < g_pointsN; ++f)
         {
             const GamePoint& p = g_points[f];
             if(p.state == 2 && p.x >= 0)
@@ -112,8 +126,10 @@ namespace
 
     bool AnyFingerDown()
     {
+        RefreshPoints();
         if(!g_points) return false;
-        return g_points[0].state == 2 || g_points[1].state == 2;
+        for(int f = 0; f < g_pointsN; ++f) if(g_points[f].state == 2) return true;
+        return false;
     }
 
     bool In(const ImVec2& p, const ImVec2& a, const ImVec2& b) { return p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y; }
@@ -794,8 +810,17 @@ bool Init(void* h, FLogger* log)
 
     void* render = (void*)aml->GetSym(h, "_ZN10MobileMenu6RenderEv");
     void* update = (void*)aml->GetSym(h, "_ZN10MobileMenu6UpdateEv");
-    g_points = (GamePoint*)aml->GetSym(h, "Points");
-    if(!render || !update || !g_points) { logger->Error("Меню: нет MobileMenu::Render/Update или Points"); return false; }
+    g_pointsOrig = (GamePoint*)aml->GetSym(h, "Points");
+    uintptr_t base = aml->GetLib("libGTASA.so");
+    if(base && g_pointsOrig)
+    {
+        GamePoint** got = (GamePoint**)(base + kPointsGot);
+        // Проверяем, что это та самая ячейка: в ней либо исходный Points, либо чужой массив (Touch x4)
+        if(*got == g_pointsOrig || (*got && (uintptr_t)*got != base)) g_pointsGot = got;
+        if(g_log) g_log->Info(*got == g_pointsOrig ? "Касания: массив игры Points (2 пальца)"
+                                                   : "Касания: массив подменён другим модом (Touch x4?) — читаю его");
+    }
+    if(!render || !update || !g_pointsOrig) { logger->Error("Меню: нет MobileMenu::Render/Update или Points"); return false; }
     aml->Hook(render, (void*)HookOf_MobileMenuRender, (void**)&MobileMenuRender);
     aml->Hook(update, (void*)HookOf_MobileMenuUpdate, (void**)&MobileMenuUpdate);
     logger->Info("Меню Co-op: перехваты стоят");

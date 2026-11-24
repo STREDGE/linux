@@ -7,6 +7,7 @@ struct IAML
 {
     uintptr_t GetSym(void*, const char* n);
     bool Hook(void*, void*, void**) { return true; }
+    uintptr_t GetLib(const char*) { return 0; }
 };
 extern IAML* aml;
 #define DECL_HOOK(_ret, _name, ...) _ret (*_name)(__VA_ARGS__); _ret HookOf_##_name(__VA_ARGS__)
