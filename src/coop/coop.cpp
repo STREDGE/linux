@@ -238,8 +238,15 @@ namespace
         if(dt > 0.25f) dt = 0.25f;
         g_lastFrameUs = now;
 
+        static bool firstFrame = true;
+        if(firstFrame) { firstFrame = false; Log(false, "Первый игровой кадр — перехват CGame::Process работает"); }
+
         uintptr_t local = SlotPed(0);
-        if(!local) return;
+        if(!local)
+        {
+            if(now >= g_nextStatusUs) { g_nextStatusUs = now + kStatusLogUs; Log(false, "Статус: игрок ещё не загружен"); }
+            return;
+        }
 
         net::PlayerStatePacket me = CaptureLocal(local);
 
