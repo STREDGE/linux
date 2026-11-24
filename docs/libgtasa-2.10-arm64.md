@@ -24,3 +24,29 @@ SHA-256: `92b3714534742cf8e31eba35dbfd5e83871ecb5b936f5519d9b6ef3562234f9e` (р�
 | `CTheScripts::Process()` | `00000000003f3ad8` |
 | `CRunningScript::ProcessOneCommand()` | `00000000003f445c` |
 | `CGame::Process()` | `00000000004d62d4` |
+
+## Смещения полей (arm64)
+
+| Поле | Смещение | Как найдено |
+|---|---|---|
+| `sizeof(CPlayerInfo)` | `0x1D8` | `FindPlayerPed`, `SetupPlayerPed` |
+| `CPlaceable::m_placement.pos` / `.heading` | `0x08` / `0x14` | `FindPlayerCoors`, `CalculateNewOrientation` |
+| `CPlaceable::m_matrix` | `0x18` | `FindPlayerCoors` |
+| `CMatrix::forward` / `pos` | `0x10` / `0x30` | `CMatrix::SetRotateZOnly`, `FindPlayerCoors` |
+| `CPhysical::m_vecMoveSpeed` / `m_vecTurnSpeed` | `0x68` / `0x74` | `CPed::Teleport` |
+| `CPed` флаг «в машине» | `0x585` бит 0 | `FindPlayerCoors` |
+| `CPed::m_nPedState` | `0x54C` | `CPed::IsAlive` |
+| `CPed::m_fHealth` | `0x6AC` | `CPlayerInfo::AddHealth` |
+| `CPed::m_fCurrentRotation` / `m_fAimingRotation` | `0x6C4` / `0x6C8` | `CalculateNewOrientation` (+0x16C к ПК) |
+| `CPed::m_pVehicle` | `0x708` | `FindPlayerCoors` |
+| `CPed::m_nPedType` | `0x720` | `SetupPlayerPed`, `GetPadFromPlayer` |
+| `sizeof(CPad)` / `DisablePlayerControls` | `0x158` / `0x110` | `GetPad`, `GetPedWalkUpDown` |
+
+## Режим на двоих (PS2) — где игра смотрит на `Players[1]`
+
+`CGameLogic::Update` (поводок, общая смерть), `CCamera::CamControl` (общая камера),
+`CPickups::Update`, `CDarkel::Update`, `IsCoopGameGoingOn`, `IsPlayerUse2PlayerControls`.
+Мод на время этих функций убирает второго CJ из слота, а две последние возвращают false.
+
+Джойстик на экране (`CTouchInterface`) читается для **любого** `CPad`, поэтому у второго CJ
+выставляется `DisablePlayerControls`, иначе он повторял бы касания.

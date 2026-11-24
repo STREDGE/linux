@@ -1,5 +1,5 @@
 // SA Coop — кооператив для GTA San Andreas Android 2.10 (arm64) через AML.
-// Этап 0.5: диагностика + проверка связи. Проверяет, что мод загружается,
+// Этап 1: второй CJ на карте (позиция, поворот, метка на радаре). Проверяет, что мод загружается,
 // находит libGTASA.so и нужные символы игры, создаёт конфиг.
 
 #include <mod/amlmod.h>
@@ -9,9 +9,9 @@
 
 #include <string.h>
 
-#include "net/nettest.h"
+#include "coop/coop.h"
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.0.2, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.1.0, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -59,16 +59,18 @@ ON_MOD_LOAD()
     bool enabled = cfg->GetBool("Enabled", true, "General");
     cfg->GetBool("FriendlyFire", false, "General");
 
-    net::TestConfig net{};
+    net::Config net{};
     char role[16];
-    cfg->GetString(role, sizeof(role), "Role", "host", "Network");          // host | client
+    cfg->GetString(role, sizeof(role), "Role", "echo", "Network");          // host | client | echo
     cfg->GetString(net.hostAddress, sizeof(net.hostAddress), "HostAddress", "100.64.0.1", "Network");
     net.port = (uint16_t)cfg->GetInt("Port", 7777, "Network");
-    net.role = (strcasecmp(role, "client") == 0) ? net::Role::Client : net::Role::Host;
+    net.role = strcasecmp(role, "client") == 0 ? net::Role::Client
+             : strcasecmp(role, "host")   == 0 ? net::Role::Host
+                                               : net::Role::Echo;
     cfg->Save();
 
     g_fileLog.Info("SA Coop %s, символов найдено %d из %d", modinfo->VersionString(), found, total);
-    g_fileLog.Info("Роль: %s, адрес хоста: %s, порт: %u", net.role == net::Role::Host ? "хост" : "клиент",
+    g_fileLog.Info("Роль: %s, адрес хоста: %s, порт: %u", net.role == net::Role::Host ? "хост" : net.role == net::Role::Client ? "клиент" : "эхо (проверка в одиночку)",
                    net.hostAddress, (unsigned)net.port);
 
     if(!enabled)
@@ -78,8 +80,7 @@ ON_MOD_LOAD()
         return;
     }
 
-    // Этап 0.5: проверка связи между телефонами
-    net::StartConnectionTest(net, &g_fileLog);
+    coop::Install(hGTASA, net, &g_fileLog);
 
-    logger->Info("SA Coop: загружен, тест связи запущен");
+    logger->Info("SA Coop: загрузка завершена");
 }
