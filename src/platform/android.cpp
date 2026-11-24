@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 namespace platform
 {
@@ -183,6 +184,39 @@ int HasPermission(const char* permission)
     }
     env->DeleteLocalRef(ctxCls);
     return result;
+}
+
+bool RequestPermission(const char* permission)
+{
+    // Текущий экран игры берём у AML напрямую по имени функции (не через таблицу
+    // виртуальных методов — так не зависим от того, какая версия AML стоит).
+    typedef jobject (*GetActivityFn)(void* self);
+    static GetActivityFn getActivity = (GetActivityFn)dlsym(RTLD_DEFAULT, "_ZN3AML18GetCurrentActivityEv");
+    if(!getActivity) { logger->Error("Нет AML::GetCurrentActivity — запросить разрешение нельзя"); return false; }
+
+    JniScope j;
+    if(!j.env) return false;
+    JNIEnv* env = j.env;
+    jobject activity = getActivity(aml);
+    if(!activity) { logger->Error("AML не отдал Activity"); return false; }
+
+    bool ok = false;
+    jclass actCls = env->GetObjectClass(activity);
+    jmethodID req = env->GetMethodID(actCls, "requestPermissions", "([Ljava/lang/String;I)V");
+    if(!j.Failed() && req)
+    {
+        jclass strCls = env->FindClass("java/lang/String");
+        jobjectArray arr = env->NewObjectArray(1, strCls, nullptr);
+        jstring name = env->NewStringUTF(permission);
+        env->SetObjectArrayElement(arr, 0, name);
+        env->CallVoidMethod(activity, req, arr, (jint)4242);
+        ok = !j.Failed();
+        env->DeleteLocalRef(name);
+        env->DeleteLocalRef(arr);
+        env->DeleteLocalRef(strCls);
+    }
+    env->DeleteLocalRef(actCls);
+    return ok;
 }
 
 bool DeviceModel(char* out, size_t len)

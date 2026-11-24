@@ -15,6 +15,9 @@ namespace platform
     // Выдано ли приложению разрешение (Context.checkSelfPermission). -1 — не удалось узнать.
     int HasPermission(const char* permission);
 
+    // Показать системный запрос разрешения (Activity.requestPermissions). false — не удалось.
+    bool RequestPermission(const char* permission);
+
     // Модель телефона (android.os.Build.MODEL) — ник по умолчанию. false — не удалось.
     bool DeviceModel(char* out, size_t len);
 

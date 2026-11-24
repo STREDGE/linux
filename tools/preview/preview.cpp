@@ -61,6 +61,7 @@ namespace platform {
     bool ExtractIPv4(const char*, char* o, size_t l) { snprintf(o, l, "100.87.12.40"); return true; }
     bool DeviceModel(char* o, size_t l) { snprintf(o, l, "SM-X710"); return true; }
     int HasPermission(const char*) { return 1; }
+    bool RequestPermission(const char*) { return true; }
 }
 
 // ---- программный растеризатор вместо RenderWare ----

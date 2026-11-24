@@ -1031,6 +1031,7 @@ namespace
     bool   g_micHeld = false;
     double g_micSince = 0;
     bool   g_micHintShown = false;
+    bool   g_micAsked = false;          // системный запрос уже показывали в этом запуске
     Box DrawMic(const coop::Team& t, ImVec2 c, bool interactive)
     {
         float r = U(7.2f);
@@ -1042,13 +1043,32 @@ namespace
         {
             g_micHeld = held; g_micSince = g_now;
             coop::SetTalking(held);
-            if(held && !g_micHintShown)
+            if(held)
             {
-                g_micHintShown = true;
+                // Разрешение на микрофон: нет — показываем системный запрос (один раз за запуск),
+                // отказали — подсказываем, где включить вручную.
                 int mic = platform::HasPermission("android.permission.RECORD_AUDIO");
-                if(mic == 1)      Feed(kGrove, "Микрофон разрешён — звук появится в следующей версии");
-                else if(mic == 0) Feed(kRed,   "Нет разрешения на микрофон: Настройки → Приложения → GTA SA → Разрешения");
-                else              Feed(kGold,  "Не удалось проверить разрешение на микрофон");
+                if(mic == 0)
+                {
+                    if(!g_micAsked)
+                    {
+                        g_micAsked = true;
+                        if(platform::RequestPermission("android.permission.RECORD_AUDIO"))
+                            Feed(kGold, "Разреши доступ к микрофону в окне Android");
+                        else
+                            Feed(kRed, "Нет разрешения на микрофон: Настройки > Приложения > GTA SA > Разрешения");
+                    }
+                    else if(!g_micHintShown)
+                    {
+                        g_micHintShown = true;
+                        Feed(kRed, "Микрофон запрещён. Включи: Настройки > Приложения > GTA SA > Разрешения");
+                    }
+                }
+                else if(mic == 1 && !g_micHintShown)
+                {
+                    g_micHintShown = true;
+                    Feed(kGrove, "Микрофон разрешён — звук появится в следующей версии");
+                }
             }
         }
         float tt = (float)(g_now - g_micSince);
