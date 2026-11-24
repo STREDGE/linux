@@ -5,3 +5,4 @@
 echo-test/
 /tools/preview/preview_menu
 *.ppm
+!release/*.so
