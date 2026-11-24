@@ -49,6 +49,9 @@ namespace
     float     g_shownHeading = 0.0f;
     uint64_t  g_lastFrameUs = 0;
     uint8_t*  g_userPause = nullptr;   // CTimer::m_UserPause
+    uint8_t*  g_cutsceneRunning = nullptr; // CCutsceneMgr::ms_running
+    uint64_t  g_localSinceUs = 0;          // с какого момента игрок в игре (без заставки)
+    constexpr uint64_t kSpawnDelayUs = 3000000; // 3 с
     bool      g_localTalking = false;  // кнопка микрофона зажата
     bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
     std::vector<net::Event> g_echoEvents;
@@ -214,6 +217,12 @@ namespace
         CheckRemoteAlive();
 
         if(!fresh) { DespawnRemote(g_cfg.role == net::Role::Echo ? "эхо: нет данных" : "нет данных от друга"); return; }
+
+        // Во время заставки второго CJ нет (заставка сама расставляет персонажей)
+        if(g_cutsceneRunning && *g_cutsceneRunning) { DespawnRemote("заставка"); return; }
+        // Не создавать сразу после загрузки/новой игры: модель CJ ещё собирается,
+        // и копия получилась бы невидимой. Ждём, пока игрок пробудет в игре пару секунд.
+        if(!g_remotePed && now - g_localSinceUs < kSpawnDelayUs) return;
 
         const net::PlayerStatePacket& s = rs.pkt;
         float   age    = (float)(now - rs.receivedUs) / 1e6f;
@@ -395,6 +404,8 @@ namespace
         if(firstFrame) { firstFrame = false; Log(false, "Первый игровой кадр — перехват CGame::Process работает"); }
 
         uintptr_t local = SlotPed(0);
+        bool canSpawnNow = local && Field<uintptr_t>(local, off::EntRwObject) && !(g_cutsceneRunning && *g_cutsceneRunning);
+        if(!canSpawnNow || g_localSinceUs == 0) g_localSinceUs = now;   // отсчёт «игрок в игре» начинается заново
         if(!local)
         {
             if(now >= g_nextStatusUs) { g_nextStatusUs = now + kStatusLogUs; Log(false, "Статус: игрок ещё не загружен"); }
@@ -506,8 +517,8 @@ DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот �
 
 // Перед сохранением/загрузкой/рестартом второго CJ убираем,
 // чтобы он не попал в сохранение и не остался висящим указателем.
-DECL_HOOK(bool, GenericLoad, bool& ok)      { DespawnRemote("загрузка игры");   return GenericLoad(ok); }
-DECL_HOOKv(ShutDownForRestart)              { DespawnRemote("рестарт игры");    ShutDownForRestart(); }
+DECL_HOOK(bool, GenericLoad, bool& ok)      { g_localSinceUs = 0; DespawnRemote("загрузка игры");   return GenericLoad(ok); }
+DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote("рестарт игры");    ShutDownForRestart(); }
 
 const char* Where() { return g_where; }
 
@@ -516,6 +527,7 @@ bool Install(void* h, FLogger* log)
     g_log = log;
 
     g_userPause = (uint8_t*)aml->GetSym(h, "_ZN6CTimer11m_UserPauseE");
+    g_cutsceneRunning = (uint8_t*)aml->GetSym(h, "_ZN12CCutsceneMgr10ms_runningE");
     if(!gta::Init(h, 0))
     {
         Log(true, "Не все функции игры найдены — кооп выключен");

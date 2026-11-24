@@ -611,16 +611,7 @@ namespace
             DL()->AddLine(ImVec2(cc.x - xs, cc.y + xs), ImVec2(cc.x + xs, cc.y - xs), C(kInk), U(0.5f));
             if(Clicked(ca, cb)) Close();
 
-            float pillLeft = StatusPill(ImVec2(ca.x - U(2), cc.y - U(3.2f)), U(6.4f));
-            const char* el = "Экран";
-            float ew = ChipWidth(el);
-            bool editClick = false;
-            Chip(ImVec2(pillLeft - U(1.6f) - ew, cc.y - U(3.2f)), ImVec2(pillLeft - U(1.6f), cc.y + U(3.2f)), el, &editClick);
-            if(editClick)
-            {
-                if(coop::GameLoaded()) { g_editRequested = true; g_resumeGame = true; Close(); }
-                else Toast("Сначала загрузи игру, потом открой CO-OP из паузы");
-            }
+            StatusPill(ImVec2(ca.x - U(2), cc.y - U(3.2f)), U(6.4f));
         }
 
         // --- режимы слева ---
@@ -1281,11 +1272,15 @@ namespace
         g_alpha = 1.0f;
         if(!g_layoutLoaded) { g_layout = settings::LoadLayout(); g_layoutLoaded = true; }
         coop::Team team = coop::GetTeam();
+        if(g_editRequested) { g_editRequested = false; EnterEdit(); }
         if(!fromMenu)
         {
-            if(g_editRequested) { g_editRequested = false; EnterEdit(); }
             if(g_edit) DrawEditor(team);
             else       DrawHudItems(team, g_layout, false);
+        }
+        else if(g_edit)
+        {   // редактор открыт из Настройки > Управление — прямо поверх меню игры
+            DrawEditor(team);
         }
         else
         {   // поверх меню игры — только уведомления (по раскладке)
@@ -1340,7 +1335,7 @@ DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
         return;
     }
     char rn[net::kNickLen]; float rl;
-    if(g_open || coop::PendingRequest(rn, sizeof(rn), &rl)) { g_blockGameMenuUntil = now + 0.3; return; }
+    if(g_open || g_edit || coop::PendingRequest(rn, sizeof(rn), &rl)) { g_blockGameMenuUntil = now + 0.3; return; }
     if(now < g_blockGameMenuUntil || (g_blockGameMenuUntil > 0 && AnyFingerDown()))
     {
         if(AnyFingerDown()) g_blockGameMenuUntil = now + 0.15;
@@ -1353,6 +1348,8 @@ DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
 // ---------- открытие ----------
 
 static void OnCoopButton(void*) { Open(); }
+// Настройки > Управление > «CO-OP buttons»: редактор расположения прямо поверх меню
+static void OnLayoutButton(uintptr_t) { if(!g_edit) g_editRequested = true; }
 
 void Open()
 {
@@ -1417,6 +1414,7 @@ void AttachSAUtils(ISAUtils* sau)
 {
     sau->AddSettingsTabButton("CO-OP", OnCoopButton, STB_MainMenu, "menu_mainsettings", nullptr);
     sau->AddSettingsTabButton("CO-OP", OnCoopButton, STB_Pause,    "menu_mainsettings", nullptr);
+    sau->AddButton(SetType_Controller, "CO-OP buttons", OnLayoutButton);
     logger->Info("Кнопки CO-OP добавлены в главное меню и паузу");
 }
 
