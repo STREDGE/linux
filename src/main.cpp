@@ -10,6 +10,8 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <stdio.h>
+#include <unistd.h>
 
 #include "coop/coop.h"
 #include "settings.h"
@@ -18,7 +20,7 @@
 #include "ui/overlay.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.5.5, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.5.6, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -53,8 +55,22 @@ ON_GAME_CRASH()
 static bool g_installed = false;
 static bool g_overlayOk = false;
 
+// Прошлый лог не стираем: переименовываем в sacoop_prev.txt (там будет запись о вылете,
+// если игра упала в прошлый раз).
+static void KeepPreviousLog()
+{
+    const char* root = aml->GetInternalPath();
+    if(!root || !root[0]) return;
+    char dir[512], cur[600], prev[600];
+    snprintf(dir, sizeof(dir), "%s/Documents/AMLModLogs/%s", root, modinfo->GUID());
+    snprintf(cur, sizeof(cur), "%s/sacoop.txt", dir);
+    snprintf(prev, sizeof(prev), "%s/sacoop_prev.txt", dir);
+    if(access(cur, F_OK) == 0) { remove(prev); rename(cur, prev); }
+}
+
 ON_MOD_LOAD()
 {
+    KeepPreviousLog();
     logger->SetTag("SACoop");
     logger->Info("SA Coop %s загружается", modinfo->VersionString());
 

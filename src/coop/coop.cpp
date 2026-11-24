@@ -501,7 +501,10 @@ DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот �
 
 // Перед сохранением/загрузкой/рестартом второго CJ убираем,
 // чтобы он не попал в сохранение и не остался висящим указателем.
-DECL_HOOK(bool, GenericSave, int slot)      { DespawnRemote("сохранение игры"); return GenericSave(slot); }
+// Сохранение (в том числе автосохранение при сворачивании игры — оно может идти
+// не в игровом потоке): второго CJ не удаляем, а только прячем из слота игрока 2,
+// чтобы он не попал в сейв. Удаление персонажа из чужого потока роняло игру.
+DECL_HOOK(bool, GenericSave, int slot)      { HideRemoteSlot h; return GenericSave(slot); }
 DECL_HOOK(bool, GenericLoad, bool& ok)      { DespawnRemote("загрузка игры");   return GenericLoad(ok); }
 DECL_HOOKv(ShutDownForRestart)              { DespawnRemote("рестарт игры");    ShutDownForRestart(); }
 
