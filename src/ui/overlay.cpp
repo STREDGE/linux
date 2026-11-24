@@ -1353,7 +1353,7 @@ DECL_HOOKv(AdjustableHudDraw, uintptr_t self)
     g_inAdjDraw = false;
 }
 
-// Кнопки самого экрана: self+0x64 — нажатая (2 сохранить, 3 отмена, 4 по умолчанию),
+// Кнопки самого экрана: self+0x64 — нажатая (2 сохранить, 3 отмена),
 // после обработки становится -1; self+0x52E == 1 — экран закрывается (так же делает helibrain).
 DECL_HOOKv(AdjustableHudUpdate, uintptr_t self)
 {
@@ -1365,8 +1365,9 @@ DECL_HOOKv(AdjustableHudUpdate, uintptr_t self)
     if(before >= 2 && before <= 4 && after == -1)
     {
         bool closing = *(uint8_t*)(self + 0x52E) == 1;
-        if(before == 4)                 { g_editLayout = settings::DefaultLayout(); if(g_log) g_log->Info("Настройка сенсоров: по умолчанию — кнопки CO-OP тоже"); }
-        else if(before == 2 && closing) { g_layout = g_editLayout; settings::SaveLayout(g_layout); if(g_log) g_log->Info("Настройка сенсоров: сохранено — кнопки CO-OP тоже"); }
+        // Значение 4 приходит не только от «По умолчанию», но и при перетаскивании кнопок
+        // игры — по нему наши элементы сбрасывались на каждом движении. Его не трогаем.
+        if(before == 2 && closing) { g_layout = g_editLayout; settings::SaveLayout(g_layout); if(g_log) g_log->Info("Настройка сенсоров: сохранено — кнопки CO-OP тоже"); }
         else if(before == 3 && closing) { g_editLayout = g_layout; if(g_log) g_log->Info("Настройка сенсоров: отмена — кнопки CO-OP на прежних местах"); }
         if(closing) g_adjSeenAt = -10;
     }
