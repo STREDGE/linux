@@ -32,13 +32,26 @@
    на части телефонов.
 3. Если игра из APK их читать не умеет — не вшивай; напиши, куда класть OBB руками.
 
-## 3. Папка `SA/cleo` в корне памяти (рядом с Download, Documents, Android)
+## 3. Папка `SA/cleo` в корне памяти — должна создавать сама игра
 
-CLEO у меня уже читает скрипты из `/storage/emulated/0/SA/cleo` — так и оставить, ничего не переносить.
-Папку `SA/cleo` создаёт мод SA Coop при запуске игры, если её нет. От тебя:
-- не ломать эту настройку CLEO при пересборке APK;
-- проверить, что в манифесте есть `MANAGE_EXTERNAL_STORAGE`, и напомнить мне после установки включить
-  «Доступ ко всем файлам» (без него ни CLEO, ни мод не увидят корень памяти).
+CLEO у меня читает скрипты из `/storage/emulated/0/SA/cleo`. Сейчас эти две папки (`SA` и внутри `cleo`)
+приходится создавать руками. Нужно, чтобы их создавала **сама игра** при каждом запуске, если их нет
+(мод SA Coop тоже их создаёт, но это запасной вариант — игра должна делать это без модов).
+
+1. Найди в smali точку старта: `onCreate` главной Activity (по `AndroidManifest.xml`, intent-filter MAIN/LAUNCHER)
+   или Java-часть AML, если она есть и вызывается при старте.
+2. Добавь в начало `onCreate` (после вызова `super.onCreate`) эквивалент:
+   ```java
+   java.io.File d = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "SA/cleo");
+   if (!d.exists()) d.mkdirs();
+   ```
+   Без исключений наружу (обернуть в try/catch), чтобы при отказе в доступе игра не падала.
+3. Доступ: на Android 11+ без «Доступа ко всем файлам» папку в корне создать нельзя. Если доступа нет
+   (`Environment.isExternalStorageManager()` == false, только на API 30+), один раз при запуске открой экран
+   разрешения: `Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))`.
+   На Android 10 и ниже — обычное разрешение на запись (`WRITE_EXTERNAL_STORAGE`, оно в манифесте есть).
+   Проверь, что `MANAGE_EXTERNAL_STORAGE` в манифесте есть.
+4. Не ломай текущую настройку CLEO (путь `SA/cleo`). Покажи мне изменённый smali-кусок до сборки.
 
 ## 4. Моды сразу в комплекте (AML + SA Coop + SAUtils)
 
