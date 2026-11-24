@@ -573,11 +573,22 @@ void KeepWorldRunningInMenu()
     bool pending;
     { std::lock_guard<std::mutex> lock(g_cfgMutex); pending = g_hasPending; }
     bool coopActive = !pending && (g_cfg.role == net::Role::Host || g_cfg.role == net::Role::Client);
-    if(coopActive && SlotPed(0) && *g_userPause)
+    static bool weUnpaused = false;   // это мы сняли паузу, пока открыто меню
+    if(coopActive && SlotPed(0))
     {
-        *g_userPause = 0;
-        static bool logged = false;
-        if(!logged) { logged = true; Log(false, "Кооп: меню открыто, но игра не на паузе — мир и связь работают"); }
+        if(*g_userPause)
+        {
+            *g_userPause = 0;
+            static bool logged = false;
+            if(!logged) { logged = true; Log(false, "Кооп: меню открыто, но игра не на паузе — мир и связь работают"); }
+        }
+        weUnpaused = true;
+    }
+    else if(weUnpaused)
+    {   // кооп выключили прямо в меню — вернуть обычную паузу сразу
+        *g_userPause = 1;
+        weUnpaused = false;
+        Log(false, "Кооп выключен: меню снова ставит игру на паузу");
     }
 }
 

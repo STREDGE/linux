@@ -158,6 +158,8 @@ namespace
 
     // ---------- состояние меню ----------
     bool      g_editRequested = false;  // открыть редактор раскладки при возврате в игру
+    bool      g_resumeGame = false;     // закрыть меню паузы (как «Продолжить») в ближайшем обновлении меню
+    void      (*Menu_SwitchOffToGame)() = nullptr;
     FLogger*  g_log = nullptr;
     bool      g_open = false, g_closing = false;
     double    g_openedAt = 0, g_closeAt = 0;
@@ -616,7 +618,7 @@ namespace
             Chip(ImVec2(pillLeft - U(1.6f) - ew, cc.y - U(3.2f)), ImVec2(pillLeft - U(1.6f), cc.y + U(3.2f)), el, &editClick);
             if(editClick)
             {
-                if(coop::GameLoaded()) { g_editRequested = true; Close(); Toast("Вернись в игру — откроется настройка экрана"); }
+                if(coop::GameLoaded()) { g_editRequested = true; g_resumeGame = true; Close(); }
                 else Toast("Сначала загрузи игру, потом открой CO-OP из паузы");
             }
         }
@@ -1283,6 +1285,14 @@ DECL_HOOKv(MobileMenuRender, uintptr_t self)
     Frame(true);                      // меню CO-OP (если открыто) + запросы и уведомления
 }
 
+// Пока открыт редактор раскладки, камера не обновляется: иначе пальцы,
+// которые двигают элементы, заодно крутили бы камеру.
+DECL_HOOKv(CameraProcess, uintptr_t self)
+{
+    if(g_edit) return;
+    CameraProcess(self);
+}
+
 // Слой поверх игры: панель «Команда», кнопка микрофона, запросы, уведомления
 DECL_HOOKv(Render2dStuff)
 {
@@ -1301,6 +1311,12 @@ static double g_blockGameMenuUntil = 0;
 DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
 {
     double now = NowSec();
+    if(g_resumeGame && !g_open && Menu_SwitchOffToGame)
+    {   // «Экран»: сразу в игру, там откроется редактор
+        g_resumeGame = false;
+        Menu_SwitchOffToGame();
+        return;
+    }
     char rn[net::kNickLen]; float rl;
     if(g_open || coop::PendingRequest(rn, sizeof(rn), &rl)) { g_blockGameMenuUntil = now + 0.3; return; }
     if(now < g_blockGameMenuUntil || (g_blockGameMenuUntil > 0 && AnyFingerDown()))
@@ -1365,6 +1381,9 @@ bool Init(void* h, FLogger* log)
     if(!render || !update || !g_pointsOrig) { logger->Error("Меню: нет MobileMenu::Render/Update или Points"); return false; }
     aml->Hook(render, (void*)HookOf_MobileMenuRender, (void**)&MobileMenuRender);
     aml->Hook(update, (void*)HookOf_MobileMenuUpdate, (void**)&MobileMenuUpdate);
+    Menu_SwitchOffToGame = (void(*)())aml->GetSym(h, "_Z20Menu_SwitchOffToGamev");
+    void* camProcess = (void*)aml->GetSym(h, "_ZN7CCamera7ProcessEv");
+    if(camProcess) aml->Hook(camProcess, (void*)HookOf_CameraProcess, (void**)&CameraProcess);
     void* r2d = (void*)aml->GetSym(h, "_Z13Render2dStuffv");
     if(r2d) aml->Hook(r2d, (void*)HookOf_Render2dStuff, (void**)&Render2dStuff);
     else logger->Error("Меню: нет Render2dStuff — панели поверх игры не будет");
