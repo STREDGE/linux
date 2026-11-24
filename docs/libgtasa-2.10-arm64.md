@@ -50,3 +50,11 @@ SHA-256: `92b3714534742cf8e31eba35dbfd5e83871ecb5b936f5519d9b6ef3562234f9e` (р�
 
 Джойстик на экране (`CTouchInterface`) читается для **любого** `CPad`, поэтому у второго CJ
 выставляется `DisablePlayerControls`, иначе он повторял бы касания.
+
+## Найденные ловушки
+
+- **Выход из интерьера удаляет второго CJ.** `CEntryExit::TransitionFinished` вызывает
+  `CPopulation::RemoveAllRandomPeds`, а та удаляет любого персонажа, для которого
+  `CPed::CanBeDeleted()` == true. Эта проверка не смотрит, игрок ли это, — только
+  «в машине», «в банде игрока» и `m_nCreatedBy` (`0x548`). Поэтому после создания
+  второго CJ мод вызывает `CPed::SetCharCreatedBy(2)` (как скриптовая `CREATE_PLAYER`).

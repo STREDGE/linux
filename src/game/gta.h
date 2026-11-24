@@ -25,6 +25,7 @@ namespace gta
         constexpr uintptr_t PhysTurnSpeed    = 0x74;  // CPhysical::m_vecTurnSpeed
 
         constexpr uintptr_t PedFlags585      = 0x585; // бит 0 = bInVehicle
+        constexpr uintptr_t PedCreatedBy     = 0x548; // uint8: 1 = игра (можно удалить), 2 = миссия
         constexpr uintptr_t PedState         = 0x54C; // ePedState
         constexpr uintptr_t PedHealth        = 0x6AC; // float
         constexpr uintptr_t PedRotCurrent    = 0x6C4; // m_fCurrentRotation
@@ -56,6 +57,7 @@ namespace gta
     extern void      (*ChangeBlipScale)(int blip, int scale);
     extern void      (*ClearBlip)(int blip);
     extern bool      (*PedIsAlive)(uintptr_t ped);
+    extern void      (*PedSetCharCreatedBy)(uintptr_t ped, uint8_t createdBy); // 2 = персонаж миссии
 
     extern uintptr_t Players;      // CWorld::Players (массив CPlayerInfo)
 

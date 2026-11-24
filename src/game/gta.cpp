@@ -23,6 +23,7 @@ namespace gta
     void      (*ChangeBlipScale)(int, int)                            = nullptr;
     void      (*ClearBlip)(int)                                       = nullptr;
     bool      (*PedIsAlive)(uintptr_t)                                = nullptr;
+    void      (*PedSetCharCreatedBy)(uintptr_t, uint8_t)              = nullptr;
 
     uintptr_t Players = 0;
 
@@ -55,6 +56,7 @@ namespace gta
         ok &= Resolve(h, (void**)&ChangeBlipScale,      "_ZN6CRadar15ChangeBlipScaleEii");
         ok &= Resolve(h, (void**)&ClearBlip,            "_ZN6CRadar9ClearBlipEi");
         ok &= Resolve(h, (void**)&PedIsAlive,           "_ZNK4CPed7IsAliveEv");
+        ok &= Resolve(h, (void**)&PedSetCharCreatedBy,  "_ZN4CPed16SetCharCreatedByEh");
         ok &= Resolve(h, (void**)&Players,              "_ZN6CWorld7PlayersE");
         return ok;
     }

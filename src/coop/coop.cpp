@@ -107,6 +107,10 @@ namespace
             Log(true, "SetupPlayerPed(1) не создал персонажа");
             return false;
         }
+        // Как скриптовая команда CREATE_PLAYER: помечаем персонажем миссии.
+        // Иначе игра считает его случайным прохожим и удаляет при очистке
+        // (CPopulation::RemoveAllRandomPeds — например, при выходе из интерьера).
+        PedSetCharCreatedBy(g_remotePed, 2);
         g_remoteRef    = GetPedRef(g_remotePed);
         g_inWorld      = true;
         g_shownPos     = pos;
