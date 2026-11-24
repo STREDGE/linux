@@ -10,7 +10,8 @@
 | 0 | Диагностический мод: загрузка, поиск функций игры, конфиг | ✅ готов к тесту |
 | 0.5 | Тест связи между телефонами (пинг, потери) через Tailscale | ✅ готов к тесту |
 | 1 | Сеть, второй CJ на карте, метка друга на радаре | ✅ работает в режиме «эхо», выход из интерьеров исправлен |
-| 1б | Анимации: ходьба, бег, спринт («виртуальный джойстик» пульта 2) | 🧪 ждёт теста |
+| 1б | Анимации: ходьба, бег, спринт, прыжки («виртуальный джойстик» пульта 2) | ✅ ходьба/бег/спринт проверены, прыжки ждут теста |
+| — | Меню Co-op в настройках игры (SAUtils) | 🧪 ждёт теста |
 | 2 | Машины: водитель + пассажир, стрельба из машины | ⏳ |
 | 3 | Оружие, урон, смерть/возрождение, интерьеры, огонь по своим (переключатель) | ⏳ |
 | 4 | Полиция и общий уровень розыска (второй CJ как игрок 2) | ⏳ |
@@ -43,22 +44,30 @@ $NDK/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATIO
 2. Запустить игру.
 3. Лог: `/sdcard/Documents/AMLModLogs/` или `adb logcat -s SACoop AML`.
 
-## Как проверить (этап 1)
+## Меню Co-op
 
-Настройки — `Android/data/com.rockstargames.gtasa/configs/net.sacoop.mod.ini`, секция `[Network]`.
+Нужен мод **SAUtils** (`libSAUtils64.so`, 1.6+) в папке `mods` — у обоих игроков.
+В игре: **Настройки → вкладка Co-op**:
 
-### Шаг 1. В одиночку (режим «эхо»)
+| Пункт | Что делает |
+|---|---|
+| Mode | Off / Solo test / Host / Join friend — меняется прямо в игре |
+| Status | Состояние: ждём друга, подключено, пинг; итог нажатия кнопок |
+| My address (host) | Адрес этого телефона в Tailscale (`100.x.x.x`) |
+| Copy my address | Копирует адрес — отправь другу (Telegram и т.п.) |
+| Host address (join) | Адрес хоста, к которому подключаемся |
+| Paste host address | Вставляет адрес из буфера обмена |
+| Friendly fire | Огонь по своим (пока не используется) |
 
-`Role = echo`. Без сети: второй CJ повторяет твои движения с задержкой 1 с
-и сдвигом 1,5 м вправо. Так проверяется, что второй CJ создаётся, двигается,
-не ломает камеру и видна метка на радаре.
+Без SAUtils режим берётся из `Android/data/com.rockstargames.gtasa/configs/net.sacoop.mod.ini`
+(`Role = off | echo | host | client`, `HostAddress`, `Port`).
 
-### Шаг 2. С другом через Tailscale
+### Игра вдвоём
 
-1. Оба ставят **Tailscale**, входят в одну сеть, включают.
-2. У хоста: `Role = host`. У друга: `Role = client`, `HostAddress = <адрес хоста 100.x.x.x>`.
-   `Port = 7777` у обоих.
-3. Хост запускает игру первым.
+1. Оба: Tailscale включён, один аккаунт/сеть.
+2. Хост: Mode → **Host**, **Copy my address**, отправить адрес другу.
+3. Друг: скопировать адрес, **Paste host address**, Mode → **Join friend**.
+4. Оба загружают сохранение. В Status у друга — `Connected, ping N ms`.
 
 ### Лог
 
@@ -75,9 +84,12 @@ $NDK/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATIO
 
 ```
 src/            исходники мода
+  ui/           вкладка Co-op (SAUtils)
+  platform/     адрес Tailscale, буфер обмена (JNI)
   game/         адреса и смещения libGTASA 2.10 arm64
   net/          UDP-сессия и протокол
   coop/         второй CJ и перехваты игры
 jni/            скрипты сборки ndk-build
 third_party/mod заголовки AML (MIT, RusJJ/AndroidModLoader)
+third_party/sautils заголовок SAUtils (MIT, AndroidModLoader/SAUtils)
 ```

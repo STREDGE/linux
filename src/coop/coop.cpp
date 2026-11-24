@@ -7,6 +7,8 @@
 #include <math.h>
 #include <string.h>
 
+#include <mutex>
+
 #include "game/gta.h"
 
 using namespace gta;
@@ -27,8 +29,13 @@ namespace
     constexpr uint64_t kEchoSampleUs     = 50000;      // эхо-режим: запись 20 раз в секунду (буфер 3,2 с)
     constexpr uint64_t kStatusLogUs      = 15000000;   // раз в 15 с — строка состояния в лог
 
-    net::Config  g_cfg;
+    net::Config  g_cfg{ net::Role::Off };
     net::Session g_session;
+
+    // Смена режима из меню: кладём сюда, применяем в игровом кадре
+    std::mutex   g_cfgMutex;
+    net::Config  g_pendingCfg;
+    bool         g_hasPending = false;
     FLogger*     g_log = nullptr;
 
     // Состояние второго CJ
@@ -319,6 +326,39 @@ namespace
         return g_echoRemote;
     }
 
+    void ApplyPendingConfig()
+    {
+        net::Config c;
+        {
+            std::lock_guard<std::mutex> lock(g_cfgMutex);
+            if(!g_hasPending) return;
+            c = g_pendingCfg;
+            g_hasPending = false;
+        }
+
+        DespawnRemote("смена режима");
+        g_session.Stop();
+        memset(g_echo, 0, sizeof(g_echo));
+        g_echoHead = 0;
+        g_echoRemote = net::RemoteState();
+        g_cfg = c;
+
+        switch(c.role)
+        {
+            case net::Role::Off:
+                Log(false, "Режим: выключено");
+                break;
+            case net::Role::Echo:
+                Log(false, "Режим: проверка в одиночку — второй CJ повторяет тебя через 0,5 с, на 1,5 м восточнее");
+                break;
+            case net::Role::Host:
+            case net::Role::Client:
+                Log(false, "Режим: %s", c.role == net::Role::Host ? "хост" : "подключение к хосту");
+                if(!g_session.Start(c, g_log)) Log(true, "Сеть не запустилась — второй CJ не появится");
+                break;
+        }
+    }
+
     void OnFrameImpl();
     void OnFrame()
     {
@@ -330,6 +370,7 @@ namespace
     {
         g_where = "кадр мода: начало";
         ++g_frameNo;
+        ApplyPendingConfig();
         uint64_t now = net::NowUs();
         float dt = g_lastFrameUs ? (float)(now - g_lastFrameUs) / 1e6f : 0.0f;
         if(dt > 0.25f) dt = 0.25f;
@@ -365,6 +406,8 @@ namespace
                     g_headingErrSum / g_headingErrCount);
             g_headingErrSum = 0; g_headingErrCount = 0;
         }
+
+        if(g_cfg.role == net::Role::Off) return;
 
         if(g_cfg.role == net::Role::Echo)
         {
@@ -444,9 +487,8 @@ DECL_HOOKv(ShutDownForRestart)              { DespawnRemote("рестарт иг
 
 const char* Where() { return g_where; }
 
-bool Install(void* h, const net::Config& cfg, FLogger* log)
+bool Install(void* h, FLogger* log)
 {
-    g_cfg = cfg;
     g_log = log;
 
     if(!gta::Init(h, 0))
@@ -487,17 +529,53 @@ bool Install(void* h, const net::Config& cfg, FLogger* log)
         aml->Hook((void*)aml->GetSym(h, d.sym), d.fn, d.orig);
     g_origGetSprint = PadGetSprint;
 
-    if(cfg.role == net::Role::Echo)
-    {
-        Log(false, "Режим ЭХО: второй CJ повторяет твои движения с задержкой 0,5 с, на 1,5 м восточнее (проверка без друга)");
-    }
-    else if(!g_session.Start(cfg, log))
-    {
-        Log(true, "Сеть не запустилась — второй CJ не появится");
-    }
-
-    Log(false, "Этап 1 установлен: перехватов %d", (int)(sizeof(hooks) / sizeof(hooks[0])));
+    Log(false, "Кооп установлен: перехватов %d", (int)(sizeof(hooks) / sizeof(hooks[0])));
     return true;
+}
+
+void SetConfig(const net::Config& cfg)
+{
+    std::lock_guard<std::mutex> lock(g_cfgMutex);
+    g_pendingCfg = cfg;
+    g_hasPending = true;
+}
+
+net::Config GetConfig()
+{
+    std::lock_guard<std::mutex> lock(g_cfgMutex);
+    return g_hasPending ? g_pendingCfg : g_cfg;
+}
+
+void StatusText(char* out, size_t len)
+{
+    bool pending;
+    { std::lock_guard<std::mutex> lock(g_cfgMutex); pending = g_hasPending; }
+    if(pending) { snprintf(out, len, "Applies when you load a game"); return; }
+
+    switch(g_cfg.role)
+    {
+        case net::Role::Off:
+            snprintf(out, len, "Off");
+            break;
+        case net::Role::Echo:
+            snprintf(out, len, g_remotePed ? "Solo test: 2nd CJ is near you" : "Solo test: load a game");
+            break;
+        case net::Role::Host:
+            if(!g_session.Running())       snprintf(out, len, "Host: network error");
+            else if(g_session.Connected()) snprintf(out, len, "Host: friend connected");
+            else                           snprintf(out, len, "Host: waiting for friend");
+            break;
+        case net::Role::Client:
+            if(!g_session.Running())       snprintf(out, len, "Join: bad host address");
+            else if(g_session.Connected())
+            {
+                int rtt = g_session.LastRttMs();
+                if(rtt >= 0) snprintf(out, len, "Connected, ping %d ms", rtt);
+                else         snprintf(out, len, "Connected");
+            }
+            else snprintf(out, len, "Connecting to %s...", g_cfg.hostAddress);
+            break;
+    }
 }
 
 } // namespace coop

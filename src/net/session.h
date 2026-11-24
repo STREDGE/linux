@@ -11,7 +11,7 @@ class FLogger;
 
 namespace net
 {
-    enum class Role { Host, Client, Echo };
+    enum class Role { Off, Echo, Host, Client }; // порядок = пункты меню
 
     struct Config
     {
@@ -32,6 +32,9 @@ namespace net
     {
     public:
         bool Start(const Config& cfg, FLogger* log);
+        void Stop();                                   // закрыть сокет, забыть друга
+        bool Running() const { return m_sock >= 0; }
+        int  LastRttMs() const { return m_lastRttMs; }
         void Poll();                                   // принять всё, что пришло; пинги
         void SendPlayerState(PlayerStatePacket& pkt);  // seq и заголовок проставит сам
         const RemoteState& Remote() const { return m_remote; }
@@ -55,6 +58,7 @@ namespace net
         uint32_t    m_stateSeq = 0;
         uint32_t    m_pongs = 0;
         uint64_t    m_rttSumUs = 0;
+        int         m_lastRttMs = -1;
 
         RemoteState m_remote;
     };

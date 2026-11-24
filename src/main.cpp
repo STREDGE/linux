@@ -1,5 +1,5 @@
 // SA Coop — кооператив для GTA San Andreas Android 2.10 (arm64) через AML.
-// Этап 1: второй CJ на карте (позиция, поворот, метка на радаре). Проверяет, что мод загружается,
+// Второй CJ на карте + вкладка «Co-op» в настройках игры (через SAUtils). Проверяет, что мод загружается,
 // находит libGTASA.so и нужные символы игры, создаёт конфиг.
 
 #include <mod/amlmod.h>
@@ -10,8 +10,11 @@
 #include <string.h>
 
 #include "coop/coop.h"
+#include "settings.h"
+#include "ui/menu.h"
+#include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.2.2, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.3.0, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -43,6 +46,8 @@ ON_GAME_CRASH()
     g_fileLog.Error("Мод в момент вылета: %s", coop::Where());
 }
 
+static bool g_installed = false;
+
 ON_MOD_LOAD()
 {
     logger->SetTag("SACoop");
@@ -66,35 +71,36 @@ ON_MOD_LOAD()
     }
     logger->Info("Символов найдено: %d из %d", found, total);
 
-    // Настройки (файл конфига AML для мода net.sacoop.mod)
-    bool enabled = cfg->GetBool("Enabled", true, "General");
-    cfg->GetBool("FriendlyFire", false, "General");
-
-    net::Config net{};
-    char role[16];
-    cfg->GetString(role, sizeof(role), "Role", "echo", "Network");          // host | client | echo
-    cfg->GetString(net.hostAddress, sizeof(net.hostAddress), "HostAddress", "100.64.0.1", "Network");
-    net.port = (uint16_t)cfg->GetInt("Port", 7777, "Network");
-    net.role = strcasecmp(role, "client") == 0 ? net::Role::Client
-             : strcasecmp(role, "host")   == 0 ? net::Role::Host
-                                               : net::Role::Echo;
-#ifdef SACOOP_FORCE_ECHO
-    net.role = net::Role::Echo; // тестовая сборка: настройки Role не нужны
-#endif
-    cfg->Save();
+    settings::Data st = settings::Load();
 
     g_fileLog.Info("SA Coop %s, символов найдено %d из %d", modinfo->VersionString(), found, total);
-    g_fileLog.Info("Роль: %s, адрес хоста: %s, порт: %u", net.role == net::Role::Host ? "хост" : net.role == net::Role::Client ? "клиент" : "эхо (проверка в одиночку)",
-                   net.hostAddress, (unsigned)net.port);
+    g_fileLog.Info("Режим из настроек: %s, адрес хоста: %s, порт: %u",
+                   settings::RoleToString(st.net.role), st.net.hostAddress, (unsigned)st.net.port);
 
-    if(!enabled)
+    if(!st.enabled)
     {
         logger->Info("Мод выключен в настройках (Enabled = 0)");
         g_fileLog.Info("Мод выключен в настройках");
         return;
     }
 
-    coop::Install(hGTASA, net, &g_fileLog);
+    g_installed = coop::Install(hGTASA, &g_fileLog);
+    if(g_installed) coop::SetConfig(st.net);
 
     logger->Info("SA Coop: загрузка завершена");
+}
+
+// Меню — когда все моды загружены (SAUtils грузится после нас по алфавиту)
+ON_ALL_MODS_LOAD()
+{
+    if(!g_installed) return;
+    ISAUtils* sautils = (ISAUtils*)GetInterface("SAUtils");
+    if(!sautils)
+    {
+        logger->Error("SAUtils не найден — вкладки Co-op не будет, режим берётся из net.sacoop.mod.ini");
+        g_fileLog.Error("SAUtils не найден — вкладки Co-op в настройках не будет");
+        return;
+    }
+    menu::Init(sautils);
+    g_fileLog.Info("Вкладка Co-op добавлена в настройки игры");
 }

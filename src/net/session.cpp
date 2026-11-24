@@ -46,6 +46,7 @@ namespace net
 
     bool Session::Start(const Config& cfg, FLogger* log)
     {
+        Stop();
         m_cfg = cfg;
         m_log = log;
 
@@ -86,6 +87,14 @@ namespace net
             Log(false, "[ХОСТ] Жду друга на UDP-порту %u", (unsigned)cfg.port);
         }
         return true;
+    }
+
+    void Session::Stop()
+    {
+        if(m_sock >= 0) close(m_sock);
+        FLogger* log = m_log;
+        *this = Session();
+        m_log = log;
     }
 
     bool Session::Connected() const
@@ -187,7 +196,9 @@ namespace net
                 if(len == sizeof(PingPacket))
                 {
                     const PingPacket* p = (const PingPacket*)data;
-                    m_rttSumUs += NowUs() - p->sentUs;
+                    uint64_t rtt = NowUs() - p->sentUs;
+                    m_rttSumUs += rtt;
+                    m_lastRttMs = (int)(rtt / 1000);
                     ++m_pongs;
                 }
                 break;

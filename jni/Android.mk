@@ -3,7 +3,8 @@ LOCAL_PATH := $(call my-dir)/..
 include $(CLEAR_VARS)
 LOCAL_MODULE := SACoop
 LOCAL_CPP_EXTENSION := .cpp
-LOCAL_SRC_FILES := src/main.cpp src/net/session.cpp src/game/gta.cpp src/coop/coop.cpp \
+LOCAL_SRC_FILES := src/main.cpp src/settings.cpp src/net/session.cpp src/game/gta.cpp src/coop/coop.cpp \
+                   src/ui/menu.cpp src/platform/android.cpp \
                    third_party/mod/logger.cpp \
                    third_party/mod/config.cpp \
                    third_party/mod/flogger.cpp
