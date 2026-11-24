@@ -1,0 +1,23 @@
+name: Build SA Coop
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with Android NDK
+        run: |
+          echo "NDK: $ANDROID_NDK_LATEST_HOME"
+          "$ANDROID_NDK_LATEST_HOME/ndk-build" NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk -j"$(nproc)"
+          ls -la libs/arm64-v8a/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libSACoop-arm64
+          path: libs/arm64-v8a/libSACoop.so
