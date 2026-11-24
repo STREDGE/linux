@@ -35,6 +35,10 @@ namespace coop
     };
     Status GetStatus();
 
+    // Вызывать каждый кадр, пока открыто меню игры: в режимах «Хост» и «Подключиться»
+    // снимает паузу (CTimer::m_UserPause), чтобы мир и связь с другом не замирали.
+    void KeepWorldRunningInMenu();
+
     // Что мод делал последним (для записи о вылете)
     const char* Where();
 }

@@ -13,7 +13,6 @@
 #include <string.h>
 #include <time.h>
 
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -72,10 +71,13 @@ namespace
         g_fontsBuilt = io.Fonts->Build();
     }
 
-    // ---------- касания (приходят из другого потока) ----------
-    struct TouchEvt { int type, finger, x, y; };
-    std::mutex            g_touchMutex;
-    std::vector<TouchEvt> g_touchQueue;
+    // ---------- касания ----------
+    // Читаем опросом из массива игры Points (2 пальца по 0x1C байт: x, y, состояние 2 = нажат),
+    // а НЕ перехватом AND_TouchEvent: другие моды (например, helibrain) проверяют код касаний
+    // и выключаются, если он изменён.
+    struct GamePoint { int32_t x, y, state; uint8_t rest[0x1C - 12]; };
+    static_assert(sizeof(GamePoint) == 0x1C, "Points");
+    GamePoint* g_points = nullptr;
 
     struct Pointer
     {
@@ -85,18 +87,33 @@ namespace
         bool  pressed = false, released = false; // в этом кадре
     } g_ptr;
 
-    void DrainTouches()
+    void PollTouches()
     {
-        std::vector<TouchEvt> q;
-        { std::lock_guard<std::mutex> lock(g_touchMutex); q.swap(g_touchQueue); }
         g_ptr.pressed = g_ptr.released = false;
-        for(const auto& e : q)
+        if(!g_points) return;
+        if(g_ptr.down)
         {
-            ImVec2 p((float)e.x, (float)e.y);
-            if(e.type == 2 && !g_ptr.down)          { g_ptr.down = true; g_ptr.finger = e.finger; g_ptr.pos = g_ptr.downPos = p; g_ptr.pressed = true; }
-            else if(e.type == 3 && e.finger == g_ptr.finger) { g_ptr.pos = p; }
-            else if(e.type == 1 && e.finger == g_ptr.finger) { g_ptr.down = false; g_ptr.pos = p; g_ptr.released = true; g_ptr.finger = -1; }
+            const GamePoint& p = g_points[g_ptr.finger];
+            if(p.state == 2) { if(p.x >= 0) g_ptr.pos = ImVec2((float)p.x, (float)p.y); }
+            else { g_ptr.down = false; g_ptr.released = true; g_ptr.finger = -1; }
+            return;
         }
+        for(int f = 0; f < 2; ++f)
+        {
+            const GamePoint& p = g_points[f];
+            if(p.state == 2 && p.x >= 0)
+            {
+                g_ptr.down = true; g_ptr.finger = f; g_ptr.pressed = true;
+                g_ptr.pos = g_ptr.downPos = ImVec2((float)p.x, (float)p.y);
+                break;
+            }
+        }
+    }
+
+    bool AnyFingerDown()
+    {
+        if(!g_points) return false;
+        return g_points[0].state == 2 || g_points[1].state == 2;
     }
 
     bool In(const ImVec2& p, const ImVec2& a, const ImVec2& b) { return p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y; }
@@ -708,7 +725,7 @@ namespace
         }
         if(!imgui_rw::EnsureDeviceObjects()) return;
 
-        DrainTouches();
+        PollTouches();
         ImGui::NewFrame();
         DrawMenu();
         imgui_rw::Render();
@@ -720,18 +737,25 @@ namespace
 DECL_HOOKv(MobileMenuRender, uintptr_t self)
 {
     MobileMenuRender(self);
+    coop::KeepWorldRunningInMenu();   // в коопе меню не ставит игру на паузу
     if(g_open) Frame();
 }
 
-DECL_HOOKv(AndTouchEvent, int type, int finger, int x, int y)
+// Пока открыто наше меню (и пока не отпущен палец после закрытия), меню игры
+// не обновляется — иначе нажатия попадали бы и в него. Меню игры читает касания
+// опросом, поэтому накопленных «призрачных» нажатий потом не будет.
+static double g_blockGameMenuUntil = 0;
+DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
 {
-    if(g_open)
-    {   // меню открыто — касания только ему
-        std::lock_guard<std::mutex> lock(g_touchMutex);
-        if(g_touchQueue.size() < 256) g_touchQueue.push_back({ type, finger, x, y });
+    double now = NowSec();
+    if(g_open) { g_blockGameMenuUntil = now + 0.3; return; }
+    if(now < g_blockGameMenuUntil || (g_blockGameMenuUntil > 0 && AnyFingerDown()))
+    {
+        if(AnyFingerDown()) g_blockGameMenuUntil = now + 0.15;
         return;
     }
-    AndTouchEvent(type, finger, x, y);
+    g_blockGameMenuUntil = 0;
+    MobileMenuUpdate(self);
 }
 
 // ---------- открытие ----------
@@ -748,7 +772,6 @@ void Open()
     g_ffKnob = g_settings.friendlyFire ? 1.0f : 0.0f;
     g_now = NowSec();
     g_openedAt = g_now; g_selAt = -10; g_toastAt = -10;
-    { std::lock_guard<std::mutex> lock(g_touchMutex); g_touchQueue.clear(); }
     g_ptr = Pointer();
     g_closing = false;
     g_open = true;
@@ -770,10 +793,11 @@ bool Init(void* h, FLogger* log)
     io.DisplaySize = ImVec2(1920, 1080);
 
     void* render = (void*)aml->GetSym(h, "_ZN10MobileMenu6RenderEv");
-    void* touch  = (void*)aml->GetSym(h, "_Z14AND_TouchEventiiii");
-    if(!render || !touch) { logger->Error("Меню: нет MobileMenu::Render или AND_TouchEvent"); return false; }
+    void* update = (void*)aml->GetSym(h, "_ZN10MobileMenu6UpdateEv");
+    g_points = (GamePoint*)aml->GetSym(h, "Points");
+    if(!render || !update || !g_points) { logger->Error("Меню: нет MobileMenu::Render/Update или Points"); return false; }
     aml->Hook(render, (void*)HookOf_MobileMenuRender, (void**)&MobileMenuRender);
-    aml->Hook(touch,  (void*)HookOf_AndTouchEvent,    (void**)&AndTouchEvent);
+    aml->Hook(update, (void*)HookOf_MobileMenuUpdate, (void**)&MobileMenuUpdate);
     logger->Info("Меню Co-op: перехваты стоят");
     return true;
 }

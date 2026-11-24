@@ -2,9 +2,10 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+extern int g_fakePoints[14]; // 2 пальца по 0x1C байт, как массив Points в игре
 struct IAML
 {
-    uintptr_t GetSym(void*, const char*) { return 0; }
+    uintptr_t GetSym(void*, const char* n);
     bool Hook(void*, void*, void**) { return true; }
 };
 extern IAML* aml;

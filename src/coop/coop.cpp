@@ -47,6 +47,7 @@ namespace
     CVector   g_shownPos{};
     float     g_shownHeading = 0.0f;
     uint64_t  g_lastFrameUs = 0;
+    uint8_t*  g_userPause = nullptr;   // CTimer::m_UserPause
 
     // «Виртуальный джойстик» второго CJ: игра читает его через перехваченные
     // CPad::GetPedWalkLeftRight / GetPedWalkUpDown / GetSprint для пульта 2
@@ -491,6 +492,7 @@ bool Install(void* h, FLogger* log)
 {
     g_log = log;
 
+    g_userPause = (uint8_t*)aml->GetSym(h, "_ZN6CTimer11m_UserPauseE");
     if(!gta::Init(h, 0))
     {
         Log(true, "Не все функции игры найдены — кооп выключен");
@@ -544,6 +546,20 @@ net::Config GetConfig()
 {
     std::lock_guard<std::mutex> lock(g_cfgMutex);
     return g_hasPending ? g_pendingCfg : g_cfg;
+}
+
+void KeepWorldRunningInMenu()
+{
+    if(!g_userPause) return;
+    bool pending;
+    { std::lock_guard<std::mutex> lock(g_cfgMutex); pending = g_hasPending; }
+    bool coopActive = !pending && (g_cfg.role == net::Role::Host || g_cfg.role == net::Role::Client);
+    if(coopActive && SlotPed(0) && *g_userPause)
+    {
+        *g_userPause = 0;
+        static bool logged = false;
+        if(!logged) { logged = true; Log(false, "Кооп: меню открыто, но игра не на паузе — мир и связь работают"); }
+    }
 }
 
 Status GetStatus()

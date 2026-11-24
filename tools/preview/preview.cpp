@@ -16,6 +16,9 @@
 #include "ui/imgui_rw.h"
 #include "ui/overlay.h"
 
+int g_fakePoints[14] = {};
+static int g_dummy;
+uintptr_t IAML::GetSym(void*, const char* n) { return !strcmp(n, "Points") ? (uintptr_t)g_fakePoints : (uintptr_t)&g_dummy; }
 IAML    g_aml;    IAML*   aml = &g_aml;
 Logger  g_logger; Logger* logger = &g_logger;
 
@@ -106,10 +109,9 @@ namespace imgui_rw {
     }
 }
 
-namespace overlay { extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t); void HookOf_AndTouchEvent(int, int, int, int);
-                    extern void (*AndTouchEvent)(int, int, int, int); }
+namespace overlay { extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t); }
+namespace coop { void KeepWorldRunningInMenu() {} }
 static void NoRender(uintptr_t) {}
-static void NoTouch(int, int, int, int) {}
 
 static void Frames(double seconds)
 {
@@ -118,8 +120,8 @@ static void Frames(double seconds)
 }
 static void Tap(float x, float y)
 {
-    overlay::HookOf_AndTouchEvent(2, 0, (int)x, (int)y); Frames(0.1);
-    overlay::HookOf_AndTouchEvent(1, 0, (int)x, (int)y); Frames(0.1);
+    g_fakePoints[0] = (int)x; g_fakePoints[1] = (int)y; g_fakePoints[2] = 2; Frames(0.1);
+    g_fakePoints[2] = 0; Frames(0.1);
 }
 static void Save(const char* name)
 {
@@ -135,7 +137,6 @@ int main(int argc, char** argv)
     if(argc > 2) { W = atoi(argv[1]); H = atoi(argv[2]); }
     g_img.resize((size_t)W * H * 3);
     overlay::MobileMenuRender = NoRender;
-    overlay::AndTouchEvent = NoTouch;
     overlay::Init(nullptr, nullptr);
     overlay::Open();
     Frames(1.2); Save("host.ppm");
