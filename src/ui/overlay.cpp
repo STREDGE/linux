@@ -1050,19 +1050,14 @@ namespace
                 int mic = platform::HasPermission("android.permission.RECORD_AUDIO");
                 if(mic == 0)
                 {
-                    if(!g_micAsked)
-                    {
-                        g_micAsked = true;
-                        if(platform::RequestPermission("android.permission.RECORD_AUDIO"))
-                            Feed(kGold, "Разреши доступ к микрофону в окне Android");
-                        else
-                            Feed(kRed, "Нет разрешения на микрофон: Настройки > Приложения > GTA SA > Разрешения");
-                    }
-                    else if(!g_micHintShown)
-                    {
-                        g_micHintShown = true;
-                        Feed(kRed, "Микрофон запрещён. Включи: Настройки > Приложения > GTA SA > Разрешения");
-                    }
+                    // Как в обычных приложениях: сначала системное окно с вопросом;
+                    // если его показать нельзя (или уже отказывали) — открываем страницу игры
+                    // в настройках, там включаешь микрофон и «Назад» возвращает в игру.
+                    bool asked = false;
+                    if(!g_micAsked) { g_micAsked = true; asked = platform::RequestPermission("android.permission.RECORD_AUDIO"); }
+                    if(asked) { Feed(kGold, "Разреши доступ к микрофону в окне Android"); if(g_log) g_log->Info("Микрофон: показан системный запрос"); }
+                    else if(platform::OpenAppSettings()) { Feed(kGold, "Разрешения > Микрофон > Разрешить, потом «Назад» — вернёшься в игру"); if(g_log) g_log->Info("Микрофон: открыты настройки приложения"); }
+                    else { Feed(kRed, "Включи микрофон: Настройки > Приложения > GTA SA > Разрешения"); if(g_log) g_log->Error("Микрофон: ни запрос, ни настройки открыть не удалось"); }
                 }
                 else if(mic == 1 && !g_micHintShown)
                 {

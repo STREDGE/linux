@@ -18,6 +18,9 @@ namespace platform
     // Показать системный запрос разрешения (Activity.requestPermissions). false — не удалось.
     bool RequestPermission(const char* permission);
 
+    // Открыть страницу этого приложения в настройках Android (там — «Разрешения»).
+    bool OpenAppSettings();
+
     // Модель телефона (android.os.Build.MODEL) — ник по умолчанию. false — не удалось.
     bool DeviceModel(char* out, size_t len);
 

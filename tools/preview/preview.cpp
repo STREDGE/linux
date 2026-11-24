@@ -62,6 +62,7 @@ namespace platform {
     bool DeviceModel(char* o, size_t l) { snprintf(o, l, "SM-X710"); return true; }
     int HasPermission(const char*) { return 1; }
     bool RequestPermission(const char*) { return true; }
+    bool OpenAppSettings() { return true; }
 }
 
 // ---- программный растеризатор вместо RenderWare ----

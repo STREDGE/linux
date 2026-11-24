@@ -195,6 +195,11 @@ namespace
         bool inSlot = SlotPed(kRemoteSlot) == g_remotePed;
         bool inPool = GetPedFromRef(g_remoteRef) == g_remotePed;
         if(inSlot && inPool) return true;
+        if(inPool && SlotPed(kRemoteSlot) == 0)
+        {   // персонаж жив, слот на миг опустел (кто-то спрятал) — возвращаем, а не создаём второго
+            SlotPed(kRemoteSlot) = g_remotePed;
+            return true;
+        }
 
         Log(true, "Второй CJ удалён игрой (в слоте: %s, в пуле: %s) — создам заново",
             inSlot ? "да" : "нет", inPool ? "да" : "нет");
@@ -501,10 +506,6 @@ DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот �
 
 // Перед сохранением/загрузкой/рестартом второго CJ убираем,
 // чтобы он не попал в сохранение и не остался висящим указателем.
-// Сохранение (в том числе автосохранение при сворачивании игры — оно может идти
-// не в игровом потоке): второго CJ не удаляем, а только прячем из слота игрока 2,
-// чтобы он не попал в сейв. Удаление персонажа из чужого потока роняло игру.
-DECL_HOOK(bool, GenericSave, int slot)      { HideRemoteSlot h; return GenericSave(slot); }
 DECL_HOOK(bool, GenericLoad, bool& ok)      { DespawnRemote("загрузка игры");   return GenericLoad(ok); }
 DECL_HOOKv(ShutDownForRestart)              { DespawnRemote("рестарт игры");    ShutDownForRestart(); }
 
@@ -535,7 +536,6 @@ bool Install(void* h, FLogger* log)
         { "_ZN7CCamera10CamControlEv",                               (void*)HookOf_CameraCamControl,           (void**)&CameraCamControl },
         { "_ZN8CPickups6UpdateEv",                                   (void*)HookOf_PickupsUpdate,              (void**)&PickupsUpdate },
         { "_ZN7CDarkel6UpdateEv",                                    (void*)HookOf_DarkelUpdate,               (void**)&DarkelUpdate },
-        { "_ZN19CGenericGameStorage11GenericSaveEi",                 (void*)HookOf_GenericSave,                (void**)&GenericSave },
         { "_ZN19CGenericGameStorage11GenericLoadERb",                (void*)HookOf_GenericLoad,                (void**)&GenericLoad },
         { "_ZN5CGame18ShutDownForRestartEv",                         (void*)HookOf_ShutDownForRestart,         (void**)&ShutDownForRestart },
     };
