@@ -41,6 +41,12 @@ SHA-256: `92b3714534742cf8e31eba35dbfd5e83871ecb5b936f5519d9b6ef3562234f9e` (р�
 | `CPed::m_pVehicle` | `0x708` | `FindPlayerCoors` |
 | `CPed::m_nPedType` | `0x720` | `SetupPlayerPed`, `GetPadFromPlayer` |
 | `sizeof(CPad)` / `DisablePlayerControls` | `0x158` / `0x110` | `GetPad`, `GetPedWalkUpDown` |
+| `CEntity::m_pRwObject` | `0x20` | есть модель — можно создавать второго CJ |
+| `CPed::m_nCreatedBy` | `0x548` | `SetCharCreatedBy` (1 игра, 2 миссия) |
+| `CPed::m_pPlayerData` / `+0x20 m_fMoveBlendRatio` | `0x540` / `0x20` | `PlayerControlZelda` |
+| `CPed::m_nMoveState` | `0x550` | `SetMoveState` |
+| `CPed::m_fArmour` | `0x6B4` | `CCheat::MoneyArmourHealthCheat` |
+| `TheCamera.Orientation` | `TheCamera + 0x154` | `PlayerControlZelda` |
 
 ## Режим на двоих (PS2) — где игра смотрит на `Players[1]`
 
@@ -78,3 +84,14 @@ SHA-256: `92b3714534742cf8e31eba35dbfd5e83871ecb5b936f5519d9b6ef3562234f9e` (р�
   `LIB_PointerGetCoordinates` (`0x326FEC`) и прячет свои кнопки, если код изменён, а также
   во время паузы и катсцен. Кнопки рисует через GOT-ячейку `CHud::Draw` (`0x845EC8`).
   SA Coop эти функции не трогает.
+
+## Прочее, на что опирается интерфейс
+
+| Что | Где |
+|---|---|
+| `CTimer::m_UserPause` | символ `_ZN6CTimer11m_UserPauseE` — снимаем в коопе, чтобы меню не ставило паузу |
+| `CCutsceneMgr::ms_running` | символ `_ZN12CCutsceneMgr10ms_runningE` |
+| массив касаний `Points` | GOT-ячейка `0x851D38`: 2 пальца × 0x1C байт (x, y, …, state; 2 = нажат). Touch x4 подменяет на 4 пальца |
+| `CAdjustableHUD` («Настройка сенсоров») | `self+0x64` — нажатая кнопка экрана (2 сохранить, 3 отмена, 4 — НЕ надёжно), после обработки −1; `self+0x52E == 1` — экран закрывается |
+| `MobileMenu::Render/Update`, `Menu_SwitchOffToGame` | меню игры; Update блокируем, пока открыто наше меню |
+| `Render2dStuff` | интерфейс игры; после него рисуем свой слой |
