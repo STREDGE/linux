@@ -1,13 +1,20 @@
 // SA Coop — кооператив для GTA San Andreas Android 2.10 (arm64) через AML.
-// Этап 0: диагностический мод. Проверяет, что мод загружается,
+// Этап 0.5: диагностика + проверка связи. Проверяет, что мод загружается,
 // находит libGTASA.so и нужные символы игры, создаёт конфиг.
 
 #include <mod/amlmod.h>
 #include <mod/logger.h>
 #include <mod/config.h>
+#include <mod/flogger.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.0.1, SA Coop Team)
+#include <string.h>
 
+#include "net/nettest.h"
+
+MYMODCFG(net.sacoop.mod, SA Coop, 0.0.2, SA Coop Team)
+
+// Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
+static FLogger   g_fileLog("sacoop.txt");
 static uintptr_t pGTASA = 0;
 static void*     hGTASA = nullptr;
 
@@ -49,12 +56,30 @@ ON_MOD_LOAD()
     logger->Info("Символов найдено: %d из %d", found, total);
 
     // Настройки (файл конфига AML для мода net.sacoop.mod)
-    delete cfg->Bind("Enabled",      true,          "General");
-    delete cfg->Bind("FriendlyFire", false,         "General");
-    delete cfg->Bind("Role",         "host",        "Network");   // host | client
-    delete cfg->Bind("HostAddress",  "100.64.0.1",  "Network");
-    delete cfg->Bind("Port",         7777,          "Network");
+    bool enabled = cfg->GetBool("Enabled", true, "General");
+    cfg->GetBool("FriendlyFire", false, "General");
+
+    net::TestConfig net{};
+    char role[16];
+    cfg->GetString(role, sizeof(role), "Role", "host", "Network");          // host | client
+    cfg->GetString(net.hostAddress, sizeof(net.hostAddress), "HostAddress", "100.64.0.1", "Network");
+    net.port = (uint16_t)cfg->GetInt("Port", 7777, "Network");
+    net.role = (strcasecmp(role, "client") == 0) ? net::Role::Client : net::Role::Host;
     cfg->Save();
 
-    logger->Info("SA Coop: этап 0 завершён");
+    g_fileLog.Info("SA Coop %s, символов найдено %d из %d", modinfo->VersionString(), found, total);
+    g_fileLog.Info("Роль: %s, адрес хоста: %s, порт: %u", net.role == net::Role::Host ? "хост" : "клиент",
+                   net.hostAddress, (unsigned)net.port);
+
+    if(!enabled)
+    {
+        logger->Info("Мод выключен в настройках (Enabled = 0)");
+        g_fileLog.Info("Мод выключен в настройках");
+        return;
+    }
+
+    // Этап 0.5: проверка связи между телефонами
+    net::StartConnectionTest(net, &g_fileLog);
+
+    logger->Info("SA Coop: загружен, тест связи запущен");
 }
