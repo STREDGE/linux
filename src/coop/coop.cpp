@@ -46,6 +46,14 @@ namespace
     // и сама включает анимации ходьбы, бега и спринта.
     int16_t   g_stickX = 0, g_stickY = 0;
     bool      g_sprint = false;
+    bool      (*g_origGetSprint)(uintptr_t pad, int mode) = nullptr; // оригинал CPad::GetSprint
+
+    // Проверка формулы джойстика: куда игра повела второго CJ (m_fAimingRotation,
+    // посчитан из нашего джойстика) против того, куда мы хотели.
+    float     g_intendedHeading = 0.0f;
+    bool      g_stickActive = false;
+    float     g_headingErrSum = 0.0f;
+    int       g_headingErrCount = 0;
     uint64_t  g_nextSendUs  = 0;
 
     // Эхо-режим (проверка в одиночку): кольцевой буфер своих состояний
@@ -216,6 +224,13 @@ namespace
         // Джойстик: направление — куда смотрит друг, сила — как сильно он
         // жмёт свой джойстик. Формула обратная PlayerControlZelda:
         // курс = atan2(-x, -y) - TheCamera.Orientation.
+        if(g_stickActive && g_inWorld)
+        {
+            float err = WrapAngle(Field<float>(g_remotePed, off::PedRotAiming) - g_intendedHeading);
+            g_headingErrSum += fabsf(err) * 57.2958f;
+            ++g_headingErrCount;
+        }
+
         float ratio = (s.flags & net::PSF_IN_VEHICLE) ? 0.0f : s.moveRatio;
         if(ratio > kMinMoveRatio)
         {
@@ -224,12 +239,15 @@ namespace
             float a = g_shownHeading + Field<float>(TheCamera, off::CamOrientation);
             g_stickX = (int16_t)(-mag * sinf(a));
             g_stickY = (int16_t)(-mag * cosf(a));
-            g_sprint = s.moveState >= 6;
+            g_sprint = (s.flags & net::PSF_SPRINT) != 0;
+            g_intendedHeading = g_shownHeading;
+            g_stickActive = true;
         }
         else
         {
             g_stickX = g_stickY = 0;
             g_sprint = false;
+            g_stickActive = false;
         }
 
         g_where = "перенос второго CJ";
@@ -251,6 +269,7 @@ namespace
         s.health = (uint8_t)(hp < 0 ? 0 : hp > 255 ? 255 : hp);
         s.flags  = inVeh ? net::PSF_IN_VEHICLE : 0;
         s.moveState = (uint8_t)Field<int>(ped, off::PedMoveState);
+        if(!inVeh && g_origGetSprint && g_origGetSprint(GetPad(0), 0)) s.flags |= net::PSF_SPRINT;
         uintptr_t pd = Field<uintptr_t>(ped, off::PedPlayerData);
         s.moveRatio = (pd && !inVeh) ? Field<float>(pd, off::PlayerDataMoveBlendRatio) : 0.0f;
         return s;
@@ -314,7 +333,9 @@ namespace
         if(now >= g_nextStatusUs)
         {
             g_nextStatusUs = now + kStatusLogUs;
-            if(CheckRemoteAlive())
+            if(!CheckRemoteAlive())
+                Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
+            else
                 Log(false, "Статус: второй CJ есть, %s, до него %.0f м, его состояние %d; ты %s "
                            "(движение %d, сила %.2f, скорость %.1f м/с); джойстик 2: %d,%d%s; FPS ~%.0f",
                     g_inWorld ? "в мире" : "далеко (только метка)",
@@ -322,8 +343,10 @@ namespace
                     InVehicle(local) ? "в машине" : "пешком", me.moveState, me.moveRatio,
                     sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1]),
                     g_stickX, g_stickY, g_sprint ? " +спринт" : "", dt > 0 ? 1.0f / dt : 0.0f);
-            else
-                Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
+            if(g_headingErrCount)
+                Log(false, "Проверка джойстика: среднее расхождение курса %.0f° (норма — до ~20°, около 180° — перепутан знак)",
+                    g_headingErrSum / g_headingErrCount);
+            g_headingErrSum = 0; g_headingErrCount = 0;
         }
 
         if(g_cfg.role == net::Role::Echo)
@@ -428,6 +451,7 @@ bool Install(void* h, const net::Config& cfg, FLogger* log)
     }
     for(const auto& d : hooks)
         aml->Hook((void*)aml->GetSym(h, d.sym), d.fn, d.orig);
+    g_origGetSprint = PadGetSprint;
 
     if(cfg.role == net::Role::Echo)
     {

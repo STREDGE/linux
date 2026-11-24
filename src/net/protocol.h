@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 3;
+    constexpr uint8_t  kProtocolVersion = 4;
 
     enum PacketType : uint8_t
     {
@@ -35,6 +35,7 @@ namespace net
     enum PlayerStateFlags : uint8_t
     {
         PSF_IN_VEHICLE = 1 << 0,
+        PSF_SPRINT     = 1 << 1, // кнопка спринта нажата
     };
 
     struct PlayerStatePacket
