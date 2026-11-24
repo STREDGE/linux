@@ -11,4 +11,7 @@ namespace coop
 {
     // Ставит перехваты в libGTASA.so. Вызывать один раз из OnModLoad.
     bool Install(void* libHandle, const net::Config& cfg, FLogger* log);
+
+    // Что мод делал последним (для записи о вылете)
+    const char* Where();
 }

@@ -11,7 +11,7 @@
 
 #include "coop/coop.h"
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.1.2, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.1.3, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -40,6 +40,7 @@ ON_GAME_CRASH()
     g_fileLog.Error("ВЫЛЕТ: сигнал %d, код %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX (lr-libGTASA=+0x%lX)",
                     sig, code, library ? library : "?", (unsigned long)(pc - libaddr),
                     (unsigned long)pc, (unsigned long)lr, (unsigned long)(pGTASA ? lr - pGTASA : 0));
+    g_fileLog.Error("Мод в момент вылета: %s", coop::Where());
 }
 
 ON_MOD_LOAD()

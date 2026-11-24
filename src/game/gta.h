@@ -50,6 +50,7 @@ namespace gta
     extern void      (*MatrixUpdateRW)(uintptr_t matrix);
     extern void      (*EntityUpdateRwFrame)(uintptr_t entity);
     extern int       (*GetPedRef)(uintptr_t ped);
+    extern uintptr_t (*GetPedFromRef)(int handle); // nullptr, если персонаж удалён
     extern int       (*SetEntityBlip)(int type, int handle, unsigned int colour, int display, char* name);
     extern void      (*ChangeBlipColour)(int blip, unsigned int colour);
     extern void      (*ChangeBlipScale)(int blip, int scale);

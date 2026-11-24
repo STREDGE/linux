@@ -32,6 +32,8 @@ namespace
 
     // Состояние второго CJ
     uintptr_t g_remotePed   = 0;
+    int       g_remoteRef   = -1;   // хэндл в пуле персонажей — проверка, что объект ещё жив
+    const char* volatile g_where = "игра (не код мода)";
     bool      g_inWorld     = false;
     int       g_blip        = -1;
     CVector   g_shownPos{};
@@ -74,9 +76,11 @@ namespace
 
     // ---------- Второй CJ ----------
 
+    bool CheckRemoteAlive();
+
     void DespawnRemote(const char* reason)
     {
-        if(!g_remotePed) return;
+        if(!CheckRemoteAlive()) return;
         if(g_blip >= 0) { ClearBlip(g_blip); g_blip = -1; }
         if(SlotPed(kRemoteSlot) == g_remotePed)
         {
@@ -84,6 +88,7 @@ namespace
             RemovePlayerPed(kRemoteSlot);
         }
         g_remotePed = 0;
+        g_remoteRef = -1;
         g_inWorld   = false;
         Log(false, "Второй CJ убран (%s)", reason);
     }
@@ -102,11 +107,12 @@ namespace
             Log(true, "SetupPlayerPed(1) не создал персонажа");
             return false;
         }
+        g_remoteRef    = GetPedRef(g_remotePed);
         g_inWorld      = true;
         g_shownPos     = pos;
         g_shownHeading = heading;
 
-        g_blip = SetEntityBlip(BLIP_CHAR, GetPedRef(g_remotePed), 0, BLIP_DISPLAY_BOTH, (char*)"");
+        g_blip = SetEntityBlip(BLIP_CHAR, g_remoteRef, 0, BLIP_DISPLAY_BOTH, (char*)"");
         if(g_blip >= 0)
         {
             ChangeBlipColour(g_blip, 0x40A0FFFF); // голубой
@@ -132,22 +138,32 @@ namespace
 
         if(g_inWorld)
         {
-            PhysicalRemoveAndAdd(ped); // перепривязать к секторам карты
+            // К секторам карты персонажа перепривязывает сама игра (CWorld::Process)
             if(mat) MatrixUpdateRW(mat);
             if(Field<uintptr_t>(ped, off::EntRwObject)) EntityUpdateRwFrame(ped);
         }
     }
 
+    // Игра могла сама удалить персонажа. Тогда забываем его и чистим слот,
+    // чтобы ни мод, ни игра не обратились к освобождённой памяти.
+    bool CheckRemoteAlive()
+    {
+        if(!g_remotePed) return false;
+        bool inSlot = SlotPed(kRemoteSlot) == g_remotePed;
+        bool inPool = GetPedFromRef(g_remoteRef) == g_remotePed;
+        if(inSlot && inPool) return true;
+
+        Log(true, "Второй CJ удалён игрой (в слоте: %s, в пуле: %s) — создам заново",
+            inSlot ? "да" : "нет", inPool ? "да" : "нет");
+        if(inSlot && !inPool) SlotPed(kRemoteSlot) = 0; // висячий указатель — убрать
+        g_remotePed = 0; g_remoteRef = -1; g_inWorld = false; g_blip = -1;
+        return false;
+    }
+
     void UpdateRemote(const net::RemoteState& rs, uintptr_t localPed, float dt, uint64_t now)
     {
         bool fresh = rs.valid && now - rs.receivedUs < kStaleUs;
-
-        // Игра могла сама удалить персонажа (загрузка, рестарт)
-        if(g_remotePed && SlotPed(kRemoteSlot) != g_remotePed)
-        {
-            g_remotePed = 0; g_inWorld = false; g_blip = -1;
-            Log(false, "Игра удалила второго CJ, создам заново");
-        }
+        CheckRemoteAlive();
 
         if(!fresh) { DespawnRemote(g_cfg.role == net::Role::Echo ? "эхо: нет данных" : "нет данных от друга"); return; }
 
@@ -156,6 +172,7 @@ namespace
         if(age > 0.25f) age = 0.25f;
         CVector target { s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
 
+        g_where = "создание второго CJ";
         if(!g_remotePed && !SpawnRemote(target, s.heading)) return;
 
         if(!PedIsAlive(g_remotePed)) { DespawnRemote("персонаж погиб у нас"); return; }
@@ -176,6 +193,7 @@ namespace
         }
 
         // Далеко от нас — убираем из мира (там не загружена карта), метка остаётся
+        g_where = "добавление/удаление из мира";
         bool wantInWorld = Dist2D(GetPosition(localPed), g_shownPos) < kActiveRadius;
         if(wantInWorld != g_inWorld)
         {
@@ -183,6 +201,7 @@ namespace
             g_inWorld = wantInWorld;
         }
 
+        g_where = "перенос второго CJ";
         PlaceRemote(g_shownPos, g_shownHeading);
     }
 
@@ -231,8 +250,16 @@ namespace
         return g_echoRemote;
     }
 
+    void OnFrameImpl();
     void OnFrame()
     {
+        OnFrameImpl();
+        g_where = "игра (не код мода)";
+    }
+
+    void OnFrameImpl()
+    {
+        g_where = "кадр мода: начало";
         uint64_t now = net::NowUs();
         float dt = g_lastFrameUs ? (float)(now - g_lastFrameUs) / 1e6f : 0.0f;
         if(dt > 0.25f) dt = 0.25f;
@@ -253,10 +280,11 @@ namespace
         if(now >= g_nextStatusUs)
         {
             g_nextStatusUs = now + kStatusLogUs;
-            if(g_remotePed)
-                Log(false, "Статус: второй CJ есть, %s, до него %.0f м, FPS ~%.0f",
+            if(CheckRemoteAlive())
+                Log(false, "Статус: второй CJ есть, %s, до него %.0f м, его состояние %d; ты %s; FPS ~%.0f",
                     g_inWorld ? "в мире" : "далеко (только метка)",
-                    Dist2D(GetPosition(local), g_shownPos), dt > 0 ? 1.0f / dt : 0.0f);
+                    Dist2D(GetPosition(local), g_shownPos), Field<int>(g_remotePed, off::PedState),
+                    InVehicle(local) ? "в машине" : "пешком", dt > 0 ? 1.0f / dt : 0.0f);
             else
                 Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
         }
@@ -281,7 +309,7 @@ namespace
     struct HideRemoteSlot
     {
         uintptr_t saved;
-        HideRemoteSlot()  : saved(g_remotePed && SlotPed(kRemoteSlot) == g_remotePed ? g_remotePed : 0) { if(saved) SlotPed(kRemoteSlot) = 0; }
+        HideRemoteSlot()  : saved(CheckRemoteAlive() ? g_remotePed : 0) { if(saved) SlotPed(kRemoteSlot) = 0; }
         ~HideRemoteSlot() { if(saved) SlotPed(kRemoteSlot) = saved; }
     };
 }
@@ -304,16 +332,18 @@ DECL_HOOKv(PadUpdatePads)
 DECL_HOOKb(IsCoopGameGoingOn)                         { return false; }
 DECL_HOOKb(IsPlayerUse2PlayerControls, uintptr_t ped) { (void)ped; return false; }
 
-DECL_HOOKv(GameLogicUpdate)             { HideRemoteSlot h; GameLogicUpdate(); }
-DECL_HOOKv(CameraCamControl, uintptr_t self) { HideRemoteSlot h; CameraCamControl(self); }
-DECL_HOOKv(PickupsUpdate)               { HideRemoteSlot h; PickupsUpdate(); }
-DECL_HOOKv(DarkelUpdate)                { HideRemoteSlot h; DarkelUpdate(); }
+DECL_HOOKv(GameLogicUpdate)             { g_where = "CGameLogic::Update (слот скрыт)"; { HideRemoteSlot h; GameLogicUpdate(); } g_where = "игра (не код мода)"; }
+DECL_HOOKv(CameraCamControl, uintptr_t self) { g_where = "CCamera::CamControl (слот скрыт)"; { HideRemoteSlot h; CameraCamControl(self); } g_where = "игра (не код мода)"; }
+DECL_HOOKv(PickupsUpdate)               { g_where = "CPickups::Update (слот скрыт)"; { HideRemoteSlot h; PickupsUpdate(); } g_where = "игра (не код мода)"; }
+DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот скрыт)"; { HideRemoteSlot h; DarkelUpdate(); } g_where = "игра (не код мода)"; }
 
 // Перед сохранением/загрузкой/рестартом второго CJ убираем,
 // чтобы он не попал в сохранение и не остался висящим указателем.
 DECL_HOOK(bool, GenericSave, int slot)      { DespawnRemote("сохранение игры"); return GenericSave(slot); }
 DECL_HOOK(bool, GenericLoad, bool& ok)      { DespawnRemote("загрузка игры");   return GenericLoad(ok); }
 DECL_HOOKv(ShutDownForRestart)              { DespawnRemote("рестарт игры");    ShutDownForRestart(); }
+
+const char* Where() { return g_where; }
 
 bool Install(void* h, const net::Config& cfg, FLogger* log)
 {

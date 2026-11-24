@@ -17,6 +17,7 @@ namespace gta
     void      (*MatrixUpdateRW)(uintptr_t)                            = nullptr;
     void      (*EntityUpdateRwFrame)(uintptr_t)                       = nullptr;
     int       (*GetPedRef)(uintptr_t)                                 = nullptr;
+    uintptr_t (*GetPedFromRef)(int)                                   = nullptr;
     int       (*SetEntityBlip)(int, int, unsigned int, int, char*)    = nullptr;
     void      (*ChangeBlipColour)(int, unsigned int)                  = nullptr;
     void      (*ChangeBlipScale)(int, int)                            = nullptr;
@@ -48,6 +49,7 @@ namespace gta
         ok &= Resolve(h, (void**)&MatrixUpdateRW,       "_ZNK7CMatrix8UpdateRWEv");
         ok &= Resolve(h, (void**)&EntityUpdateRwFrame,  "_ZN7CEntity13UpdateRwFrameEv");
         ok &= Resolve(h, (void**)&GetPedRef,            "_ZN6CPools9GetPedRefEP4CPed");
+        ok &= Resolve(h, (void**)&GetPedFromRef,        "_ZN6CPools6GetPedEi");
         ok &= Resolve(h, (void**)&SetEntityBlip,        "_ZN6CRadar13SetEntityBlipE9eBlipTypeij12eBlipDisplayPc");
         ok &= Resolve(h, (void**)&ChangeBlipColour,     "_ZN6CRadar16ChangeBlipColourEij");
         ok &= Resolve(h, (void**)&ChangeBlipScale,      "_ZN6CRadar15ChangeBlipScaleEii");
