@@ -66,6 +66,13 @@ namespace coop
     void AnswerJoin(bool accept);
     void SetTalking(bool talking);                                   // кнопка микрофона зажата
 
+    // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
+    // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).
+    bool      GameLoaded();                 // игрок на карте (сейв загружен)
+    void      LockLocalControls(bool lock); // на время редактора раскладки CJ не двигается
+    uintptr_t HideRemoteBegin();
+    void      HideRemoteEnd(uintptr_t token);
+
     // Что мод делал последним (для записи о вылете)
     const char* Where();
 }

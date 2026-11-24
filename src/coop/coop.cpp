@@ -50,6 +50,7 @@ namespace
     uint64_t  g_lastFrameUs = 0;
     uint8_t*  g_userPause = nullptr;   // CTimer::m_UserPause
     bool      g_localTalking = false;  // кнопка микрофона зажата
+    bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
     std::vector<net::Event> g_echoEvents;
     bool      g_echoAnnounced = false;
 
@@ -462,6 +463,10 @@ DECL_HOOKv(PadUpdatePads)
     PadUpdatePads();
     // Управление второго CJ отключено: иначе он повторял бы касания экрана
     if(g_remotePed) Field<uint16_t>(GetPad(kRemoteSlot), off::PadDisableCtrl) = 1;
+    static bool lockedBefore = false;
+    if(g_lockLocal) Field<uint16_t>(GetPad(0), off::PadDisableCtrl) = 1;
+    else if(lockedBefore) Field<uint16_t>(GetPad(0), off::PadDisableCtrl) = 0; // вернуть управление
+    lockedBefore = g_lockLocal;
 }
 
 // Пульт второго игрока: отдаём «виртуальный джойстик» друга
@@ -639,6 +644,20 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
 
 void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
 void SetTalking(bool talking) { g_localTalking = talking; }
+
+bool GameLoaded() { return SlotPed(0) != 0; }
+void LockLocalControls(bool lock) { g_lockLocal = lock; }
+
+uintptr_t HideRemoteBegin()
+{
+    if(!CheckRemoteAlive()) return 0;
+    SlotPed(kRemoteSlot) = 0;
+    return g_remotePed;
+}
+void HideRemoteEnd(uintptr_t token)
+{
+    if(token && token == g_remotePed && !SlotPed(kRemoteSlot)) SlotPed(kRemoteSlot) = token;
+}
 
 Status GetStatus()
 {

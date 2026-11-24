@@ -44,6 +44,19 @@ namespace net
     {
         strncpy(dst, src, kNickLen - 1);
         dst[kNickLen - 1] = 0;
+        // не обрывать русскую (многобайтную) букву посередине
+        size_t n = strlen(dst);
+        if(n && ((unsigned char)dst[n - 1] & 0x80))
+        {
+            size_t i = n;
+            while(i > 0 && ((unsigned char)dst[i - 1] & 0xC0) == 0x80) --i;   // хвост буквы
+            if(i > 0)
+            {
+                unsigned char lead = (unsigned char)dst[i - 1];
+                size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+                if(n - (i - 1) < need) dst[i - 1] = 0;
+            }
+        }
         for(char* p = dst; *p; ++p) if((unsigned char)*p < 0x20) *p = '?';
         if(!dst[0]) strcpy(dst, "Player");
     }

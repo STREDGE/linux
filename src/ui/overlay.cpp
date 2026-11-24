@@ -93,37 +93,34 @@ namespace
         g_pointsN = (g_points && g_points != g_pointsOrig) ? 4 : 2; // чужой массив — Touch x4, 4 пальца
     }
 
-    struct Pointer
+    // Все пальцы (до 4 с Touch x4): каждая кнопка реагирует на любой палец,
+    // который на ней начал касание — можно держать джойстик и жать кнопку.
+    constexpr int kMaxFingers = 4;
+    struct Finger
     {
-        bool  down = false;
-        int   finger = -1;
+        bool   down = false, pressed = false, released = false; // pressed/released — в этом кадре
         ImVec2 pos{ -1, -1 }, downPos{ -1, -1 };
-        bool  pressed = false, released = false; // в этом кадре
-    } g_ptr;
+    };
+    Finger g_f[kMaxFingers];
 
     void PollTouches()
     {
-        g_ptr.pressed = g_ptr.released = false;
+        for(auto& f : g_f) f.pressed = f.released = false;
         RefreshPoints();
-        if(!g_points) return;
-        if(g_ptr.down)
+        for(int i = 0; i < kMaxFingers; ++i)
         {
-            const GamePoint& p = g_points[g_ptr.finger];
-            if(p.state == 2) { if(p.x >= 0) g_ptr.pos = ImVec2((float)p.x, (float)p.y); }
-            else { g_ptr.down = false; g_ptr.released = true; g_ptr.finger = -1; }
-            return;
-        }
-        for(int f = 0; f < g_pointsN; ++f)
-        {
-            const GamePoint& p = g_points[f];
-            if(p.state == 2 && p.x >= 0)
+            Finger& f = g_f[i];
+            bool down = g_points && i < g_pointsN && g_points[i].state == 2 && g_points[i].x >= 0;
+            if(down)
             {
-                g_ptr.down = true; g_ptr.finger = f; g_ptr.pressed = true;
-                g_ptr.pos = g_ptr.downPos = ImVec2((float)p.x, (float)p.y);
-                break;
+                ImVec2 p((float)g_points[i].x, (float)g_points[i].y);
+                if(!f.down) { f.down = true; f.pressed = true; f.downPos = p; }
+                f.pos = p;
             }
+            else if(f.down) { f.down = false; f.released = true; }
         }
     }
+    void ResetFingers() { for(auto& f : g_f) f = Finger(); }
 
     bool AnyFingerDown()
     {
@@ -134,12 +131,33 @@ namespace
     }
 
     bool In(const ImVec2& p, const ImVec2& a, const ImVec2& b) { return p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y; }
-    // Кнопка: нажата сейчас (палец на ней с момента касания)
-    bool Held(ImVec2 a, ImVec2 b)    { return g_ptr.down && In(g_ptr.downPos, a, b) && In(g_ptr.pos, a, b); }
+    // Кнопка нажата сейчас: какой-то палец коснулся её и всё ещё на ней
+    bool Held(ImVec2 a, ImVec2 b)
+    {
+        for(auto& f : g_f) if(f.down && In(f.downPos, a, b) && In(f.pos, a, b)) return true;
+        return false;
+    }
+    // Палец коснулся здесь и ещё не отпущен (может уже уйти с кнопки)
+    bool HeldFrom(ImVec2 a, ImVec2 b)
+    {
+        for(auto& f : g_f) if(f.down && In(f.downPos, a, b)) return true;
+        return false;
+    }
     // Клик: палец отпущен на той же кнопке, где коснулся
-    bool Clicked(ImVec2 a, ImVec2 b) { return g_ptr.released && In(g_ptr.downPos, a, b) && In(g_ptr.pos, a, b); }
+    bool Clicked(ImVec2 a, ImVec2 b)
+    {
+        for(auto& f : g_f) if(f.released && In(f.downPos, a, b) && In(f.pos, a, b)) return true;
+        return false;
+    }
+    // Палец только что коснулся этой области (для волны от нажатия)
+    bool PressedIn(ImVec2 a, ImVec2 b, ImVec2* at)
+    {
+        for(auto& f : g_f) if(f.pressed && In(f.downPos, a, b)) { if(at) *at = f.downPos; return true; }
+        return false;
+    }
 
     // ---------- состояние меню ----------
+    bool      g_editRequested = false;  // открыть редактор раскладки при возврате в игру
     FLogger*  g_log = nullptr;
     bool      g_open = false, g_closing = false;
     double    g_openedAt = 0, g_closeAt = 0;
@@ -193,27 +211,29 @@ namespace
     ImDrawList* DL() { return ImGui::GetForegroundDrawList(); }
     float H() { return ImGui::GetIO().DisplaySize.y; }
     float W() { return ImGui::GetIO().DisplaySize.x; }
-    float U(float v)  { return v * H() / 100.0f; }   // доля высоты экрана, как cqh в макете
+    float g_s = 1.0f;                                  // масштаб текущего элемента (редактор раскладки)
+    float U(float v)  { return v * H() / 100.0f * g_s; } // доля высоты экрана, как cqh в макете
     float CW(float v) { return v * W() / 100.0f; }   // доля ширины, как cqw
 
     ImVec2 TextSize(FontId f, const char* s, float wrap = -1.0f)
     {
-        return g_fonts[f]->CalcTextSizeA(g_fonts[f]->FontSize, FLT_MAX, wrap > 0 ? wrap : 0.0f, s);
+        return g_fonts[f]->CalcTextSizeA(g_fonts[f]->FontSize * g_s, FLT_MAX, wrap > 0 ? wrap : 0.0f, s);
     }
     void Text(FontId f, ImVec2 p, ImU32 col, const char* s, float wrap = 0.0f)
     {
-        DL()->AddText(g_fonts[f], g_fonts[f]->FontSize, p, col, s, nullptr, wrap);
+        DL()->AddText(g_fonts[f], g_fonts[f]->FontSize * g_s, p, col, s, nullptr, wrap);
     }
     // Текст с чёрной обводкой и тенью — как заголовки GTA
     void TextOutlined(FontId f, ImVec2 p, Rgb col, const char* s, float stroke)
     {
-        DL()->AddText(g_fonts[f], g_fonts[f]->FontSize, ImVec2(p.x, p.y + stroke * 2.2f), C(kBlack, 0.9f), s);
+        float fs = g_fonts[f]->FontSize * g_s;
+        DL()->AddText(g_fonts[f], fs, ImVec2(p.x, p.y + stroke * 2.2f), C(kBlack, 0.9f), s);
         for(int i = 0; i < 8; ++i)
         {
             float a = i * (float)M_PI / 4;
-            DL()->AddText(g_fonts[f], g_fonts[f]->FontSize, ImVec2(p.x + cosf(a) * stroke, p.y + sinf(a) * stroke), C(kBlack), s);
+            DL()->AddText(g_fonts[f], fs, ImVec2(p.x + cosf(a) * stroke, p.y + sinf(a) * stroke), C(kBlack), s);
         }
-        DL()->AddText(g_fonts[f], g_fonts[f]->FontSize, p, C(col), s);
+        DL()->AddText(g_fonts[f], fs, p, C(col), s);
     }
 
     void Glow(ImVec2 a, ImVec2 b, float r, Rgb col, float strength)
@@ -284,7 +304,7 @@ namespace
         { net::Role::Client, "Подключиться",    "К игре друга" },
     };
 
-    void StatusPill(ImVec2 rightTop, float h)
+    float StatusPill(ImVec2 rightTop, float h)
     {
         coop::Status st = coop::GetStatus();
         char text[96]; Rgb dot = kDim; bool pulse = false;
@@ -322,6 +342,7 @@ namespace
         }
         DL()->AddCircleFilled(dc, dotR, C(dot), 20);
         Text(F_SMALL, ImVec2(dc.x + dotR + U(1.2f), dc.y - ts.y * 0.5f), C(kInk), text);
+        return a.x;
     }
 
     void Switch(ImVec2 a, float h, bool on, float knob)
@@ -467,7 +488,8 @@ namespace
             FontId f = F_KEY;
             ImVec2 ts = TextSize(f, keys[i]);
             Text(f, ImVec2((pa.x + pb.x - ts.x) * 0.5f, (pa.y + pb.y - ts.y) * 0.5f), C(fn ? kGold : kInk), keys[i]);
-            if(g_ptr.pressed && In(g_ptr.downPos, ka, kb)) g_ripples.push_back({ g_ptr.downPos, g_now, ka, kb });
+            ImVec2 at;
+            if(PressedIn(ka, kb, &at)) g_ripples.push_back({ at, g_now, ka, kb });
             if(Clicked(ka, kb))
             {
                 std::string k = keys[i];
@@ -587,7 +609,16 @@ namespace
             DL()->AddLine(ImVec2(cc.x - xs, cc.y + xs), ImVec2(cc.x + xs, cc.y - xs), C(kInk), U(0.5f));
             if(Clicked(ca, cb)) Close();
 
-            StatusPill(ImVec2(ca.x - U(2), cc.y - U(3.2f)), U(6.4f));
+            float pillLeft = StatusPill(ImVec2(ca.x - U(2), cc.y - U(3.2f)), U(6.4f));
+            const char* el = "Экран";
+            float ew = ChipWidth(el);
+            bool editClick = false;
+            Chip(ImVec2(pillLeft - U(1.6f) - ew, cc.y - U(3.2f)), ImVec2(pillLeft - U(1.6f), cc.y + U(3.2f)), el, &editClick);
+            if(editClick)
+            {
+                if(coop::GameLoaded()) { g_editRequested = true; Close(); Toast("Вернись в игру — откроется настройка экрана"); }
+                else Toast("Сначала загрузи игру, потом открой CO-OP из паузы");
+            }
         }
 
         // --- режимы слева ---
@@ -801,26 +832,35 @@ namespace
         }
     }
 
-    void DrawFeed(float baseY)
+    struct Box { ImVec2 a, b; };
+
+    // Лента уведомлений: anchor — середина нижнего края. Возвращает занятую область.
+    Box DrawFeed(ImVec2 anchor, bool sample)
     {
-        float y = baseY;
-        for(int i = (int)g_feed.size() - 1; i >= 0; --i)
+        float y = anchor.y;
+        Box box{ ImVec2(anchor.x - U(30), anchor.y - U(6)), ImVec2(anchor.x + U(30), anchor.y) };
+        std::vector<FeedItem> demo;
+        if(sample) { FeedItem f; snprintf(f.text, sizeof(f.text), "Пример уведомления: друг в игре"); f.color = kGrove; f.t = g_now - 1.0; demo.push_back(f); }
+        std::vector<FeedItem>& items = sample ? demo : g_feed;
+        for(int i = (int)items.size() - 1; i >= 0; --i)
         {
-            float t = (float)(g_now - g_feed[i].t);
-            if(t > 3.6f) { g_feed.erase(g_feed.begin() + i); continue; }
-            float kin = EaseBack(t / 0.45f), kout = t > 3.2f ? 1 - (t - 3.2f) / 0.4f : 1;
+            float t = (float)(g_now - items[i].t);
+            if(!sample && t > 3.6f) { items.erase(items.begin() + i); continue; }
+            float kin = sample ? 1 : EaseBack(t / 0.45f), kout = (!sample && t > 3.2f) ? 1 - (t - 3.2f) / 0.4f : 1;
             float sa = g_alpha; g_alpha = Clamp01(kin) * Clamp01(kout);
-            ImVec2 ts = TextSize(F_BODY, g_feed[i].text);
+            ImVec2 ts = TextSize(F_BODY, items[i].text);
             float w = ts.x + U(5.6f), h = ts.y + U(2.8f);
             float dy = (1 - Clamp01(kin)) * U(3) - (1 - kout) * U(2);
-            ImVec2 a(W() * 0.5f - w * 0.5f, y - h + dy), b(a.x + w, a.y + h);
+            ImVec2 a(anchor.x - w * 0.5f, y - h + dy), b(a.x + w, a.y + h);
             DL()->AddRectFilled(ImVec2(a.x, a.y + U(1)), ImVec2(b.x, b.y + U(1)), C(kBlack, 0.35f), U(1.4f));
             DL()->AddRectFilled(a, b, C(kNight, 0.88f), U(1.4f));
-            DL()->AddRectFilled(a, ImVec2(a.x + U(1), b.y), C(g_feed[i].color), U(1.4f), ImDrawFlags_RoundCornersLeft);
-            Text(F_BODY, ImVec2(a.x + U(3), a.y + U(1.4f)), C(kInk), g_feed[i].text);
+            DL()->AddRectFilled(a, ImVec2(a.x + U(1), b.y), C(items[i].color), U(1.4f), ImDrawFlags_RoundCornersLeft);
+            Text(F_BODY, ImVec2(a.x + U(3), a.y + U(1.4f)), C(kInk), items[i].text);
             g_alpha = sa;
+            box.a.x = fminf(box.a.x, a.x); box.b.x = fmaxf(box.b.x, b.x); box.a.y = fminf(box.a.y, a.y);
             y = a.y - U(1.2f);
         }
+        return box;
     }
 
     // ---- окно «кто-то подключается» ----
@@ -868,7 +908,7 @@ namespace
         if(no)  { coop::AnswerJoin(false); Feed(kGold, "Запрос %s отклонён", nick); }
     }
 
-    // ---- панель «Команда» под радаром ----
+    // ---- панель «Команда» ----
     double g_mateInAt = -10, g_mateGoneAt = -10;
     bool   g_mateWasPresent = false;
     char   g_mateGoneNick[net::kNickLen] = "";
@@ -904,9 +944,9 @@ namespace
         DL()->AddRectFilled(a, ImVec2(a.x + U(0.8f), b.y), C(lost ? kRed : stripe));
         if(talking) DL()->AddRect(a, b, C(kGrove, 0.7f), 0, 0, U(0.3f));
         float sa = g_alpha; if(lost) g_alpha *= 0.55f;
-        // ник с тенью
-        DL()->AddText(g_fonts[F_HEAD], g_fonts[F_HEAD]->FontSize * 0.62f, ImVec2(a.x + U(2.2f), a.y + U(1.2f) + U(0.3f)), C(kBlack), nick);
-        DL()->AddText(g_fonts[F_HEAD], g_fonts[F_HEAD]->FontSize * 0.62f, ImVec2(a.x + U(2.2f), a.y + U(1.2f)), C(lost ? kDim : kInk), nick);
+        float fs = g_fonts[F_HEAD]->FontSize * 0.62f * g_s;
+        DL()->AddText(g_fonts[F_HEAD], fs, ImVec2(a.x + U(2.2f), a.y + U(1.2f) + U(0.3f)), C(kBlack), nick);
+        DL()->AddText(g_fonts[F_HEAD], fs, ImVec2(a.x + U(2.2f), a.y + U(1.2f)), C(lost ? kDim : kInk), nick);
         ImVec2 ms = TextSize(F_SMALL, meta);
         float mx = b.x - U(1.6f) - ms.x;
         Text(F_SMALL, ImVec2(mx, a.y + U(1.6f)), C(lost ? kRed : kGrove), meta);
@@ -920,10 +960,12 @@ namespace
         return b.y;
     }
 
-    void DrawTeam(const coop::Team& t)
+    // topLeft — левый верхний угол панели. Возвращает занятую область.
+    Box DrawTeam(const coop::Team& t, ImVec2 topLeft)
     {
-        if(!t.show) { g_mateWasPresent = false; return; }
-        float x = U(2.5f), y = U(30), w = U(36);
+        float x = topLeft.x, y = topLeft.y, w = U(36);
+        Box box{ topLeft, ImVec2(x + w, y + U(3.6f) + U(8.6f) * 2 + U(1)) };
+        if(!t.show) { g_mateWasPresent = false; return box; }
         TextOutlined(F_SMALL, ImVec2(x, y), kGold, t.mate.present ? "КОМАНДА  2" : "КОМАНДА  1", U(0.2f));
         y += U(3.6f);
         const char* role = t.role == net::Role::Host ? "хост" : t.role == net::Role::Client ? "гость" : "тест";
@@ -954,20 +996,23 @@ namespace
             MateRow(ImVec2(x - EaseOut(k) * w * 1.1f, y), w, kRed, g_mateGoneNick, "", 0, 0, false, true, false);
             g_alpha = sa;
         }
+        return box;
     }
 
-    // ---- «друг говорит» сверху ----
-    void DrawTalking(const coop::Team& t)
+    // ---- «друг говорит»: anchor — середина верхнего края ----
+    double g_talkSince = -10;
+    Box DrawTalking(const coop::Team& t, ImVec2 anchor, bool sample)
     {
-        static double since = -10;
-        bool on = t.mate.present && t.mate.talking && !t.mate.lost;
-        if(on && since < 0) since = g_now;
-        if(!on) { since = -10; return; }
-        float k = EaseBack((float)(g_now - since) / 0.35f);
-        char text[64]; snprintf(text, sizeof(text), "%s говорит", t.mate.nick);
+        bool on = sample || (t.mate.present && t.mate.talking && !t.mate.lost);
+        if(on && g_talkSince < 0) g_talkSince = g_now;
+        if(!on) g_talkSince = -10;
+        char text[64]; snprintf(text, sizeof(text), "%s говорит", sample ? "Друг" : t.mate.nick);
         ImVec2 ts = TextSize(F_BODY, text);
         float eqW = U(3.6f), w = ts.x + eqW + U(6.5f), h = ts.y + U(2.4f);
-        ImVec2 a(W() * 0.5f - w * 0.5f, U(3) - (1 - k) * (h + U(4))), b(a.x + w, a.y + h);
+        Box box{ ImVec2(anchor.x - w * 0.5f, anchor.y), ImVec2(anchor.x + w * 0.5f, anchor.y + h) };
+        if(!on) return box;
+        float k = sample ? 1 : EaseBack((float)(g_now - g_talkSince) / 0.35f);
+        ImVec2 a(anchor.x - w * 0.5f, anchor.y - (1 - k) * (h + U(4))), b(a.x + w, a.y + h);
         DL()->AddRectFilled(a, b, C(kNight, 0.85f), h * 0.5f);
         DL()->AddRect(a, b, C(kGrove), h * 0.5f, 0, U(0.3f));
         for(int i = 0; i < 3; ++i)
@@ -977,34 +1022,33 @@ namespace
             DL()->AddRectFilled(ImVec2(bx, (a.y + b.y) * 0.5f + U(1.3f) - bh), ImVec2(bx + U(0.7f), (a.y + b.y) * 0.5f + U(1.3f)), C(kGrove), U(0.3f));
         }
         Text(F_BODY, ImVec2(a.x + U(2.4f) + eqW + U(1.4f), a.y + U(1.2f)), C(kInk), text);
+        return box;
     }
 
-    // ---- кнопка микрофона ----
+    // ---- кнопка микрофона: c — центр ----
     bool   g_micHeld = false;
     double g_micSince = 0;
     bool   g_micHintShown = false;
-    void DrawMic(const coop::Team& t)
+    Box DrawMic(const coop::Team& t, ImVec2 c, bool interactive)
     {
-        if(!t.show) { if(g_micHeld) { g_micHeld = false; coop::SetTalking(false); } return; }
         float r = U(7.2f);
-        ImVec2 c(W() - CW(15), U(31));
         ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
-        bool held = g_ptr.down && In(g_ptr.downPos, a, b);
-        if(held != g_micHeld)
+        Box box{ ImVec2(a.x, a.y - U(4)), ImVec2(b.x, b.y + U(5)) };
+        bool held = interactive && HeldFrom(a, b);
+        if(!t.show && interactive) held = false;
+        if(interactive && held != g_micHeld)
         {
             g_micHeld = held; g_micSince = g_now;
             coop::SetTalking(held);
             if(held && !g_micHintShown) { g_micHintShown = true; Feed(kGold, "Звук — после шага с APK. Пока друг видит значок «говорит»"); }
         }
         float tt = (float)(g_now - g_micSince);
-        // тень
         DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.8f)), r, C(kBlack, 0.45f), 48);
         if(held)
-        {   // волна
+        {
             float ph = fmodf(tt, 1.1f) / 1.1f;
             DL()->AddCircle(c, r * (1.05f + 0.4f * ph), C(kRed, 0.9f * (1 - ph)), 48, U(0.5f));
         }
-        // кольцо: золотое или красное, крутится при разговоре
         int segs = 24;
         for(int i = 0; i < segs; ++i)
         {
@@ -1028,6 +1072,164 @@ namespace
                 float bx = c.x - U(3.2f) + i * U(1.5f), bh = U(3.6f) * v;
                 DL()->AddRectFilled(ImVec2(bx, b.y + U(4.6f) - bh), ImVec2(bx + U(0.9f), b.y + U(4.6f)), C(kRed), U(0.4f));
             }
+        return box;
+    }
+
+    // ======================= раскладка и её редактор =======================
+    settings::Layout g_layout;
+    bool             g_layoutLoaded = false;
+    bool             g_edit = false;
+    settings::Layout g_editLayout;
+    int              g_editSel = settings::L_MIC;
+    Box              g_editBox[settings::L_COUNT];
+    struct Drag { int item = -1; ImVec2 offset; };
+    Drag             g_drag[kMaxFingers];
+    float            g_pinchDist0 = 0, g_pinchScale0 = 1; int g_pinchItem = -1;
+
+    const char* kItemNames[settings::L_COUNT] = { "Микрофон", "Команда", "Уведомления", "Говорит" };
+
+    ImVec2 ItemPos(const settings::Layout& l, int i) { return ImVec2(l.item[i].x * W(), l.item[i].y * H()); }
+
+    // Рисует все элементы по раскладке l. sample — показать примеры (в редакторе).
+    void DrawHudItems(const coop::Team& team, const settings::Layout& l, bool sample)
+    {
+        coop::Team t = team;
+        if(sample)
+        {
+            t.show = true; if(!t.myNick[0]) snprintf(t.myNick, sizeof(t.myNick), "%s", g_settings.net.nick);
+            if(t.myHealth <= 0) t.myHealth = 100;
+            if(!t.mate.present) { t.mate.present = true; snprintf(t.mate.nick, sizeof(t.mate.nick), "Друг"); t.mate.health = 80; t.mate.armour = 50; t.mate.pingMs = 84; t.mate.distM = 12; }
+        }
+        g_s = l.item[settings::L_TEAM].s; g_editBox[settings::L_TEAM] = DrawTeam(t, ItemPos(l, settings::L_TEAM));
+        g_s = l.item[settings::L_TALK].s; g_editBox[settings::L_TALK] = DrawTalking(t, ItemPos(l, settings::L_TALK), sample);
+        if(t.show || sample) { g_s = l.item[settings::L_MIC].s; g_editBox[settings::L_MIC] = DrawMic(t, ItemPos(l, settings::L_MIC), !sample); }
+        else if(g_micHeld) { g_micHeld = false; coop::SetTalking(false); }
+        g_s = l.item[settings::L_FEED].s; g_editBox[settings::L_FEED] = DrawFeed(ItemPos(l, settings::L_FEED), sample);
+        g_s = 1.0f;
+    }
+
+    void DashedRect(ImVec2 a, ImVec2 b, ImU32 col, float th)
+    {
+        float dash = U(1.6f), gap = U(1.0f);
+        auto line = [&](ImVec2 p, ImVec2 q) {
+            float len = sqrtf((q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y));
+            for(float d = 0; d < len; d += dash + gap)
+            {
+                float e = fminf(d + dash, len);
+                DL()->AddLine(ImVec2(p.x + (q.x - p.x) * d / len, p.y + (q.y - p.y) * d / len),
+                              ImVec2(p.x + (q.x - p.x) * e / len, p.y + (q.y - p.y) * e / len), col, th);
+            }
+        };
+        line(a, ImVec2(b.x, a.y)); line(ImVec2(b.x, a.y), b); line(b, ImVec2(a.x, b.y)); line(ImVec2(a.x, b.y), a);
+    }
+
+    void EnterEdit()
+    {
+        g_edit = true; g_editLayout = g_layout; g_editSel = settings::L_MIC;
+        for(auto& d : g_drag) d = Drag();
+        g_pinchItem = -1;
+        coop::LockLocalControls(true);
+        Feed(kGold, "Тяни элементы пальцем. Размер — щипком двумя пальцами или кнопками - / +");
+    }
+    void LeaveEdit(bool save)
+    {
+        if(save) { g_layout = g_editLayout; settings::SaveLayout(g_layout); Feed(kGrove, "Расположение сохранено"); }
+        g_edit = false;
+        coop::LockLocalControls(false);
+    }
+
+    void DrawEditor(const coop::Team& team)
+    {
+        // затемнение, чтобы было видно, что это режим настройки
+        DL()->AddRectFilled(ImVec2(0, 0), ImVec2(W(), H()), C(Rgb{ 4, 6, 10 }, 0.35f));
+        DrawHudItems(team, g_editLayout, true);
+
+        // ---- панель кнопок снизу по центру ----
+        float bh = U(8), gap = U(1.2f);
+        const char* lbls[5] = { "-", "+", "Сброс", "Отмена", "Готово" };
+        float ws[5]; float total = 0;
+        for(int i = 0; i < 5; ++i)
+        {
+            ws[i] = (i == 4 ? TextSize(F_HEAD, lbls[i]).x + U(8) : TextSize(F_SMALL, lbls[i]).x + U(i < 2 ? 6 : 4.4f));
+            total += ws[i] + (i ? gap : 0);
+        }
+        char title[96];
+        snprintf(title, sizeof(title), "РАСПОЛОЖЕНИЕ · %s · %d%%", kItemNames[g_editSel], (int)roundf(g_editLayout.item[g_editSel].s * 100));
+        ImVec2 tsz = TextSize(F_SMALL, title);
+        float pw = fmaxf(total, tsz.x) + U(4), ph = bh + tsz.y + U(5);
+        ImVec2 pa(W() * 0.5f - pw * 0.5f, H() - ph - U(3)), pb(pa.x + pw, pa.y + ph);
+        Box bar{ pa, pb };
+        DL()->AddRectFilled(pa, pb, C(kNight, 0.92f), U(1.6f));
+        DL()->AddRect(pa, pb, C(kGold), U(1.6f), 0, U(0.3f));
+        Text(F_SMALL, ImVec2(W() * 0.5f - tsz.x * 0.5f, pa.y + U(1.2f)), C(kGold), title);
+        float x = W() * 0.5f - total * 0.5f, y = pa.y + tsz.y + U(2.4f);
+        bool click[5] = {};
+        for(int i = 0; i < 5; ++i)
+        {
+            ImVec2 a(x, y), b(x + ws[i], y + bh);
+            if(i == 4) BigButton(a, b, lbls[i], true, &click[i]);
+            else Chip(a, b, lbls[i], &click[i]);
+            x += ws[i] + gap;
+        }
+        settings::LayoutItem& sel = g_editLayout.item[g_editSel];
+        if(click[0]) sel.s = fmaxf(0.5f, sel.s - 0.1f);
+        if(click[1]) sel.s = fminf(2.5f, sel.s + 0.1f);
+        if(click[2]) { g_editLayout = settings::DefaultLayout(); Feed(kGold, "Расположение по умолчанию"); }
+        if(click[3]) { LeaveEdit(false); return; }
+        if(click[4]) { LeaveEdit(true); return; }
+
+        // ---- выделение и перетаскивание ----
+        for(int i = 0; i < settings::L_COUNT; ++i)
+        {
+            Box& bx = g_editBox[i];
+            ImVec2 a(bx.a.x - U(0.8f), bx.a.y - U(0.8f)), b(bx.b.x + U(0.8f), bx.b.y + U(0.8f));
+            bool s = i == g_editSel;
+            DashedRect(a, b, C(s ? kGold : kWhite, s ? 1.0f : 0.6f), U(s ? 0.4f : 0.25f));
+            Text(F_SMALL, ImVec2(a.x, a.y - TextSize(F_SMALL, kItemNames[i]).y - U(0.4f)), C(s ? kGold : kWhite, 0.9f), kItemNames[i]);
+        }
+        int fingersOn[settings::L_COUNT] = {}; int fingerA[settings::L_COUNT], fingerB[settings::L_COUNT];
+        for(int f = 0; f < kMaxFingers; ++f)
+        {
+            Finger& F = g_f[f];
+            if(F.pressed && !In(F.downPos, bar.a, bar.b))
+            {
+                for(int i = settings::L_COUNT - 1; i >= 0; --i)
+                {
+                    Box& bx = g_editBox[i];
+                    if(In(F.downPos, ImVec2(bx.a.x - U(2), bx.a.y - U(2)), ImVec2(bx.b.x + U(2), bx.b.y + U(2))))
+                    {
+                        g_drag[f].item = i; g_editSel = i;
+                        ImVec2 p = ItemPos(g_editLayout, i);
+                        g_drag[f].offset = ImVec2(p.x - F.downPos.x, p.y - F.downPos.y);
+                        break;
+                    }
+                }
+            }
+            if(!F.down) g_drag[f].item = -1;
+            int it = g_drag[f].item;
+            if(it >= 0) { if(fingersOn[it] == 0) fingerA[it] = f; else fingerB[it] = f; fingersOn[it]++; }
+        }
+        for(int i = 0; i < settings::L_COUNT; ++i)
+        {
+            settings::LayoutItem& li = g_editLayout.item[i];
+            if(fingersOn[i] >= 2)
+            {   // щипок двумя пальцами — размер
+                ImVec2 p = g_f[fingerA[i]].pos, q = g_f[fingerB[i]].pos;
+                float d = sqrtf((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y));
+                if(g_pinchItem != i) { g_pinchItem = i; g_pinchDist0 = d; g_pinchScale0 = li.s; }
+                if(g_pinchDist0 > 1) li.s = fminf(2.5f, fmaxf(0.5f, g_pinchScale0 * d / g_pinchDist0));
+            }
+            else
+            {
+                if(g_pinchItem == i) g_pinchItem = -1;
+                if(fingersOn[i] == 1)
+                {
+                    Finger& F = g_f[fingerA[i]];
+                    ImVec2 p(F.pos.x + g_drag[fingerA[i]].offset.x, F.pos.y + g_drag[fingerA[i]].offset.y);
+                    li.x = Clamp01(p.x / W()); li.y = Clamp01(p.y / H());
+                }
+            }
+        }
     }
 
     void Frame(bool fromMenu)
@@ -1053,15 +1255,21 @@ namespace
         ProcessEvents();
         if(fromMenu && g_open) DrawMenu();
         g_alpha = 1.0f;
+        if(!g_layoutLoaded) { g_layout = settings::LoadLayout(); g_layoutLoaded = true; }
         coop::Team team = coop::GetTeam();
         if(!fromMenu)
         {
-            DrawTeam(team);
-            DrawTalking(team);
-            DrawMic(team);
+            if(g_editRequested) { g_editRequested = false; EnterEdit(); }
+            if(g_edit) DrawEditor(team);
+            else       DrawHudItems(team, g_layout, false);
         }
-        DrawRequest();
-        DrawFeed(H() * 0.66f);
+        else
+        {   // поверх меню игры — только уведомления (по раскладке)
+            g_s = g_layout.item[settings::L_FEED].s;
+            DrawFeed(ItemPos(g_layout, settings::L_FEED), false);
+            g_s = 1.0f;
+        }
+        if(!g_edit) DrawRequest();
         imgui_rw::Render();
     }
 }
@@ -1078,7 +1286,11 @@ DECL_HOOKv(MobileMenuRender, uintptr_t self)
 // Слой поверх игры: панель «Команда», кнопка микрофона, запросы, уведомления
 DECL_HOOKv(Render2dStuff)
 {
+    // Пока игра рисует свой интерфейс, второго CJ нет в слоте игрока 2 —
+    // иначе она рисует вторую иконку оружия («дубль кулака»).
+    uintptr_t token = coop::HideRemoteBegin();
     Render2dStuff();
+    coop::HideRemoteEnd(token);
     Frame(false);
 }
 
@@ -1114,13 +1326,17 @@ void Open()
     g_ffKnob = g_settings.friendlyFire ? 1.0f : 0.0f;
     g_now = NowSec();
     g_openedAt = g_now; g_selAt = -10; g_toastAt = -10;
-    g_ptr = Pointer();
+    ResetFingers();
     g_closing = false;
     g_open = true;
     if(g_log) g_log->Info("Меню Co-op открыто");
 }
 
 bool IsOpen() { return g_open; }
+
+#ifdef SACOOP_PREVIEW
+void DebugRequestEdit() { g_editRequested = true; }   // только для превью на компьютере
+#endif
 
 bool Init(void* h, FLogger* log)
 {

@@ -40,11 +40,19 @@ namespace coop {
     bool PendingRequest(char* n, size_t l, float* left) { if(!g_pending) return false; snprintf(n, l, "HOMIE_BE"); *left = 11.3f; return true; }
     void AnswerJoin(bool) {}
     void SetTalking(bool) {}
+    bool GameLoaded() { return true; }
+    void LockLocalControls(bool) {}
+    uintptr_t HideRemoteBegin() { return 0; }
+    void HideRemoteEnd(uintptr_t) {}
 }
 namespace settings {
     Data Load() { Data d; d.net.role = g_role; strcpy(d.net.hostAddress, "100.87.12.40"); strcpy(d.net.nick, "SM-X710"); return d; }
     void Save(const Data&) {}
     const char* RoleToString(net::Role) { return "x"; }
+    Layout DefaultLayout() { Layout l; l.item[L_MIC] = { 0.66f, 0.13f, 1 }; l.item[L_TEAM] = { 0.012f, 0.30f, 1 };
+                             l.item[L_FEED] = { 0.5f, 0.66f, 1 }; l.item[L_TALK] = { 0.5f, 0.03f, 1 }; return l; }
+    Layout LoadLayout() { return DefaultLayout(); }
+    void SaveLayout(const Layout&) {}
 }
 namespace platform {
     bool FindTailscaleIPv4(char* o, size_t l) { snprintf(o, l, "100.101.24.7"); return true; }
@@ -119,7 +127,7 @@ namespace imgui_rw {
     }
 }
 
-namespace overlay { extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t);
+namespace overlay { void DebugRequestEdit(); extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t);
                     extern void (*Render2dStuff)(); void HookOf_Render2dStuff(); }
 static void NoR2d() {}
 static void HudFrames(double seconds) { int n = (int)(seconds * 30); for(int i = 0; i < n; ++i) { overlay::HookOf_Render2dStuff(); usleep(33000); } }
@@ -170,6 +178,14 @@ int main(int argc, char** argv)
     coop::g_pending = false; g_connected = true; coop::g_evStage = 1; HudFrames(0.9);
     coop::g_talk = true;
     g_fakePoints[0] = (int)(W - W * 0.15f); g_fakePoints[1] = (int)(31 * u); g_fakePoints[2] = 2; HudFrames(0.6); Save("hud_team.ppm");
-    g_fakePoints[2] = 0;
+    g_fakePoints[2] = 0; HudFrames(0.3);
+
+    // редактор раскладки: тащим микрофон влево-вниз
+    overlay::DebugRequestEdit(); HudFrames(0.4);
+    float mx = W * 0.66f, my = H * 0.13f;
+    g_fakePoints[0] = (int)mx; g_fakePoints[1] = (int)my; g_fakePoints[2] = 2; HudFrames(0.1);
+    for(int i = 1; i <= 10; ++i) { g_fakePoints[0] = (int)(mx - i * W * 0.025f); g_fakePoints[1] = (int)(my + i * H * 0.04f); HudFrames(0.04); }
+    HudFrames(0.2); Save("hud_editor.ppm");
+    g_fakePoints[2] = 0; HudFrames(0.2);
     return 0;
 }

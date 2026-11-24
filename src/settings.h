@@ -16,5 +16,13 @@ namespace settings
     Data Load();
     void Save(const Data& d);
 
+    // Расположение элементов поверх игры (доли экрана) и их масштаб
+    struct LayoutItem { float x, y, s; };
+    enum LayoutId { L_MIC, L_TEAM, L_FEED, L_TALK, L_COUNT };
+    struct Layout { LayoutItem item[L_COUNT]; };
+    Layout DefaultLayout();
+    Layout LoadLayout();
+    void   SaveLayout(const Layout& l);
+
     const char* RoleToString(net::Role r);   // off | echo | host | client
 }
