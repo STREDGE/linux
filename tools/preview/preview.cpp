@@ -58,6 +58,7 @@ namespace voice {
     bool Available() { return true; }
     float InputLevel() { return 0.7f; }
     float OutputLevel() { return 0.7f; }
+    bool  Playing() { return true; }
 }
 namespace platform {
     bool FindTailscaleIPv4(char* o, size_t l) { snprintf(o, l, "100.101.24.7"); return true; }

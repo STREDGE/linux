@@ -649,7 +649,7 @@ Team GetTeam()
             snprintf(t.mate.nick, sizeof(t.mate.nick), "Двойник");
             t.mate.health = t.myHealth; t.mate.armour = t.myArmour;
             t.mate.distM = Dist2D(GetPosition(me), g_shownPos);
-            t.mate.talking = g_localTalking;
+            t.mate.talking = voice::Available() ? voice::Playing() : false; // двойник «говорит», когда звучит твоё эхо
         }
         return t;
     }

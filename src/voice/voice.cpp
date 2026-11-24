@@ -578,5 +578,6 @@ void Stop()
 
 float InputLevel()  { return g_inLevel; }
 float OutputLevel() { return g_outLevel; }
+bool  Playing()     { return g_rxActive && !g_rxPrebuffer; }
 
 } // namespace voice

@@ -35,4 +35,5 @@ namespace voice
 
     float InputLevel();                     // 0..1 — громкость микрофона (для индикатора)
     float OutputLevel();                    // 0..1 — громкость друга
+    bool  Playing();                        // сейчас звучит голос друга (или эхо)
 }
