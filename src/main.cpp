@@ -8,6 +8,8 @@
 #include <mod/flogger.h>
 
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 #include "coop/coop.h"
 #include "settings.h"
@@ -15,7 +17,7 @@
 #include "ui/overlay.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.5.2, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.5.3, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -72,6 +74,19 @@ ON_MOD_LOAD()
         else     {          logger->Error("[НЕТ]  %s (%s)", s.desc, s.sym); }
     }
     logger->Info("Символов найдено: %d из %d", found, total);
+
+    // Папка SA/cleo в корне памяти (рядом с Download, Documents): CLEO игрока читает скрипты оттуда.
+    // Создаём, если её нет (на новой установке). Нужен «Доступ ко всем файлам».
+    {
+        const char* root = aml->GetInternalPath();   // обычно /storage/emulated/0
+        if(root && root[0])
+        {
+            char path[512];
+            snprintf(path, sizeof(path), "%s/SA", root);      mkdir(path, 0777);
+            snprintf(path, sizeof(path), "%s/SA/cleo", root); bool ok = mkdir(path, 0777) == 0 || errno == EEXIST;
+            g_fileLog.Info(ok ? "Папка SA/cleo на месте: %s" : "Не удалось создать %s (нет доступа ко всем файлам?)", path);
+        }
+    }
 
     settings::Data st = settings::Load();
 
