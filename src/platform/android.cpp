@@ -164,6 +164,27 @@ bool ClipboardGetText(char* out, size_t len)
     return ok;
 }
 
+int HasPermission(const char* permission)
+{
+    JniScope j;
+    if(!j.env) return -1;
+    JNIEnv* env = j.env;
+    jobject ctx = aml->GetAppContextObject();
+    if(!ctx) return -1;
+    int result = -1;
+    jclass ctxCls = env->GetObjectClass(ctx);
+    jmethodID check = env->GetMethodID(ctxCls, "checkSelfPermission", "(Ljava/lang/String;)I");
+    if(!j.Failed() && check)
+    {
+        jstring name = env->NewStringUTF(permission);
+        jint r = env->CallIntMethod(ctx, check, name);
+        if(!j.Failed()) result = (r == 0) ? 1 : 0;   // PackageManager.PERMISSION_GRANTED == 0
+        env->DeleteLocalRef(name);
+    }
+    env->DeleteLocalRef(ctxCls);
+    return result;
+}
+
 bool DeviceModel(char* out, size_t len)
 {
     JniScope j;

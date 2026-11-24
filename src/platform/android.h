@@ -12,6 +12,9 @@ namespace platform
     bool ClipboardGetText(char* out, size_t len);
     bool ClipboardSetText(const char* text);
 
+    // Выдано ли приложению разрешение (Context.checkSelfPermission). -1 — не удалось узнать.
+    int HasPermission(const char* permission);
+
     // Модель телефона (android.os.Build.MODEL) — ник по умолчанию. false — не удалось.
     bool DeviceModel(char* out, size_t len);
 

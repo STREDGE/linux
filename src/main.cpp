@@ -13,11 +13,12 @@
 
 #include "coop/coop.h"
 #include "settings.h"
+#include "platform/android.h"
 #include "ui/menu.h"
 #include "ui/overlay.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.5.3, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.5.4, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -86,6 +87,13 @@ ON_MOD_LOAD()
             snprintf(path, sizeof(path), "%s/SA/cleo", root); bool ok = mkdir(path, 0777) == 0 || errno == EEXIST;
             g_fileLog.Info(ok ? "Папка SA/cleo на месте: %s" : "Не удалось создать %s (нет доступа ко всем файлам?)", path);
         }
+    }
+
+    {
+        int mic = platform::HasPermission("android.permission.RECORD_AUDIO");
+        g_fileLog.Info(mic == 1 ? "Микрофон: разрешение ЕСТЬ — голос сможет работать"
+                     : mic == 0 ? "Микрофон: разрешения НЕТ (нет в APK или не включено в настройках Android)"
+                                : "Микрофон: не удалось проверить разрешение");
     }
 
     settings::Data st = settings::Load();

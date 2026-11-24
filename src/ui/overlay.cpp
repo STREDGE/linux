@@ -1042,7 +1042,14 @@ namespace
         {
             g_micHeld = held; g_micSince = g_now;
             coop::SetTalking(held);
-            if(held && !g_micHintShown) { g_micHintShown = true; Feed(kGold, "Звук — после шага с APK. Пока друг видит значок «говорит»"); }
+            if(held && !g_micHintShown)
+            {
+                g_micHintShown = true;
+                int mic = platform::HasPermission("android.permission.RECORD_AUDIO");
+                if(mic == 1)      Feed(kGrove, "Микрофон разрешён — звук появится в следующей версии");
+                else if(mic == 0) Feed(kRed,   "Нет разрешения на микрофон: Настройки → Приложения → GTA SA → Разрешения");
+                else              Feed(kGold,  "Не удалось проверить разрешение на микрофон");
+            }
         }
         float tt = (float)(g_now - g_micSince);
         DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.8f)), r, C(kBlack, 0.45f), 48);
