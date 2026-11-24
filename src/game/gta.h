@@ -27,6 +27,9 @@ namespace gta
         constexpr uintptr_t PedFlags585      = 0x585; // бит 0 = bInVehicle
         constexpr uintptr_t PedCreatedBy     = 0x548; // uint8: 1 = игра (можно удалить), 2 = миссия
         constexpr uintptr_t PedState         = 0x54C; // ePedState
+        constexpr uintptr_t PedMoveState     = 0x550; // eMoveState (CPed::SetMoveState)
+        constexpr uintptr_t PedPlayerData    = 0x540; // CPlayerPedData* (только у игроков)
+        constexpr uintptr_t PlayerDataMoveBlendRatio = 0x20; // float, из PlayerControlZelda
         constexpr uintptr_t PedHealth        = 0x6AC; // float
         constexpr uintptr_t PedRotCurrent    = 0x6C4; // m_fCurrentRotation
         constexpr uintptr_t PedRotAiming     = 0x6C8; // m_fAimingRotation
@@ -35,6 +38,9 @@ namespace gta
 
         constexpr uintptr_t PadSize          = 0x158; // sizeof(CPad)
         constexpr uintptr_t PadDisableCtrl   = 0x110; // uint16 DisablePlayerControls
+
+        constexpr uintptr_t CamOrientation   = 0x154; // float TheCamera.Orientation (PlayerControlZelda)
+        constexpr float     StickScale       = 60.0f; // джойстик / 60 = сила движения (константа игры)
     }
 
     enum eBlipType    { BLIP_CAR = 1, BLIP_CHAR = 2 };
@@ -60,6 +66,7 @@ namespace gta
     extern void      (*PedSetCharCreatedBy)(uintptr_t ped, uint8_t createdBy); // 2 = персонаж миссии
 
     extern uintptr_t Players;      // CWorld::Players (массив CPlayerInfo)
+    extern uintptr_t TheCamera;    // CCamera
 
     // Ищет всё нужное. Возвращает false и пишет в лог, если чего-то нет.
     bool Init(void* libHandle, uintptr_t libBase);

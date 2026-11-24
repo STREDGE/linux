@@ -58,3 +58,13 @@ SHA-256: `92b3714534742cf8e31eba35dbfd5e83871ecb5b936f5519d9b6ef3562234f9e` (р�
   `CPed::CanBeDeleted()` == true. Эта проверка не смотрит, игрок ли это, — только
   «в машине», «в банде игрока» и `m_nCreatedBy` (`0x548`). Поэтому после создания
   второго CJ мод вызывает `CPed::SetCharCreatedBy(2)` (как скриптовая `CREATE_PLAYER`).
+
+## Как игра двигает игрока пешком (`CTaskSimplePlayerOnFoot::PlayerControlZelda`)
+
+- `x = pad->GetPedWalkLeftRight()`, `y = pad->GetPedWalkUpDown()` (short, ±128; вперёд — минус).
+- Сила движения = `sqrt(x² + y²) / 60` → `CPlayerPedData::m_fMoveBlendRatio` (`+0x20`, плавно).
+- Курс = `atan2(-x, -y) - TheCamera.Orientation` (`TheCamera + 0x154`) → `m_fAimingRotation`.
+- `pad->GetSprint(0)` → `SetMoveState(6)`. `m_nMoveState` — `CPed + 0x550`.
+- `CTaskSimplePlayerOnFoot::ProcessPed` флаг `DisablePlayerControls` не проверяет — он
+  работает только внутри геттеров `CPad`. Поэтому мод отключает пульт 2, но три геттера
+  (ходьба X/Y и спринт) для пульта 2 перехватывает и отдаёт «виртуальный джойстик» друга.

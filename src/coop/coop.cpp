@@ -23,6 +23,7 @@ namespace
     constexpr float    kSmoothRate       = 12.0f;      // скорость сглаживания (1/с)
     constexpr uint64_t kEchoDelayUs      = 1000000;    // эхо-режим: повтор с задержкой 1 с
     constexpr float    kEchoOffset       = 1.5f;       // эхо-режим: сдвиг вбок, м
+    constexpr float    kMinMoveRatio     = 0.05f;      // меньше — стоит на месте
     constexpr uint64_t kEchoSampleUs     = 50000;      // эхо-режим: запись 20 раз в секунду (буфер 3,2 с)
     constexpr uint64_t kStatusLogUs      = 15000000;   // раз в 15 с — строка состояния в лог
 
@@ -39,6 +40,12 @@ namespace
     CVector   g_shownPos{};
     float     g_shownHeading = 0.0f;
     uint64_t  g_lastFrameUs = 0;
+
+    // «Виртуальный джойстик» второго CJ: игра читает его через перехваченные
+    // CPad::GetPedWalkLeftRight / GetPedWalkUpDown / GetSprint для пульта 2
+    // и сама включает анимации ходьбы, бега и спринта.
+    int16_t   g_stickX = 0, g_stickY = 0;
+    bool      g_sprint = false;
     uint64_t  g_nextSendUs  = 0;
 
     // Эхо-режим (проверка в одиночку): кольцевой буфер своих состояний
@@ -90,6 +97,7 @@ namespace
         g_remotePed = 0;
         g_remoteRef = -1;
         g_inWorld   = false;
+        g_stickX = g_stickY = 0; g_sprint = false;
         Log(false, "Второй CJ убран (%s)", reason);
     }
 
@@ -205,6 +213,25 @@ namespace
             g_inWorld = wantInWorld;
         }
 
+        // Джойстик: направление — куда смотрит друг, сила — как сильно он
+        // жмёт свой джойстик. Формула обратная PlayerControlZelda:
+        // курс = atan2(-x, -y) - TheCamera.Orientation.
+        float ratio = (s.flags & net::PSF_IN_VEHICLE) ? 0.0f : s.moveRatio;
+        if(ratio > kMinMoveRatio)
+        {
+            float mag = ratio * off::StickScale;
+            if(mag > 127.0f) mag = 127.0f;
+            float a = g_shownHeading + Field<float>(TheCamera, off::CamOrientation);
+            g_stickX = (int16_t)(-mag * sinf(a));
+            g_stickY = (int16_t)(-mag * cosf(a));
+            g_sprint = s.moveState >= 6;
+        }
+        else
+        {
+            g_stickX = g_stickY = 0;
+            g_sprint = false;
+        }
+
         g_where = "перенос второго CJ";
         PlaceRemote(g_shownPos, g_shownHeading);
     }
@@ -223,6 +250,9 @@ namespace
         float hp = Field<float>(ped, off::PedHealth);
         s.health = (uint8_t)(hp < 0 ? 0 : hp > 255 ? 255 : hp);
         s.flags  = inVeh ? net::PSF_IN_VEHICLE : 0;
+        s.moveState = (uint8_t)Field<int>(ped, off::PedMoveState);
+        uintptr_t pd = Field<uintptr_t>(ped, off::PedPlayerData);
+        s.moveRatio = (pd && !inVeh) ? Field<float>(pd, off::PlayerDataMoveBlendRatio) : 0.0f;
         return s;
     }
 
@@ -285,10 +315,13 @@ namespace
         {
             g_nextStatusUs = now + kStatusLogUs;
             if(CheckRemoteAlive())
-                Log(false, "Статус: второй CJ есть, %s, до него %.0f м, его состояние %d; ты %s; FPS ~%.0f",
+                Log(false, "Статус: второй CJ есть, %s, до него %.0f м, его состояние %d; ты %s "
+                           "(движение %d, сила %.2f, скорость %.1f м/с); джойстик 2: %d,%d%s; FPS ~%.0f",
                     g_inWorld ? "в мире" : "далеко (только метка)",
                     Dist2D(GetPosition(local), g_shownPos), Field<int>(g_remotePed, off::PedState),
-                    InVehicle(local) ? "в машине" : "пешком", dt > 0 ? 1.0f / dt : 0.0f);
+                    InVehicle(local) ? "в машине" : "пешком", me.moveState, me.moveRatio,
+                    sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1]),
+                    g_stickX, g_stickY, g_sprint ? " +спринт" : "", dt > 0 ? 1.0f / dt : 0.0f);
             else
                 Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
         }
@@ -333,6 +366,12 @@ DECL_HOOKv(PadUpdatePads)
     if(g_remotePed) Field<uint16_t>(GetPad(kRemoteSlot), off::PadDisableCtrl) = 1;
 }
 
+// Пульт второго игрока: отдаём «виртуальный джойстик» друга
+static bool IsRemotePad(uintptr_t pad) { return g_remotePed && pad == GetPad(kRemoteSlot); }
+DECL_HOOK(int16_t, PadGetPedWalkLeftRight, uintptr_t self) { return IsRemotePad(self) ? g_stickX : PadGetPedWalkLeftRight(self); }
+DECL_HOOK(int16_t, PadGetPedWalkUpDown,    uintptr_t self) { return IsRemotePad(self) ? g_stickY : PadGetPedWalkUpDown(self); }
+DECL_HOOK(bool,    PadGetSprint, uintptr_t self, int mode) { return IsRemotePad(self) ? g_sprint : PadGetSprint(self, mode); }
+
 DECL_HOOKb(IsCoopGameGoingOn)                         { return false; }
 DECL_HOOKb(IsPlayerUse2PlayerControls, uintptr_t ped) { (void)ped; return false; }
 
@@ -364,6 +403,9 @@ bool Install(void* h, const net::Config& cfg, FLogger* log)
     const HookDef hooks[] = {
         { "_ZN5CGame7ProcessEv",                                     (void*)HookOf_GameProcess,                (void**)&GameProcess },
         { "_ZN4CPad10UpdatePadsEv",                                  (void*)HookOf_PadUpdatePads,              (void**)&PadUpdatePads },
+        { "_ZN4CPad19GetPedWalkLeftRightEv",                         (void*)HookOf_PadGetPedWalkLeftRight,     (void**)&PadGetPedWalkLeftRight },
+        { "_ZN4CPad16GetPedWalkUpDownEv",                            (void*)HookOf_PadGetPedWalkUpDown,        (void**)&PadGetPedWalkUpDown },
+        { "_ZN4CPad9GetSprintEi",                                    (void*)HookOf_PadGetSprint,               (void**)&PadGetSprint },
         { "_ZN10CGameLogic17IsCoopGameGoingOnEv",                    (void*)HookOf_IsCoopGameGoingOn,          (void**)&IsCoopGameGoingOn },
         { "_ZN10CGameLogic26IsPlayerUse2PlayerControlsEP10CPlayerPed",(void*)HookOf_IsPlayerUse2PlayerControls, (void**)&IsPlayerUse2PlayerControls },
         { "_ZN10CGameLogic6UpdateEv",                                (void*)HookOf_GameLogicUpdate,            (void**)&GameLogicUpdate },

@@ -26,6 +26,7 @@ namespace gta
     void      (*PedSetCharCreatedBy)(uintptr_t, uint8_t)              = nullptr;
 
     uintptr_t Players = 0;
+    uintptr_t TheCamera = 0;
 
     namespace
     {
@@ -58,6 +59,7 @@ namespace gta
         ok &= Resolve(h, (void**)&PedIsAlive,           "_ZNK4CPed7IsAliveEv");
         ok &= Resolve(h, (void**)&PedSetCharCreatedBy,  "_ZN4CPed16SetCharCreatedByEh");
         ok &= Resolve(h, (void**)&Players,              "_ZN6CWorld7PlayersE");
+        ok &= Resolve(h, (void**)&TheCamera,            "TheCamera");
         return ok;
     }
 
