@@ -164,6 +164,28 @@ bool ClipboardGetText(char* out, size_t len)
     return ok;
 }
 
+bool DeviceModel(char* out, size_t len)
+{
+    JniScope j;
+    if(!j.env) return false;
+    JNIEnv* env = j.env;
+    bool ok = false;
+    jclass build = env->FindClass("android/os/Build");
+    if(!j.Failed() && build)
+    {
+        jfieldID fid = env->GetStaticFieldID(build, "MODEL", "Ljava/lang/String;");
+        jstring str = fid ? (jstring)env->GetStaticObjectField(build, fid) : nullptr;
+        if(!j.Failed() && str)
+        {
+            const char* utf = env->GetStringUTFChars(str, nullptr);
+            if(utf) { snprintf(out, len, "%s", utf); ok = out[0] != 0; env->ReleaseStringUTFChars(str, utf); }
+            env->DeleteLocalRef(str);
+        }
+        env->DeleteLocalRef(build);
+    }
+    return ok;
+}
+
 bool ClipboardSetText(const char* text)
 {
     JniScope j;

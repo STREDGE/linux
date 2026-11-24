@@ -31,6 +31,7 @@ namespace gta
         constexpr uintptr_t PedPlayerData    = 0x540; // CPlayerPedData* (только у игроков)
         constexpr uintptr_t PlayerDataMoveBlendRatio = 0x20; // float, из PlayerControlZelda
         constexpr uintptr_t PedHealth        = 0x6AC; // float
+        constexpr uintptr_t PedArmour        = 0x6B4; // float (CCheat::MoneyArmourHealthCheat)
         constexpr uintptr_t PedRotCurrent    = 0x6C4; // m_fCurrentRotation
         constexpr uintptr_t PedRotAiming     = 0x6C8; // m_fAimingRotation
         constexpr uintptr_t PedVehicle       = 0x708; // CVehicle*

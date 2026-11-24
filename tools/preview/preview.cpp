@@ -30,10 +30,19 @@ static bool g_connected = false;
 namespace coop {
     void SetConfig(const net::Config& c) { g_role = c.role; }
     net::Config GetConfig() { net::Config c; c.role = g_role; strcpy(c.hostAddress, "100.87.12.40"); return c; }
-    Status GetStatus() { Status s{}; s.role = g_role; s.running = true; s.connected = g_connected; s.pingMs = 84; s.remoteSpawned = true; strcpy(s.host, "100.87.12.40"); return s; }
+    Status GetStatus() { Status s{}; s.role = g_role; s.running = true; s.connected = g_connected; s.pingMs = 84; s.remoteSpawned = true; strcpy(s.host, "100.87.12.40");
+                         s.link = g_connected ? net::Link::Connected : net::Link::Idle; strcpy(s.peerNick, "HOMIE_BE"); return s; }
+    bool g_pending = false, g_talk = false; int g_evStage = 0;
+    Team GetTeam() { Team t; t.show = true; t.role = g_role; strcpy(t.myNick, "SM-X710"); t.myHealth = 86; t.myArmour = 40;
+                     t.mate.present = g_connected; strcpy(t.mate.nick, "HOMIE_BE"); t.mate.health = 72; t.mate.armour = 65;
+                     t.mate.pingMs = 84; t.mate.distM = 12; t.mate.talking = g_talk; return t; }
+    bool PopEvent(net::Event& e) { if(g_evStage == 1) { g_evStage = 2; e = { net::EventType::Connected, "HOMIE_BE", 84 }; return true; } return false; }
+    bool PendingRequest(char* n, size_t l, float* left) { if(!g_pending) return false; snprintf(n, l, "HOMIE_BE"); *left = 11.3f; return true; }
+    void AnswerJoin(bool) {}
+    void SetTalking(bool) {}
 }
 namespace settings {
-    Data Load() { Data d; d.net.role = g_role; strcpy(d.net.hostAddress, "100.87.12.40"); return d; }
+    Data Load() { Data d; d.net.role = g_role; strcpy(d.net.hostAddress, "100.87.12.40"); strcpy(d.net.nick, "SM-X710"); return d; }
     void Save(const Data&) {}
     const char* RoleToString(net::Role) { return "x"; }
 }
@@ -42,6 +51,7 @@ namespace platform {
     bool ClipboardGetText(char* o, size_t l) { snprintf(o, l, "вот адрес 100.87.12.40"); return true; }
     bool ClipboardSetText(const char*) { return true; }
     bool ExtractIPv4(const char*, char* o, size_t l) { snprintf(o, l, "100.87.12.40"); return true; }
+    bool DeviceModel(char* o, size_t l) { snprintf(o, l, "SM-X710"); return true; }
 }
 
 // ---- программный растеризатор вместо RenderWare ----
@@ -109,7 +119,10 @@ namespace imgui_rw {
     }
 }
 
-namespace overlay { extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t); }
+namespace overlay { extern void (*MobileMenuRender)(uintptr_t); void HookOf_MobileMenuRender(uintptr_t);
+                    extern void (*Render2dStuff)(); void HookOf_Render2dStuff(); }
+static void NoR2d() {}
+static void HudFrames(double seconds) { int n = (int)(seconds * 30); for(int i = 0; i < n; ++i) { overlay::HookOf_Render2dStuff(); usleep(33000); } }
 namespace coop { void KeepWorldRunningInMenu() {} }
 static void NoRender(uintptr_t) {}
 
@@ -148,5 +161,15 @@ int main(int argc, char** argv)
     Tap(cx, card(3)); Frames(0.3); Save("join.ppm");
     Tap(cx, card(0)); Frames(0.9); Save("off.ppm");
     Tap(cx, card(1)); Frames(0.9); Save("solo.ppm");
+    Tap(cx, card(2)); Frames(0.9); Save("host.ppm");
+
+    // слой поверх игры: закрываем меню крестиком, затем запрос, подключение, разговор
+    overlay::Render2dStuff = NoR2d;
+    Tap(W - W * 0.03f - 4.5f * u, 4 * u + 6 * u); Frames(0.5);
+    coop::g_pending = true; HudFrames(0.8); Save("hud_request.ppm");
+    coop::g_pending = false; g_connected = true; coop::g_evStage = 1; HudFrames(0.9);
+    coop::g_talk = true;
+    g_fakePoints[0] = (int)(W - W * 0.15f); g_fakePoints[1] = (int)(31 * u); g_fakePoints[2] = 2; HudFrames(0.6); Save("hud_team.ppm");
+    g_fakePoints[2] = 0;
     return 0;
 }

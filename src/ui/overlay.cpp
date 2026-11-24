@@ -7,6 +7,7 @@
 #include <sautils/isautils.h>
 
 #include <float.h>
+#include <stdarg.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -152,7 +153,7 @@ namespace
     settings::Data g_settings;
     float     g_ffKnob = 0;             // 0..1 положение тумблера
 
-    char      g_toast[96] = "";
+    char      g_toast[192] = "";
     double    g_toastAt = -10;
 
     char      g_myIp[32] = "";
@@ -294,15 +295,17 @@ namespace
             case net::Role::Echo: snprintf(text, sizeof(text), st.remoteSpawned ? "Двойник рядом" : "Загрузи сохранение");
                                   dot = st.remoteSpawned ? kGrove : kGold; pulse = true; break;
             case net::Role::Host:
-                if(!st.running)        { snprintf(text, sizeof(text), "Ошибка сети"); dot = kRed; }
-                else if(st.connected)  { snprintf(text, sizeof(text), "Друг подключён"); dot = kGrove; pulse = true; }
-                else                   { snprintf(text, sizeof(text), "Жду друга…"); dot = kGold; pulse = true; }
+                if(!st.running)                        { snprintf(text, sizeof(text), "Ошибка сети"); dot = kRed; }
+                else if(st.connected)                  { snprintf(text, sizeof(text), "%s в игре", st.peerNick); dot = kGrove; pulse = true; }
+                else if(st.link == net::Link::Pending) { snprintf(text, sizeof(text), "Запрос на подключение"); dot = kGold; pulse = true; }
+                else                                   { snprintf(text, sizeof(text), "Жду друга…"); dot = kGold; pulse = true; }
                 break;
             case net::Role::Client:
-                if(!st.running)        { snprintf(text, sizeof(text), "Неверный адрес"); dot = kRed; }
-                else if(st.connected)  { if(st.pingMs >= 0) snprintf(text, sizeof(text), "Подключено · %d мс", st.pingMs);
-                                         else snprintf(text, sizeof(text), "Подключено"); dot = kGrove; pulse = true; }
-                else                   { snprintf(text, sizeof(text), "Подключаюсь…"); dot = kGold; pulse = true; }
+                if(!st.running)                        { snprintf(text, sizeof(text), "Неверный адрес"); dot = kRed; }
+                else if(st.connected)                  { if(st.pingMs >= 0) snprintf(text, sizeof(text), "У %s · %d мс", st.peerNick, st.pingMs);
+                                                         else snprintf(text, sizeof(text), "У %s", st.peerNick); dot = kGrove; pulse = true; }
+                else if(st.link == net::Link::Denied)  { snprintf(text, sizeof(text), "Хост отклонил"); dot = kRed; }
+                else                                   { snprintf(text, sizeof(text), "Стучусь к хосту…"); dot = kGold; pulse = true; }
                 break;
         }
         ImVec2 ts = TextSize(F_SMALL, text);
@@ -357,6 +360,46 @@ namespace
             g_settings.friendlyFire = !g_settings.friendlyFire;
             settings::Save(g_settings);
             Toast(g_settings.friendlyFire ? "Огонь по своим: ВКЛ" : "Огонь по своим: ВЫКЛ");
+        }
+        return b.y;
+    }
+
+    void Chip(ImVec2 a, ImVec2 b, const char* label, bool* clicked);
+    float ChipWidth(const char* label);
+
+    // Строка «Твой ник» с кнопкой «Вставить» (ник из буфера обмена). Возвращает нижний край.
+    float NickRow(ImVec2 a, float width)
+    {
+        float h = U(8.5f);
+        ImVec2 b(a.x + width, a.y + h);
+        DL()->AddRectFilled(a, b, C(kPanel2), U(1.6f));
+        DL()->AddRect(a, b, C(kLine), U(1.6f), 0, U(0.3f));
+        ImVec2 ls = TextSize(F_SMALL, "ТВОЙ НИК");
+        Text(F_SMALL, ImVec2(a.x + U(2.4f), (a.y + b.y - ls.y) * 0.5f), C(kGold), "ТВОЙ НИК");
+        const char* pl = "Вставить";
+        float pw = ChipWidth(pl);
+        ImVec2 ns = TextSize(F_BODY, g_settings.net.nick);
+        Text(F_BODY, ImVec2(a.x + U(2.4f) + ls.x + U(2), (a.y + b.y - ns.y) * 0.5f), C(kInk), g_settings.net.nick);
+        bool paste = false;
+        Chip(ImVec2(b.x - U(1.2f) - pw, a.y + U(1.2f)), ImVec2(b.x - U(1.2f), b.y - U(1.2f)), pl, &paste);
+        if(paste)
+        {
+            char text[128];
+            if(platform::ClipboardGetText(text, sizeof(text)))
+            {
+                // первая строка, без пробелов по краям, не длиннее ника
+                char* p = text; while(*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') ++p;
+                char* e = p; while(*e && *e != '\n' && *e != '\r') ++e; *e = 0;
+                while(e > p && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
+                if(*p)
+                {
+                    snprintf(g_settings.net.nick, sizeof(g_settings.net.nick), "%s", p);
+                    settings::Save(g_settings);
+                    char t[192]; snprintf(t, sizeof(t), "Ник: %s (применится при подключении)", g_settings.net.nick); Toast(t);
+                }
+                else Toast("В буфере пусто");
+            }
+            else Toast("В буфере пусто");
         }
         return b.y;
     }
@@ -646,11 +689,12 @@ namespace
                 if(copy)
                 {
                     if(!g_myIpOk) Toast("Включи Tailscale — адреса пока нет");
-                    else if(platform::ClipboardSetText(g_myIp)) { char t[96]; snprintf(t, sizeof(t), "Адрес %s скопирован", g_myIp); Toast(t); }
+                    else if(platform::ClipboardSetText(g_myIp)) { char t[192]; snprintf(t, sizeof(t), "Адрес %s скопирован", g_myIp); Toast(t); }
                     else Toast("Не удалось скопировать");
                 }
-                y = rb.y + U(2.4f);
-                const char* p = g_myIpOk ? "Отправь этот адрес другу. Когда он подключится, точка вверху станет зелёной."
+                y = rb.y + U(1.6f);
+                y = NickRow(ImVec2(px, y), pw) + U(2);
+                const char* p = g_myIpOk ? "Отправь этот адрес другу. Когда он постучится, ты увидишь запрос и нажмёшь «Принять»."
                                          : "Включи Tailscale на телефоне — здесь появится твой адрес для друга.";
                 Text(F_BODY, ImVec2(px, y), C(kDim), p, pw); y += TextSize(F_BODY, p, pw).y + U(2.4f);
                 FriendlyFireRow(ImVec2(px, y), pw);
@@ -667,14 +711,15 @@ namespace
                 float w1 = ChipWidth(l1), w2 = ChipWidth(l2);
                 Chip(ImVec2(px, ly), ImVec2(px + w1, ly + U(6.4f)), l1, &paste);
                 Chip(ImVec2(px + w1 + U(1.6f), ly), ImVec2(px + w1 + U(1.6f) + w2, ly + U(6.4f)), l2, &clear);
-                ly += U(6.4f) + U(2.4f);
-                Text(F_BODY, ImVec2(px, ly), C(kDim), "Попроси друга нажать «Копировать» в его меню и прислать адрес. Он начинается на 100.", lw);
+                ly += U(6.4f) + U(1.6f);
+                ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
+                Text(F_SMALL, ImVec2(px, ly), C(kDim), "Адрес пришлёт друг: «Копировать» в его меню. Он начинается на 100.", lw);
                 Keypad(ImVec2(px + pw - keysW, y), keysW);
                 if(paste)
                 {
                     char text[256], ip[32];
                     if(platform::ClipboardGetText(text, sizeof(text)) && platform::ExtractIPv4(text, ip, sizeof(ip)))
-                    { g_ip = ip; char t[96]; snprintf(t, sizeof(t), "Вставлено: %s", ip); Toast(t); }
+                    { g_ip = ip; char t[192]; snprintf(t, sizeof(t), "Вставлено: %s", ip); Toast(t); }
                     else Toast("В буфере нет адреса");
                 }
                 if(clear) g_ip.clear();
@@ -723,7 +768,269 @@ namespace
         g_ffKnob += (target - g_ffKnob) * Clamp01(ImGui::GetIO().DeltaTime * 14.0f);
     }
 
-    void Frame()
+
+    // ======================= слой поверх игры =======================
+    struct FeedItem { char text[192]; Rgb color; double t; };
+    std::vector<FeedItem> g_feed;
+    void Feed(Rgb color, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+    void Feed(Rgb color, const char* fmt, ...)
+    {
+        FeedItem f; f.color = color; f.t = g_now;
+        va_list a; va_start(a, fmt); vsnprintf(f.text, sizeof(f.text), fmt, a); va_end(a);
+        if(g_feed.size() > 4) g_feed.erase(g_feed.begin());
+        g_feed.push_back(f);
+    }
+
+    void ProcessEvents()
+    {
+        net::Event e;
+        while(coop::PopEvent(e))
+        {
+            switch(e.type)
+            {
+                case net::EventType::Connected:
+                    if(e.pingMs >= 0) Feed(kGrove, "%s в игре · %d мс", e.nick, e.pingMs);
+                    else              Feed(kGrove, "%s в игре", e.nick);
+                    break;
+                case net::EventType::Disconnected:   Feed(kRed,  "%s отключился · потеря связи", e.nick); break;
+                case net::EventType::DeniedByHost:   Feed(kRed,  "Хост отклонил запрос"); break;
+                case net::EventType::HostBusy:       Feed(kGold, "У хоста уже играет другой игрок"); break;
+                case net::EventType::RequestExpired: Feed(kGold, "Запрос %s истёк", e.nick); break;
+                case net::EventType::JoinRequest:    break; // показывается окном запроса
+            }
+        }
+    }
+
+    void DrawFeed(float baseY)
+    {
+        float y = baseY;
+        for(int i = (int)g_feed.size() - 1; i >= 0; --i)
+        {
+            float t = (float)(g_now - g_feed[i].t);
+            if(t > 3.6f) { g_feed.erase(g_feed.begin() + i); continue; }
+            float kin = EaseBack(t / 0.45f), kout = t > 3.2f ? 1 - (t - 3.2f) / 0.4f : 1;
+            float sa = g_alpha; g_alpha = Clamp01(kin) * Clamp01(kout);
+            ImVec2 ts = TextSize(F_BODY, g_feed[i].text);
+            float w = ts.x + U(5.6f), h = ts.y + U(2.8f);
+            float dy = (1 - Clamp01(kin)) * U(3) - (1 - kout) * U(2);
+            ImVec2 a(W() * 0.5f - w * 0.5f, y - h + dy), b(a.x + w, a.y + h);
+            DL()->AddRectFilled(ImVec2(a.x, a.y + U(1)), ImVec2(b.x, b.y + U(1)), C(kBlack, 0.35f), U(1.4f));
+            DL()->AddRectFilled(a, b, C(kNight, 0.88f), U(1.4f));
+            DL()->AddRectFilled(a, ImVec2(a.x + U(1), b.y), C(g_feed[i].color), U(1.4f), ImDrawFlags_RoundCornersLeft);
+            Text(F_BODY, ImVec2(a.x + U(3), a.y + U(1.4f)), C(kInk), g_feed[i].text);
+            g_alpha = sa;
+            y = a.y - U(1.2f);
+        }
+    }
+
+    // ---- окно «кто-то подключается» ----
+    double g_reqShownAt = -10;
+    char   g_reqNick[net::kNickLen] = "";
+    void DrawRequest()
+    {
+        char nick[net::kNickLen]; float left = 0;
+        if(!coop::PendingRequest(nick, sizeof(nick), &left)) { g_reqShownAt = -10; return; }
+        if(g_reqShownAt < 0 || strcmp(nick, g_reqNick)) { g_reqShownAt = g_now; snprintf(g_reqNick, sizeof(g_reqNick), "%s", nick); }
+        float k = EaseBack((float)(g_now - g_reqShownAt) / 0.45f);
+        float w = fminf(CW(54), U(128)), h = U(30);
+        ImVec2 a(W() * 0.5f - w * 0.5f, U(4) - (1 - k) * (h + U(6))), b(a.x + w, a.y + h);
+        Glow(a, b, U(2), kGold, 1.2f);
+        DL()->AddRectFilled(a, b, C(kNight, 0.97f), U(2));
+        DL()->AddRect(a, b, C(kGold), U(2), 0, U(0.35f));
+        // таймер
+        float tr = U(5); ImVec2 tc(a.x + U(3) + tr, a.y + U(3) + tr);
+        DL()->AddCircle(tc, tr, C(kLine), 40, U(0.7f));
+        float frac = left / 15.0f;
+        if(frac > 0.001f)
+        {
+            DL()->PathArcTo(tc, tr, -M_PI * 0.5f, -M_PI * 0.5f + 2 * M_PI * frac, 40);
+            DL()->PathStroke(C(kGold), 0, U(0.7f));
+        }
+        char sec[8]; snprintf(sec, sizeof(sec), "%d", (int)ceilf(left));
+        ImVec2 ss = TextSize(F_KEY, sec);
+        Text(F_KEY, ImVec2(tc.x - ss.x * 0.5f, tc.y - ss.y * 0.5f), C(kInk), sec);
+        float tx = tc.x + tr + U(3);
+        Text(F_SMALL, ImVec2(tx, a.y + U(3)), C(kGold), "ПОДКЛЮЧЕНИЕ К ТВОЕМУ МИРУ");
+        Text(F_HEAD, ImVec2(tx, a.y + U(6.6f)), C(kInk), nick);
+        // кнопки
+        float bh = U(8.5f), gap = U(1.6f), bw = (w - U(6) - gap) * 0.5f;
+        ImVec2 ya(a.x + U(3), b.y - U(3) - bh), yb(ya.x + bw, ya.y + bh);
+        ImVec2 na(yb.x + gap, ya.y), nb(na.x + bw, yb.y);
+        bool yes = false, no = false;
+        BigButton(ya, yb, "Принять", true, &yes);
+        bool held = Held(na, nb);
+        DL()->AddRectFilled(ImVec2(na.x, na.y + U(0.6f)), ImVec2(nb.x, nb.y + U(0.6f)), C(Rgb{ 10, 14, 20 }), U(1.6f));
+        DL()->AddRectFilled(ImVec2(na.x, na.y + (held ? U(0.5f) : 0)), ImVec2(nb.x, nb.y + (held ? U(0.5f) : 0)), C(Rgb{ 27, 34, 48 }), U(1.6f));
+        ImVec2 ns = TextSize(F_HEAD, "Отклонить");
+        Text(F_HEAD, ImVec2((na.x + nb.x - ns.x) * 0.5f, (na.y + nb.y - ns.y) * 0.5f + (held ? U(0.5f) : 0)), C(kInk), "Отклонить");
+        no = Clicked(na, nb);
+        if(yes) { coop::AnswerJoin(true); }
+        if(no)  { coop::AnswerJoin(false); Feed(kGold, "Запрос %s отклонён", nick); }
+    }
+
+    // ---- панель «Команда» под радаром ----
+    double g_mateInAt = -10, g_mateGoneAt = -10;
+    bool   g_mateWasPresent = false;
+    char   g_mateGoneNick[net::kNickLen] = "";
+
+    void Bars(ImVec2 a, float w, float hp, float ar)
+    {
+        float h = U(0.9f), gap = U(0.5f);
+        DL()->AddRectFilled(a, ImVec2(a.x + w, a.y + h), C(kWhite, 0.12f), h);
+        DL()->AddRectFilledMultiColor(a, ImVec2(a.x + w * Clamp01(hp / 100.0f), a.y + h),
+                                      C(Rgb{ 192, 57, 43 }), C(Rgb{ 255, 92, 92 }), C(Rgb{ 255, 92, 92 }), C(Rgb{ 192, 57, 43 }));
+        ImVec2 b(a.x, a.y + h + gap);
+        DL()->AddRectFilled(b, ImVec2(b.x + w, b.y + h), C(kWhite, 0.12f), h);
+        if(ar > 0.5f)
+            DL()->AddRectFilledMultiColor(b, ImVec2(b.x + w * Clamp01(ar / 100.0f), b.y + h),
+                                          C(Rgb{ 159, 179, 200 }), C(Rgb{ 232, 238, 245 }), C(Rgb{ 232, 238, 245 }), C(Rgb{ 159, 179, 200 }));
+    }
+
+    void MicGlyph(ImVec2 c, float s, ImU32 col)
+    {
+        float t = s * 0.12f;
+        DL()->AddRect(ImVec2(c.x - s * 0.18f, c.y - s * 0.45f), ImVec2(c.x + s * 0.18f, c.y + s * 0.12f), col, s * 0.18f, 0, t);
+        DL()->PathArcTo(ImVec2(c.x, c.y - s * 0.02f), s * 0.34f, 0.15f, (float)M_PI - 0.15f, 12);
+        DL()->PathStroke(col, 0, t);
+        DL()->AddLine(ImVec2(c.x, c.y + s * 0.32f), ImVec2(c.x, c.y + s * 0.48f), col, t);
+    }
+
+    float MateRow(ImVec2 a, float w, Rgb stripe, const char* nick, const char* meta, float hp, float ar,
+                  bool talking, bool lost, bool showMic)
+    {
+        float h = U(8.6f);
+        ImVec2 b(a.x + w, a.y + h);
+        DL()->AddRectFilledMultiColor(a, b, C(kNight, 0.88f), C(kNight, 0.55f), C(kNight, 0.55f), C(kNight, 0.88f));
+        DL()->AddRectFilled(a, ImVec2(a.x + U(0.8f), b.y), C(lost ? kRed : stripe));
+        if(talking) DL()->AddRect(a, b, C(kGrove, 0.7f), 0, 0, U(0.3f));
+        float sa = g_alpha; if(lost) g_alpha *= 0.55f;
+        // ник с тенью
+        DL()->AddText(g_fonts[F_HEAD], g_fonts[F_HEAD]->FontSize * 0.62f, ImVec2(a.x + U(2.2f), a.y + U(1.2f) + U(0.3f)), C(kBlack), nick);
+        DL()->AddText(g_fonts[F_HEAD], g_fonts[F_HEAD]->FontSize * 0.62f, ImVec2(a.x + U(2.2f), a.y + U(1.2f)), C(lost ? kDim : kInk), nick);
+        ImVec2 ms = TextSize(F_SMALL, meta);
+        float mx = b.x - U(1.6f) - ms.x;
+        Text(F_SMALL, ImVec2(mx, a.y + U(1.6f)), C(lost ? kRed : kGrove), meta);
+        if(showMic)
+        {
+            float pulse = talking ? 1 + 0.25f * sinf((float)g_now * 12) : 1;
+            MicGlyph(ImVec2(mx - U(2.4f), a.y + U(3)), U(2.8f) * pulse, C(talking ? kGrove : kDim));
+        }
+        Bars(ImVec2(a.x + U(2.2f), a.y + U(5.4f)), w - U(3.8f), hp, ar);
+        g_alpha = sa;
+        return b.y;
+    }
+
+    void DrawTeam(const coop::Team& t)
+    {
+        if(!t.show) { g_mateWasPresent = false; return; }
+        float x = U(2.5f), y = U(30), w = U(36);
+        TextOutlined(F_SMALL, ImVec2(x, y), kGold, t.mate.present ? "КОМАНДА  2" : "КОМАНДА  1", U(0.2f));
+        y += U(3.6f);
+        const char* role = t.role == net::Role::Host ? "хост" : t.role == net::Role::Client ? "гость" : "тест";
+        char meNick[64]; snprintf(meNick, sizeof(meNick), "%s · ты", t.myNick);
+        y = MateRow(ImVec2(x, y), w, kGold, meNick, role, t.myHealth, t.myArmour, false, false, false) + U(1);
+
+        if(t.mate.present && !g_mateWasPresent) g_mateInAt = g_now;
+        if(!t.mate.present && g_mateWasPresent) { g_mateGoneAt = g_now; }
+        g_mateWasPresent = t.mate.present;
+        if(t.mate.present) snprintf(g_mateGoneNick, sizeof(g_mateGoneNick), "%s", t.mate.nick);
+
+        if(t.mate.present)
+        {
+            float k = EaseBack((float)(g_now - g_mateInAt) / 0.55f);
+            char meta[64], ping[16] = "", dist[16] = "";
+            if(t.mate.pingMs >= 0) snprintf(ping, sizeof(ping), "%d мс  ", t.mate.pingMs);
+            if(t.mate.distM >= 0) snprintf(dist, sizeof(dist), "%.0f м", t.mate.distM);
+            snprintf(meta, sizeof(meta), "%s%s", t.mate.lost ? "нет связи  " : ping, dist);
+            float sa = g_alpha; g_alpha = Clamp01(k);
+            MateRow(ImVec2(x - (1 - Clamp01(k)) * w * 1.1f, y), w, kGrove, t.mate.nick, meta,
+                    t.mate.health, t.mate.armour, t.mate.talking, t.mate.lost, true);
+            g_alpha = sa;
+        }
+        else if(g_now - g_mateGoneAt < 0.5)
+        {   // уезжает влево
+            float k = (float)(g_now - g_mateGoneAt) / 0.5f;
+            float sa = g_alpha; g_alpha = 1 - k;
+            MateRow(ImVec2(x - EaseOut(k) * w * 1.1f, y), w, kRed, g_mateGoneNick, "", 0, 0, false, true, false);
+            g_alpha = sa;
+        }
+    }
+
+    // ---- «друг говорит» сверху ----
+    void DrawTalking(const coop::Team& t)
+    {
+        static double since = -10;
+        bool on = t.mate.present && t.mate.talking && !t.mate.lost;
+        if(on && since < 0) since = g_now;
+        if(!on) { since = -10; return; }
+        float k = EaseBack((float)(g_now - since) / 0.35f);
+        char text[64]; snprintf(text, sizeof(text), "%s говорит", t.mate.nick);
+        ImVec2 ts = TextSize(F_BODY, text);
+        float eqW = U(3.6f), w = ts.x + eqW + U(6.5f), h = ts.y + U(2.4f);
+        ImVec2 a(W() * 0.5f - w * 0.5f, U(3) - (1 - k) * (h + U(4))), b(a.x + w, a.y + h);
+        DL()->AddRectFilled(a, b, C(kNight, 0.85f), h * 0.5f);
+        DL()->AddRect(a, b, C(kGrove), h * 0.5f, 0, U(0.3f));
+        for(int i = 0; i < 3; ++i)
+        {
+            float v = 0.35f + 0.65f * fabsf(sinf((float)g_now * 9 + i * 1.3f));
+            float bx = a.x + U(2.4f) + i * U(1.2f), bh = U(2.6f) * v;
+            DL()->AddRectFilled(ImVec2(bx, (a.y + b.y) * 0.5f + U(1.3f) - bh), ImVec2(bx + U(0.7f), (a.y + b.y) * 0.5f + U(1.3f)), C(kGrove), U(0.3f));
+        }
+        Text(F_BODY, ImVec2(a.x + U(2.4f) + eqW + U(1.4f), a.y + U(1.2f)), C(kInk), text);
+    }
+
+    // ---- кнопка микрофона ----
+    bool   g_micHeld = false;
+    double g_micSince = 0;
+    bool   g_micHintShown = false;
+    void DrawMic(const coop::Team& t)
+    {
+        if(!t.show) { if(g_micHeld) { g_micHeld = false; coop::SetTalking(false); } return; }
+        float r = U(7.2f);
+        ImVec2 c(W() - CW(15), U(31));
+        ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
+        bool held = g_ptr.down && In(g_ptr.downPos, a, b);
+        if(held != g_micHeld)
+        {
+            g_micHeld = held; g_micSince = g_now;
+            coop::SetTalking(held);
+            if(held && !g_micHintShown) { g_micHintShown = true; Feed(kGold, "Звук — после шага с APK. Пока друг видит значок «говорит»"); }
+        }
+        float tt = (float)(g_now - g_micSince);
+        // тень
+        DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.8f)), r, C(kBlack, 0.45f), 48);
+        if(held)
+        {   // волна
+            float ph = fmodf(tt, 1.1f) / 1.1f;
+            DL()->AddCircle(c, r * (1.05f + 0.4f * ph), C(kRed, 0.9f * (1 - ph)), 48, U(0.5f));
+        }
+        // кольцо: золотое или красное, крутится при разговоре
+        int segs = 24;
+        for(int i = 0; i < segs; ++i)
+        {
+            float a0 = i * 2 * (float)M_PI / segs + (held ? tt * 2.6f : 0), a1 = a0 + 2 * (float)M_PI / segs + 0.02f;
+            float v = 0.5f + 0.5f * cosf(a0 * 2);
+            Rgb c0 = held ? Rgb{ (uint8_t)(150 + 105 * v), (uint8_t)(20 + 60 * v), (uint8_t)(20 + 60 * v) }
+                          : Rgb{ (uint8_t)(155 + 100 * v), (uint8_t)(106 + 118 * v), (uint8_t)(18 + 120 * v) };
+            DL()->PathArcTo(c, r - U(0.7f), a0, a1, 3);
+            DL()->PathStroke(C(c0), 0, U(1.4f));
+        }
+        DL()->AddCircleFilled(c, r - U(1.4f), C(held ? Rgb{ 142, 16, 16 } : Rgb{ 11, 15, 21 }), 48);
+        DL()->AddCircleFilled(ImVec2(c.x - r * 0.2f, c.y - r * 0.25f), r * 0.45f, C(held ? Rgb{ 255, 107, 107 } : Rgb{ 42, 52, 66 }, 0.55f), 32);
+        MicGlyph(c, r * 0.95f, C(held ? kWhite : kGold));
+        const char* lbl = held ? "ГОВОРИ" : "ЗАЖМИ";
+        ImVec2 ls = TextSize(F_SMALL, lbl);
+        TextOutlined(F_SMALL, ImVec2(c.x - ls.x * 0.5f, a.y - ls.y - U(0.8f)), held ? Rgb{ 255, 214, 214 } : kGold, lbl, U(0.2f));
+        if(held)
+            for(int i = 0; i < 5; ++i)
+            {
+                float v = 0.25f + 0.75f * fabsf(sinf((float)g_now * 10 + i * 1.7f));
+                float bx = c.x - U(3.2f) + i * U(1.5f), bh = U(3.6f) * v;
+                DL()->AddRectFilled(ImVec2(bx, b.y + U(4.6f) - bh), ImVec2(bx + U(0.9f), b.y + U(4.6f)), C(kRed), U(0.4f));
+            }
+    }
+
+    void Frame(bool fromMenu)
     {
         uint64_t nowUs = (uint64_t)(NowSec() * 1e6);
         float dt = g_lastUs ? (float)(nowUs - g_lastUs) / 1e6f : 1.0f / 60.0f;
@@ -743,7 +1050,18 @@ namespace
 
         PollTouches();
         ImGui::NewFrame();
-        DrawMenu();
+        ProcessEvents();
+        if(fromMenu && g_open) DrawMenu();
+        g_alpha = 1.0f;
+        coop::Team team = coop::GetTeam();
+        if(!fromMenu)
+        {
+            DrawTeam(team);
+            DrawTalking(team);
+            DrawMic(team);
+        }
+        DrawRequest();
+        DrawFeed(H() * 0.66f);
         imgui_rw::Render();
     }
 }
@@ -754,7 +1072,14 @@ DECL_HOOKv(MobileMenuRender, uintptr_t self)
 {
     MobileMenuRender(self);
     coop::KeepWorldRunningInMenu();   // в коопе меню не ставит игру на паузу
-    if(g_open) Frame();
+    Frame(true);                      // меню CO-OP (если открыто) + запросы и уведомления
+}
+
+// Слой поверх игры: панель «Команда», кнопка микрофона, запросы, уведомления
+DECL_HOOKv(Render2dStuff)
+{
+    Render2dStuff();
+    Frame(false);
 }
 
 // Пока открыто наше меню (и пока не отпущен палец после закрытия), меню игры
@@ -764,7 +1089,8 @@ static double g_blockGameMenuUntil = 0;
 DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
 {
     double now = NowSec();
-    if(g_open) { g_blockGameMenuUntil = now + 0.3; return; }
+    char rn[net::kNickLen]; float rl;
+    if(g_open || coop::PendingRequest(rn, sizeof(rn), &rl)) { g_blockGameMenuUntil = now + 0.3; return; }
     if(now < g_blockGameMenuUntil || (g_blockGameMenuUntil > 0 && AnyFingerDown()))
     {
         if(AnyFingerDown()) g_blockGameMenuUntil = now + 0.15;
@@ -823,6 +1149,9 @@ bool Init(void* h, FLogger* log)
     if(!render || !update || !g_pointsOrig) { logger->Error("Меню: нет MobileMenu::Render/Update или Points"); return false; }
     aml->Hook(render, (void*)HookOf_MobileMenuRender, (void**)&MobileMenuRender);
     aml->Hook(update, (void*)HookOf_MobileMenuUpdate, (void**)&MobileMenuUpdate);
+    void* r2d = (void*)aml->GetSym(h, "_Z13Render2dStuffv");
+    if(r2d) aml->Hook(r2d, (void*)HookOf_Render2dStuff, (void**)&Render2dStuff);
+    else logger->Error("Меню: нет Render2dStuff — панели поверх игры не будет");
     logger->Info("Меню Co-op: перехваты стоят");
     return true;
 }

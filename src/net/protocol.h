@@ -7,14 +7,20 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 5;
+    constexpr uint8_t  kProtocolVersion = 6;
+    constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
     {
-        PKT_PING        = 1, // клиент -> хост, раз в секунду (и как «я тут»)
-        PKT_PONG        = 2, // хост -> клиент, ответ на PING
-        PKT_PLAYER_STATE = 3, // в обе стороны, ~20 раз в секунду
+        PKT_PING         = 1, // в обе стороны раз в секунду (после принятия)
+        PKT_PONG         = 2, // ответ на PING
+        PKT_PLAYER_STATE = 3, // в обе стороны, ~20 раз в секунду (после принятия)
+        PKT_HELLO        = 4, // клиент -> хост: «хочу в твой мир» (раз в секунду, пока не ответят)
+        PKT_ACCEPT       = 5, // хост -> клиент: принят
+        PKT_DENY         = 6, // хост -> клиент: отклонён / занято
     };
+
+    enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
 
     #pragma pack(push, 1)
     struct Header
@@ -32,10 +38,30 @@ namespace net
         uint64_t sentUs;
     };
 
+    struct HelloPacket
+    {
+        Header hdr;
+        char   nick[kNickLen];
+    };
+
+    struct AcceptPacket
+    {
+        Header hdr;
+        char   nick[kNickLen];   // ник хоста
+    };
+
+    struct DenyPacket
+    {
+        Header  hdr;
+        uint8_t reason;          // DenyReason
+        uint8_t pad[3];
+    };
+
     enum PlayerStateFlags : uint8_t
     {
         PSF_IN_VEHICLE = 1 << 0,
         PSF_SPRINT     = 1 << 1, // кнопка спринта нажата
+        PSF_TALKING    = 1 << 2, // зажата кнопка микрофона
     };
 
     struct PlayerStatePacket
@@ -50,6 +76,8 @@ namespace net
         uint8_t  moveState;   // eMoveState игры: 1 стоит, 4 шаг, 6 бег/спринт
         uint8_t  jumpCount;   // счётчик прыжков: изменился — второй CJ прыгает
         float    moveRatio;   // сила движения 0..~2 (как от джойстика: 1 = шаг, больше — бег)
+        uint8_t  armour;
+        uint8_t  pad[3];
     };
     #pragma pack(pop)
 

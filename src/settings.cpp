@@ -6,6 +6,8 @@
 #include <string.h>
 #include <strings.h>
 
+#include "platform/android.h"
+
 namespace settings
 {
 
@@ -39,6 +41,9 @@ Data Load()
     d.net.role = RoleFromString(role);
     cfg->GetString(d.net.hostAddress, sizeof(d.net.hostAddress), "HostAddress", "100.64.0.1", "Network");
     d.net.port = (uint16_t)cfg->GetInt("Port", 7777, "Network");
+    char model[net::kNickLen] = "Player";
+    platform::DeviceModel(model, sizeof(model));
+    cfg->GetString(d.net.nick, sizeof(d.net.nick), "Nick", model, "Network");
     cfg->Save();
     return d;
 }
@@ -51,6 +56,7 @@ void Save(const Data& d)
     e = cfg->Bind("Role", "off", "Network");            e->SetString(RoleToString(d.net.role)); delete e;
     e = cfg->Bind("HostAddress", "100.64.0.1", "Network"); e->SetString(d.net.hostAddress);    delete e;
     e = cfg->Bind("Port", 7777, "Network");             e->SetInt(d.net.port);                 delete e;
+    e = cfg->Bind("Nick", "Player", "Network");         e->SetString(d.net.nick);              delete e;
     cfg->Save();
 }
 

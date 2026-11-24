@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <mutex>
+#include <vector>
 
 #include "game/gta.h"
 
@@ -48,6 +49,9 @@ namespace
     float     g_shownHeading = 0.0f;
     uint64_t  g_lastFrameUs = 0;
     uint8_t*  g_userPause = nullptr;   // CTimer::m_UserPause
+    bool      g_localTalking = false;  // кнопка микрофона зажата
+    std::vector<net::Event> g_echoEvents;
+    bool      g_echoAnnounced = false;
 
     // «Виртуальный джойстик» второго CJ: игра читает его через перехваченные
     // CPad::GetPedWalkLeftRight / GetPedWalkUpDown / GetSprint для пульта 2
@@ -292,7 +296,10 @@ namespace
         s.heading = inVeh ? GetMatrixHeading(ent) : Field<float>(ped, off::PedRotCurrent);
         float hp = Field<float>(ped, off::PedHealth);
         s.health = (uint8_t)(hp < 0 ? 0 : hp > 255 ? 255 : hp);
+        float ar = Field<float>(ped, off::PedArmour);
+        s.armour = (uint8_t)(ar < 0 ? 0 : ar > 255 ? 255 : ar);
         s.flags  = inVeh ? net::PSF_IN_VEHICLE : 0;
+        if(g_localTalking) s.flags |= net::PSF_TALKING;
         s.moveState = (uint8_t)Field<int>(ped, off::PedMoveState);
         s.jumpCount = g_localJumpCount;
         if(!inVeh && g_origGetSprint && g_origGetSprint(GetPad(0), 0)) s.flags |= net::PSF_SPRINT;
@@ -342,6 +349,7 @@ namespace
         memset(g_echo, 0, sizeof(g_echo));
         g_echoHead = 0;
         g_echoRemote = net::RemoteState();
+        g_echoAnnounced = false;
         g_cfg = c;
 
         switch(c.role)
@@ -413,6 +421,12 @@ namespace
         if(g_cfg.role == net::Role::Echo)
         {
             UpdateRemote(EchoUpdate(me, now), local, dt, now);
+            if(g_remotePed && !g_echoAnnounced)
+            {
+                g_echoAnnounced = true;
+                net::Event e{ net::EventType::Connected, "Двойник", -1 };
+                g_echoEvents.push_back(e);
+            }
             return;
         }
 
@@ -562,9 +576,75 @@ void KeepWorldRunningInMenu()
     }
 }
 
+Team GetTeam()
+{
+    Team t;
+    t.role = g_cfg.role;
+    bool pending;
+    { std::lock_guard<std::mutex> lock(g_cfgMutex); pending = g_hasPending; }
+    uintptr_t me = SlotPed(0);
+    if(pending || !me || g_cfg.role == net::Role::Off) return t;
+
+    t.show = true;
+    snprintf(t.myNick, sizeof(t.myNick), "%s", g_cfg.nick);
+    t.myHealth = Field<float>(me, off::PedHealth);
+    t.myArmour = Field<float>(me, off::PedArmour);
+
+    if(g_cfg.role == net::Role::Echo)
+    {
+        if(g_remotePed)
+        {
+            t.mate.present = true;
+            snprintf(t.mate.nick, sizeof(t.mate.nick), "Двойник");
+            t.mate.health = t.myHealth; t.mate.armour = t.myArmour;
+            t.mate.distM = Dist2D(GetPosition(me), g_shownPos);
+            t.mate.talking = g_localTalking;
+        }
+        return t;
+    }
+
+    const net::RemoteState& rs = g_session.Remote();
+    bool connected = g_session.Connected();
+    if(connected || (rs.valid && g_session.PeerNick()[0]))
+    {
+        t.mate.present = true;
+        t.mate.lost = !connected;
+        snprintf(t.mate.nick, sizeof(t.mate.nick), "%s", g_session.PeerNick());
+        if(rs.valid)
+        {
+            t.mate.health = rs.pkt.health; t.mate.armour = rs.pkt.armour;
+            CVector p{ rs.pkt.pos[0], rs.pkt.pos[1], rs.pkt.pos[2] };
+            t.mate.distM = Dist2D(GetPosition(me), p);
+            t.mate.talking = (rs.pkt.flags & net::PSF_TALKING) != 0;
+        }
+        t.mate.pingMs = g_session.LastRttMs();
+    }
+    return t;
+}
+
+bool PopEvent(net::Event& out)
+{
+    if(!g_echoEvents.empty()) { out = g_echoEvents.front(); g_echoEvents.erase(g_echoEvents.begin()); return true; }
+    return g_session.PopEvent(out);
+}
+
+bool PendingRequest(char* nick, size_t len, float* secondsLeft)
+{
+    if(g_cfg.role != net::Role::Host || g_session.GetLink() != net::Link::Pending) return false;
+    snprintf(nick, len, "%s", g_session.PendingNick());
+    float el = (float)(net::NowUs() - g_session.PendingSinceUs()) / 1e6f;
+    *secondsLeft = el < 15 ? 15 - el : 0;
+    return true;
+}
+
+void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
+void SetTalking(bool talking) { g_localTalking = talking; }
+
 Status GetStatus()
 {
     Status st{};
+    st.link = g_session.GetLink();
+    snprintf(st.peerNick, sizeof(st.peerNick), "%s", g_session.PeerNick());
     { std::lock_guard<std::mutex> lock(g_cfgMutex); st.pending = g_hasPending; }
     st.role = g_cfg.role;
     st.running = g_session.Running();
