@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 4;
+    constexpr uint8_t  kProtocolVersion = 5;
 
     enum PacketType : uint8_t
     {
@@ -48,7 +48,7 @@ namespace net
         uint8_t  health;
         uint8_t  flags;       // PlayerStateFlags
         uint8_t  moveState;   // eMoveState игры: 1 стоит, 4 шаг, 6 бег/спринт
-        uint8_t  reserved;
+        uint8_t  jumpCount;   // счётчик прыжков: изменился — второй CJ прыгает
         float    moveRatio;   // сила движения 0..~2 (как от джойстика: 1 = шаг, больше — бег)
     };
     #pragma pack(pop)

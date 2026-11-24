@@ -21,8 +21,8 @@ namespace
     constexpr float    kActiveRadius     = 180.0f;     // дальше — CJ скрыт, видна только метка
     constexpr float    kSnapDistance     = 10.0f;      // дальше — мгновенно переносим
     constexpr float    kSmoothRate       = 12.0f;      // скорость сглаживания (1/с)
-    constexpr uint64_t kEchoDelayUs      = 1000000;    // эхо-режим: повтор с задержкой 1 с
-    constexpr float    kEchoOffset       = 1.5f;       // эхо-режим: сдвиг вбок, м
+    constexpr uint64_t kEchoDelayUs      = 500000;     // эхо-режим: повтор с задержкой 0,5 с
+    constexpr float    kEchoOffset       = 1.5f;       // эхо-режим: постоянный сдвиг на восток, м
     constexpr float    kMinMoveRatio     = 0.05f;      // меньше — стоит на месте
     constexpr uint64_t kEchoSampleUs     = 50000;      // эхо-режим: запись 20 раз в секунду (буфер 3,2 с)
     constexpr uint64_t kStatusLogUs      = 15000000;   // раз в 15 с — строка состояния в лог
@@ -47,6 +47,15 @@ namespace
     int16_t   g_stickX = 0, g_stickY = 0;
     bool      g_sprint = false;
     bool      (*g_origGetSprint)(uintptr_t pad, int mode) = nullptr; // оригинал CPad::GetSprint
+
+    // Прыжки: свои считаем в перехвате CPad::JumpJustDown (пульт 1),
+    // а второму CJ «нажимаем» прыжок, когда счётчик друга изменился.
+    uint32_t  g_frameNo = 0;
+    uint32_t  g_lastLocalJumpFrame = 0;
+    uint8_t   g_localJumpCount = 0;
+    bool      g_haveRemoteJumpCount = false;
+    uint8_t   g_remoteJumpCount = 0;
+    bool      g_pendingJump = false;
 
     // Проверка формулы джойстика: куда игра повела второго CJ (m_fAimingRotation,
     // посчитан из нашего джойстика) против того, куда мы хотели.
@@ -106,6 +115,7 @@ namespace
         g_remoteRef = -1;
         g_inWorld   = false;
         g_stickX = g_stickY = 0; g_sprint = false;
+        g_pendingJump = false; g_haveRemoteJumpCount = false;
         Log(false, "Второй CJ убран (%s)", reason);
     }
 
@@ -250,6 +260,13 @@ namespace
             g_stickActive = false;
         }
 
+        if(!g_haveRemoteJumpCount) { g_haveRemoteJumpCount = true; g_remoteJumpCount = s.jumpCount; }
+        else if(s.jumpCount != g_remoteJumpCount)
+        {
+            g_remoteJumpCount = s.jumpCount;
+            if(!(s.flags & net::PSF_IN_VEHICLE)) g_pendingJump = true;
+        }
+
         g_where = "перенос второго CJ";
         PlaceRemote(g_shownPos, g_shownHeading);
     }
@@ -269,6 +286,7 @@ namespace
         s.health = (uint8_t)(hp < 0 ? 0 : hp > 255 ? 255 : hp);
         s.flags  = inVeh ? net::PSF_IN_VEHICLE : 0;
         s.moveState = (uint8_t)Field<int>(ped, off::PedMoveState);
+        s.jumpCount = g_localJumpCount;
         if(!inVeh && g_origGetSprint && g_origGetSprint(GetPad(0), 0)) s.flags |= net::PSF_SPRINT;
         uintptr_t pd = Field<uintptr_t>(ped, off::PedPlayerData);
         s.moveRatio = (pd && !inVeh) ? Field<float>(pd, off::PlayerDataMoveBlendRatio) : 0.0f;
@@ -294,9 +312,7 @@ namespace
         if(best)
         {
             g_echoRemote.pkt   = best->s;
-            float h = best->s.heading;
-            g_echoRemote.pkt.pos[0] += cosf(h) * kEchoOffset; // правее по направлению взгляда
-            g_echoRemote.pkt.pos[1] += sinf(h) * kEchoOffset;
+            g_echoRemote.pkt.pos[0] += kEchoOffset; // всегда на восток — траектория повторяется точно
             g_echoRemote.receivedUs = now;
             g_echoRemote.valid = true;
         }
@@ -313,6 +329,7 @@ namespace
     void OnFrameImpl()
     {
         g_where = "кадр мода: начало";
+        ++g_frameNo;
         uint64_t now = net::NowUs();
         float dt = g_lastFrameUs ? (float)(now - g_lastFrameUs) / 1e6f : 0.0f;
         if(dt > 0.25f) dt = 0.25f;
@@ -337,11 +354,11 @@ namespace
                 Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
             else
                 Log(false, "Статус: второй CJ есть, %s, до него %.0f м, его состояние %d; ты %s "
-                           "(движение %d, сила %.2f, скорость %.1f м/с); джойстик 2: %d,%d%s; FPS ~%.0f",
+                           "(движение %d, сила %.2f, скорость %.1f м/с, прыжков %u); джойстик 2: %d,%d%s; FPS ~%.0f",
                     g_inWorld ? "в мире" : "далеко (только метка)",
                     Dist2D(GetPosition(local), g_shownPos), Field<int>(g_remotePed, off::PedState),
                     InVehicle(local) ? "в машине" : "пешком", me.moveState, me.moveRatio,
-                    sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1]),
+                    sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1]), (unsigned)me.jumpCount,
                     g_stickX, g_stickY, g_sprint ? " +спринт" : "", dt > 0 ? 1.0f / dt : 0.0f);
             if(g_headingErrCount)
                 Log(false, "Проверка джойстика: среднее расхождение курса %.0f° (норма — до ~20°, около 180° — перепутан знак)",
@@ -394,6 +411,22 @@ static bool IsRemotePad(uintptr_t pad) { return g_remotePed && pad == GetPad(kRe
 DECL_HOOK(int16_t, PadGetPedWalkLeftRight, uintptr_t self) { return IsRemotePad(self) ? g_stickX : PadGetPedWalkLeftRight(self); }
 DECL_HOOK(int16_t, PadGetPedWalkUpDown,    uintptr_t self) { return IsRemotePad(self) ? g_stickY : PadGetPedWalkUpDown(self); }
 DECL_HOOK(bool,    PadGetSprint, uintptr_t self, int mode) { return IsRemotePad(self) ? g_sprint : PadGetSprint(self, mode); }
+DECL_HOOK(bool,    PadJumpJustDown, uintptr_t self)
+{
+    if(IsRemotePad(self))
+    {
+        bool j = g_pendingJump;
+        g_pendingJump = false;
+        return j;
+    }
+    bool r = PadJumpJustDown(self);
+    if(r && self == GetPad(0) && g_lastLocalJumpFrame != g_frameNo)
+    {
+        g_lastLocalJumpFrame = g_frameNo;
+        ++g_localJumpCount;
+    }
+    return r;
+}
 
 DECL_HOOKb(IsCoopGameGoingOn)                         { return false; }
 DECL_HOOKb(IsPlayerUse2PlayerControls, uintptr_t ped) { (void)ped; return false; }
@@ -429,6 +462,7 @@ bool Install(void* h, const net::Config& cfg, FLogger* log)
         { "_ZN4CPad19GetPedWalkLeftRightEv",                         (void*)HookOf_PadGetPedWalkLeftRight,     (void**)&PadGetPedWalkLeftRight },
         { "_ZN4CPad16GetPedWalkUpDownEv",                            (void*)HookOf_PadGetPedWalkUpDown,        (void**)&PadGetPedWalkUpDown },
         { "_ZN4CPad9GetSprintEi",                                    (void*)HookOf_PadGetSprint,               (void**)&PadGetSprint },
+        { "_ZN4CPad12JumpJustDownEv",                                (void*)HookOf_PadJumpJustDown,            (void**)&PadJumpJustDown },
         { "_ZN10CGameLogic17IsCoopGameGoingOnEv",                    (void*)HookOf_IsCoopGameGoingOn,          (void**)&IsCoopGameGoingOn },
         { "_ZN10CGameLogic26IsPlayerUse2PlayerControlsEP10CPlayerPed",(void*)HookOf_IsPlayerUse2PlayerControls, (void**)&IsPlayerUse2PlayerControls },
         { "_ZN10CGameLogic6UpdateEv",                                (void*)HookOf_GameLogicUpdate,            (void**)&GameLogicUpdate },
@@ -455,7 +489,7 @@ bool Install(void* h, const net::Config& cfg, FLogger* log)
 
     if(cfg.role == net::Role::Echo)
     {
-        Log(false, "Режим ЭХО: второй CJ будет повторять твои движения с задержкой 1 с (проверка без друга)");
+        Log(false, "Режим ЭХО: второй CJ повторяет твои движения с задержкой 0,5 с, на 1,5 м восточнее (проверка без друга)");
     }
     else if(!g_session.Start(cfg, log))
     {
