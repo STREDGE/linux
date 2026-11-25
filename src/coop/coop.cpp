@@ -248,8 +248,16 @@ namespace
         }
         if(friendDead) return;   // sync уложит его в этом же кадре
 
-        // Второго CJ арестовали/скрутили у нас (так быть не должно) — пересоздать, иначе зависнет
-        if(Field<int>(g_remotePed, off::PedState) == 63) { DespawnRemote("скручен полицией у нас — пересоздаю"); return; }
+        // Второго CJ скрутили у нас (так быть не должно) — пересоздать, иначе зависнет.
+        // Только пешком и дольше 3 с: в машине состояние 63 игра ставит водителю, когда к нему
+        // садится пассажир, — это не арест (0.8.5 из-за этого зря пересоздавала второго CJ).
+        {
+            static uint64_t cuffedSinceUs = 0;
+            bool cuffed = Field<int>(g_remotePed, off::PedState) == 63 && !InVehicle(g_remotePed) && !sync::RemoteBusy();
+            if(!cuffed) cuffedSinceUs = 0;
+            else if(!cuffedSinceUs) cuffedSinceUs = now;
+            else if(now - cuffedSinceUs > 3000000) { cuffedSinceUs = 0; DespawnRemote("скручен полицией у нас — пересоздаю"); return; }
+        }
 
         // Интерьер: второго CJ видно, только если вы в одном здании (игра сама не рисует чужую зону)
         Field<uint8_t>(g_remotePed, off::EntArea) = s.area;
