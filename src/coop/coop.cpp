@@ -248,6 +248,9 @@ namespace
         }
         if(friendDead) return;   // sync уложит его в этом же кадре
 
+        // Второго CJ арестовали/скрутили у нас (так быть не должно) — пересоздать, иначе зависнет
+        if(Field<int>(g_remotePed, off::PedState) == 63) { DespawnRemote("скручен полицией у нас — пересоздаю"); return; }
+
         // Интерьер: второго CJ видно, только если вы в одном здании (игра сама не рисует чужую зону)
         Field<uint8_t>(g_remotePed, off::EntArea) = s.area;
 
@@ -496,11 +499,12 @@ namespace
                 Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
             else
                 Log(false, "Статус: второй CJ есть, %s, до него %.0f м, его состояние %d; ты %s "
-                           "(движение %d, сила %.2f, скорость %.1f м/с, прыжков %u); джойстик 2: %d,%d%s; FPS ~%.0f",
+                           "(движение %d, сила %.2f, скорость %.1f м/с, прыжков %u, состояние %d%s); джойстик 2: %d,%d%s; FPS ~%.0f",
                     g_inWorld ? "в мире" : "далеко (только метка)",
                     Dist2D(GetPosition(local), g_shownPos), Field<int>(g_remotePed, off::PedState),
                     InVehicle(local) ? "в машине" : "пешком", me.moveState, me.moveRatio,
                     sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1]), (unsigned)me.jumpCount,
+                    Field<int>(local, off::PedState), Field<uint16_t>(GetPad(0), off::PadDisableCtrl) ? ", УПРАВЛЕНИЕ ВЫКЛЮЧЕНО ИГРОЙ" : "",
                     g_stickX, g_stickY, g_sprint ? " +спринт" : "", dt > 0 ? 1.0f / dt : 0.0f);
             if(g_headingErrCount)
                 Log(false, "Проверка джойстика: среднее расхождение курса %.0f° (норма — до ~20°, около 180° — перепутан знак)",

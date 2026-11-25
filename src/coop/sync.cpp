@@ -27,7 +27,7 @@ namespace
     constexpr float    kVehSmooth      = 10.0f;     // скорость подтягивания (1/с)
     constexpr int      kMaxVehicles    = 16;
     constexpr int      kDriverDoor     = 10;        // дверь водителя (CCarEnterExit)
-    constexpr uint64_t kEnterTimeoutUs = 4000000;   // не сел с анимацией за 4 с — сажаем сразу
+    constexpr uint64_t kEnterTimeoutUs = 7000000;   // не сел с анимацией за 7 с — сажаем сразу
     constexpr uint64_t kLeaveTimeoutUs = 2500000;
     constexpr uint64_t kEchoDelayUs    = 500000;
     constexpr float    kEchoCarSide    = 6.0f;      // эхо: машина двойника в 6 м справа от твоей
@@ -590,6 +590,7 @@ namespace
                 {
                     GiveEnterTask(r, tv, seat);
                     g_enterSinceUs = now; g_enterVehId = s.vehId;
+                    Log(false, "[МАШИНЫ] Друг садится в %04X — второй CJ тоже (место %d)", s.vehId, seat);
                 }
             }
             return;
@@ -863,6 +864,14 @@ DECL_HOOK(int16_t, PadBrake, uintptr_t pad)      { return RemoteCarPad(pad) ? g_
 DECL_HOOK(int16_t, PadSteer, uintptr_t pad)      { return RemoteCarPad(pad) ? g_carIn.steer : PadSteer(pad); }
 DECL_HOOK(int16_t, PadHandBrake, uintptr_t pad)  { return RemoteCarPad(pad) ? 0 : PadHandBrake(pad); }
 
+// Второго CJ полиция у тебя не арестовывает: арест обрабатывает только телефон друга
+// (у себя он завис бы в наручниках — игра «сажает» только первого игрока)
+DECL_HOOK(bool, PedCanBeArrested, uintptr_t ped)
+{
+    if(g_active && ped && ped == g_ctx.remote) return false;
+    return PedCanBeArrested(ped);
+}
+
 // Свои удары считаем, второму CJ «нажимаем» удар
 DECL_HOOK(bool, MeleeJustDown, uintptr_t pad)
 {
@@ -986,6 +995,7 @@ bool Install(void* h, FLogger* log)
         { "_ZN7CWeapon14DoBulletImpactEP7CEntityS1_P7CVectorS3_P9CColPointi", (void*)HookOf_DoBulletImpact, (void**)&DoBulletImpact },
         { "_ZN7CWeapon4FireEP7CEntityP7CVectorS3_S1_S3_S3_", (void*)HookOf_WeaponFireHook, (void**)&WeaponFireHook },
         { "_ZN28CPedDamageResponseCalculator21ComputeDamageResponseEP4CPedR18CPedDamageResponseb", (void*)HookOf_ComputeDamage, (void**)&ComputeDamage },
+        { "_ZN4CPed13CanBeArrestedEv",        (void*)HookOf_PedCanBeArrested, (void**)&PedCanBeArrested },
         { "_ZN4CPad13GetAccelerateEv",        (void*)HookOf_PadAccelerate, (void**)&PadAccelerate },
         { "_ZN4CPad8GetBrakeEv",              (void*)HookOf_PadBrake,      (void**)&PadBrake },
         { "_ZN4CPad20GetSteeringLeftRightEv", (void*)HookOf_PadSteer,      (void**)&PadSteer },
@@ -1083,7 +1093,15 @@ void Frame(const Ctx& c)
     if(c.role == net::Role::Client) g_ff = g_ctx.rs ? (g_ctx.rs->flags & net::PSF_FF) != 0 : false;
     else g_ff = c.friendlyFireLocal;
 
-    // Флаг «не вытаскивать из машины» второму CJ НЕ ставим: с ним игра не предлагает дверь водителя
+    // «Не вытаскивать из машины» — только пока ты сидишь в той же машине (копы не выволакивают
+    // второго CJ). Когда ты снаружи, флаг снят: с ним игра прячет кнопку «сесть»
+    if(c.remote)
+    {
+        uintptr_t rv = PedVehicle(c.remote);
+        uint8_t& f = Field<uint8_t>(c.remote, off::PedFlags587);
+        if(rv && rv == PedVehicle(c.local)) f |= 0x20; else f &= ~0x20;
+    }
+    // Флаг «не вытаскивать из машины» второму CJ постоянно НЕ ставим: с ним игра не предлагает дверь водителя
     // и прячет кнопку «сесть» (CCarEnterExit::GetNearestCarDoor). Выкидывания нет и так —
     // перехват EnterAsDriverCtor сажает пассажиром.
 
