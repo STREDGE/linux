@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 9;
+    constexpr uint8_t  kProtocolVersion = 10;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -108,6 +108,7 @@ namespace net
         VF_ENGINE  = 1 << 3,
         VF_LIGHTS  = 1 << 4,
         VF_DRIVEN  = 1 << 5,  // за рулём игрок отправителя
+        VF_HANDBRAKE = 1 << 6,
     };
 
     struct VehiclePacket
@@ -122,7 +123,7 @@ namespace net
         float    vel[3];      // м/с
         float    turn[3];     // скорость вращения (как в игре, за кадр 50 к/с)
         float    health;
-        float    steer, gas, brake;
+        float    steer, gas, brake;   // steer — руль водителя −1..1 (fSteer), не угол колёс
         uint8_t  col[4];
         uint8_t  flags;       // VehicleFlags
         uint8_t  wheels[4];   // состояние колёс (лопнуло)

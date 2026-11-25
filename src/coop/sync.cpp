@@ -24,7 +24,6 @@ namespace
     constexpr float    kCopyCreateDist = 300.0f;    // копию создаём ближе этого
     constexpr float    kCopyDropDist   = 360.0f;    // и убираем дальше этого
     constexpr float    kVehSnapDist    = 6.0f;      // расхождение больше — переносим сразу
-    constexpr float    kVehSmooth      = 10.0f;     // скорость подтягивания (1/с)
     constexpr int      kMaxVehicles    = 16;
     constexpr int      kDriverDoor     = 10;        // дверь водителя (CCarEnterExit)
     constexpr uint64_t kEnterTimeoutUs = 7000000;   // не сел с анимацией за 7 с — сажаем сразу
@@ -39,6 +38,7 @@ namespace
     constexpr int TASK_LEAVE_CAR          = 704;
 
     FLogger*      g_log = nullptr;
+    uintptr_t     g_libBase = 0;
     net::Session* g_session = nullptr;
     bool          g_installed = false;
 
@@ -78,6 +78,10 @@ namespace
         float     lastErr = 0;         // расхождение с присланным, м
         int       mode = -1;           // 0 перенос, 1 стоит, 2 едет
         int       snaps = 0;           // переносов за секунду
+        int       corrections = 0;     // поправок положения за секунду
+        float     lastYawErr = 0;
+        uint32_t  appliedSeq = 0;      // последний применённый пакет
+        bool      appliedSeqValid = false;
         uint32_t  pktsIn = 0, pktsOut = 0;
     };
     std::vector<NetVeh> g_vehs;
@@ -331,7 +335,7 @@ namespace
         p.vel[0] = ms.x * 50.0f; p.vel[1] = ms.y * 50.0f; p.vel[2] = ms.z * 50.0f;
         Put(p.turn, Field<CVector>(veh, off::PhysTurnSpeed));
         p.health = Field<float>(veh, off::VehHealth);
-        p.steer = Field<float>(veh, off::VehSteer);
+        p.steer = Field<float>(veh, off::VehSteerInput);         // руль -1..1 (как его крутит водитель)
         p.gas   = Field<float>(veh, off::VehGas);
         p.brake = Field<float>(veh, off::VehBrake);
         memcpy(p.col, (const void*)(veh + off::VehColours), 4);
@@ -342,6 +346,7 @@ namespace
         if(Field<uint32_t>(veh, off::VehHorn)) p.flags |= net::VF_HORN;
         if(f0 & 0x10) p.flags |= net::VF_ENGINE;
         if(f0 & 0x40) p.flags |= net::VF_LIGHTS;
+        if(f0 & 0x20) p.flags |= net::VF_HANDBRAKE;
         if(driven) p.flags |= net::VF_DRIVEN;
         if(AutomobileFamily(veh)) memcpy(p.wheels, (const void*)(veh + off::AutoWheels), 4);
         else memset(p.wheels, 0, 4);
@@ -350,85 +355,74 @@ namespace
 
     float WrapA(float a) { while(a > (float)M_PI) a -= 2.0f * (float)M_PI; while(a < -(float)M_PI) a += 2.0f * (float)M_PI; return a; }
 
-    // Довернуть машину по курсу (вокруг вертикали), не трогая наклон
-    void CorrectYaw(uintptr_t veh, const CVector& targetFwd, float k)
-    {
-        uintptr_t m = Field<uintptr_t>(veh, off::EntMatrix);
-        if(!m) return;
-        CVector f = Field<CVector>(m, off::MatForward);
-        float cur = atan2f(-f.x, f.y), tgt = atan2f(-targetFwd.x, targetFwd.y);
-        float d = WrapA(tgt - cur) * k;
-        if(fabsf(d) < 0.0005f) return;
-        float c = cosf(d), sn = sinf(d);
-        auto rot = [&](CVector v) { return CVector{ v.x * c - v.y * sn, v.x * sn + v.y * c, v.z }; };
-        CVector r = rot(Field<CVector>(m, off::MatRight)), fw = rot(f);
-        SetMatrix(veh, GetPosition(veh), r, fw);
-    }
-
+    void ApplyCosmetics(NetVeh& v);
     void ApplyVehicle(NetVeh& v, float dt)
     {
+        (void)dt;
         uintptr_t veh = v.veh;
         const net::VehiclePacket& s = v.st;
+        // Как в больших мультиплеерах: поправляем машину только когда пришёл НОВЫЙ пакет (20 раз/с),
+        // а между пакетами её ведёт физика игры с педалями и рулём водителя (пульт 2).
+        // Раньше мод правил скорость и курс каждый кадр — колёса проскальзывали (дым, звук ручника),
+        // машина «переставлялась» вбок без поворота колёс.
+        if(v.appliedSeq == s.seq && v.appliedSeqValid) return ApplyCosmetics(v);
+        v.appliedSeq = s.seq; v.appliedSeqValid = true;
+
         float age = (float)(g_ctx.now - v.stUs) / 1e6f;
         if(age > 0.15f) age = 0.15f;
         CVector target{ s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
         CVector cur = GetPosition(veh);
         uintptr_t m = Field<uintptr_t>(veh, off::EntMatrix);
         float dx = target.x - cur.x, dy = target.y - cur.y, dz = target.z - cur.z;
-        float errXY = sqrtf(dx * dx + dy * dy);
+        float err = sqrtf(dx * dx + dy * dy + dz * dz);
         float speed = sqrtf(s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]);
-        v.lastErr = sqrtf(errXY * errXY + dz * dz);
-        CVector ms = Field<CVector>(veh, off::PhysMoveSpeed);
-        CVector ts = Field<CVector>(veh, off::PhysTurnSpeed);
-        if(!m || errXY > kVehSnapDist || fabsf(dz) > 3.0f)
+        float yawErr = 0;
+        if(m)
         {
-            // Сильно разошлись — переносим целиком (с наклоном, как у друга)
+            CVector f = Field<CVector>(m, off::MatForward);
+            yawErr = fabsf(WrapA(atan2f(-s.fwd[0], s.fwd[1]) - atan2f(-f.x, f.y))) * 57.2958f;
+        }
+        v.lastErr = err; v.lastYawErr = yawErr;
+
+        if(!m || err > kVehSnapDist || fabsf(dz) > 3.0f)
+        {
             SetMatrix(veh, target, V(s.right), V(s.fwd));
             PhysicalRemoveAndAdd(veh);
             Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ s.vel[0] / 50.0f, s.vel[1] / 50.0f, s.vel[2] / 50.0f };
             Field<CVector>(veh, off::PhysTurnSpeed) = V(s.turn);
             v.mode = 0; ++v.snaps;
+            Log(false, "[МАШИНА %04X] ПЕРЕНОС: расхождение %.2f м (по высоте %.2f), курс %.0f°, скорость друга %.1f м/с",
+                v.id, err, dz, yawErr, speed);
+            return ApplyCosmetics(v);
         }
-        else if(speed < 0.3f && errXY < 0.6f)
+        if(speed < 0.3f && err < 0.8f && yawErr < 10.0f)
         {
-            // Стоит: высоту и наклон решает игра (подвеска, земля), мы только держим место и курс.
-            // Иначе на склоне колёса уходили в землю или висели.
-            // Мелкое расхождение (до 0,3 м) не правим вовсе: иначе на склоне мод и физика
-            // перетягивали машину каждый кадр, игра считала её едущей и отменяла посадку.
-            float k = 1.0f - expf(-2.0f * dt);
-            if(errXY > 0.3f)
-            {
-                CVector p{ cur.x + dx * k, cur.y + dy * k, cur.z };
-                SetPosition(veh, p);
-            }
-            CVector f = Field<CVector>(m, off::MatForward);
-            float yawErr = fabsf(WrapA(atan2f(-s.fwd[0], s.fwd[1]) - atan2f(-f.x, f.y)));
-            if(yawErr > 0.05f) CorrectYaw(veh, V(s.fwd), k);
-            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ 0, 0, ms.z < 0 ? ms.z : 0.0f };
-            Field<CVector>(veh, off::PhysTurnSpeed) = CVector{ ts.x, ts.y, 0 };
-            Field<uint8_t>(veh, off::VehFlags) |= 0x20;            // ручник — не катится со склона
+            // Стоит — не трогаем совсем: стоит сама, на земле, как в обычной игре
             v.mode = 1;
+            return ApplyCosmetics(v);
         }
-        else
+        if(err > 1.2f || yawErr > 12.0f)
         {
-            // Едет: позицию не переставляем, а подруливаем скоростью по земле (x, y);
-            // вверх-вниз и наклон — физика игры. Курс доворачиваем мягко.
-            float gain = 4.0f;                                   // 1/с: ошибка 1 м → +4 м/с
-            float cx = dx * gain, cy = dy * gain;
-            float cl = sqrtf(cx * cx + cy * cy);
-            if(cl > 12.0f) { cx *= 12.0f / cl; cy *= 12.0f / cl; }
-            float vz = ms.z * 50.0f;
-            if(fabsf(dz) > 1.5f) vz = s.vel[2] + dz * 2.0f;       // заметно выше/ниже — подтянуть
-            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ (s.vel[0] + cx) / 50.0f, (s.vel[1] + cy) / 50.0f, vz / 50.0f };
-            Field<CVector>(veh, off::PhysTurnSpeed) = CVector{ ts.x, ts.y, s.turn[2] };
-            CorrectYaw(veh, V(s.fwd), 1.0f - expf(-kVehSmooth * dt));
-            Field<uint8_t>(veh, off::VehFlags) &= ~0x20;
-            v.mode = 2;
+            // Заметно разошлись — ставим положение и поворот, как у друга (один раз на пакет)
+            SetMatrix(veh, target, V(s.right), V(s.fwd));
+            ++v.corrections;
         }
+        // Скорость и вращение — как у друга, плюс небольшая поправка к точке (не больше 3 м/с)
+        float cx = dx * 2.0f, cy = dy * 2.0f;
+        float cl = sqrtf(cx * cx + cy * cy);
+        if(cl > 3.0f) { cx *= 3.0f / cl; cy *= 3.0f / cl; }
+        Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ (s.vel[0] + cx) / 50.0f, (s.vel[1] + cy) / 50.0f, s.vel[2] / 50.0f };
+        Field<CVector>(veh, off::PhysTurnSpeed) = V(s.turn);
+        v.mode = 2;
+        ApplyCosmetics(v);
+    }
+
+    // Внешний вид и состояние (каждый кадр — дёшево и без физики)
+    void ApplyCosmetics(NetVeh& v)
+    {
+        uintptr_t veh = v.veh;
+        const net::VehiclePacket& s = v.st;
         if(!(s.flags & net::VF_BLOWN)) Field<float>(veh, off::VehHealth) = s.health;
-        Field<float>(veh, off::VehSteer) = s.steer;
-        Field<float>(veh, off::VehGas)   = s.gas;
-        Field<float>(veh, off::VehBrake) = s.brake;
         memcpy((void*)(veh + off::VehColours), s.col, 4);
         uint8_t& f0 = Field<uint8_t>(veh, off::VehFlags);
         uint8_t& f5 = Field<uint8_t>(veh, off::VehFlags + 5);
@@ -452,7 +446,7 @@ namespace
 
     // Управление машиной за второго CJ (пульт 2): как жмёт друг — так «жмём» и мы,
     // чтобы физика копии ехала сама, без борьбы с тормозом
-    struct CarInput { bool on = false; int16_t accel = 0, brake = 0, steer = 0; };
+    struct CarInput { bool on = false; int16_t accel = 0, brake = 0, steer = 0, handbrake = 0; };
     CarInput g_carIn;
 
     void UpdateCarInput()
@@ -469,8 +463,11 @@ namespace
         g_carIn.accel = clamp(s.gas > 0 ? s.gas * 255.0f : 0.0f);
         float br = s.gas < 0 ? -s.gas : s.brake;
         g_carIn.brake = clamp(br * 255.0f);
-        float st = -s.steer / 0.6f * 128.0f;
+        // Игра: руль = −(пульт)/128 → пульт = −руль·128 (CAutomobile::ProcessControlInputs)
+        float st = -s.steer * 128.0f;
         g_carIn.steer = (int16_t)(st < -128 ? -128 : st > 128 ? 128 : st);
+        float spd = sqrtf(s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]);
+        g_carIn.handbrake = ((s.flags & net::VF_HANDBRAKE) || (spd < 0.2f && s.gas == 0.0f)) ? 255 : 0;
     }
 
     // ---------- свой CJ: где сидит / куда садится ----------
@@ -786,6 +783,9 @@ namespace
         bool ok = WeaponFire(weap, r, &start, &start, 0, &end, nullptr);
         g_replaying = false;
         if(ok) ++g_shotsReplayed;
+        if(g_shotsIn <= 10)
+            Log(false, "[ВЫСТРЕЛ] друга: оружие %d, повторён %s, второй CJ от места выстрела в %.1f м%s", w, ok ? "да" : "НЕТ",
+                Dist(rp, V(p.shooter)), (p.flags & net::SHOT_HIT_MATE) ? ", попал в тебя" : "");
     }
 
     void UpdateCombat()
@@ -879,70 +879,6 @@ namespace
     }
 }
 
-const char* WhoDrivesFwd(uintptr_t veh);
-// ---------- своя кнопка «сесть» ----------
-namespace
-{
-    uintptr_t NearestEnterable(float maxDist, float* distOut)
-    {
-        if(!g_vehPoolSym || !g_ctx.local) return 0;
-        uintptr_t pool = *(uintptr_t*)g_vehPoolSym;
-        if(!pool) return 0;
-        uintptr_t objs = Field<uintptr_t>(pool, 0), flags = Field<uintptr_t>(pool, 8);
-        int size = Field<int>(pool, 0x10);
-        if(!objs || !flags || size <= 0 || size > 4096) return 0;
-        CVector lp = GetPosition(g_ctx.local);
-        uintptr_t best = 0; float bd = maxDist;
-        for(int i = 0; i < size; ++i)
-        {
-            if(Field<uint8_t>(flags, i) & 0x80) continue;
-            uintptr_t veh = objs + (uintptr_t)i * kVehPoolEntry;
-            if(EntStatus(veh) == 5 || Field<int>(veh, off::VehBaseType) == 6) continue;   // разбита / поезд
-            float d = Dist(GetPosition(veh), lp);
-            if(d < bd) { bd = d; best = veh; }
-        }
-        if(distOut) *distOut = bd;
-        return best;
-    }
-    uint64_t g_nextEnterLogUs = 0;
-}
-
-bool CanEnterNearby()
-{
-    if(!g_installed || !g_active || !g_ctx.local || PedVehicle(g_ctx.local) || !PedIsAlive(g_ctx.local)) return false;
-    int tt = ActiveTaskType(g_ctx.local);
-    if(tt == TASK_ENTER_AS_DRIVER || tt == TASK_ENTER_AS_PASSENGER) return false;
-    float d = 0;
-    uintptr_t veh = NearestEnterable(5.0f, &d);
-    if(veh && g_ctx.now >= g_nextEnterLogUs)
-    {   // почему игра могла не показать свою кнопку
-        g_nextEnterLogUs = g_ctx.now + 2000000;
-        NetVeh* nv = FindVeh(veh);
-        Log(false, "[КНОПКА] рядом машина %d (%s%04X) в %.1f м: за рулём %s, замок %d, статус %d, учитывается игроком %d, коллизия %d, задача твоя %d",
-            ModelOf(veh), nv ? (nv->copy ? "копия " : "общая ") : "обычная ", nv ? nv->id : 0, d, WhoDrivesFwd(veh),
-            Field<int>(veh, off::VehDoorLock), EntStatus(veh), (Field<uint8_t>(veh, off::VehFlags + 6) >> 5) & 1,
-            Field<uint8_t>(veh, off::EntFlags) & 1, tt);
-    }
-    return veh != 0;
-}
-
-void EnterNearby()
-{
-    if(!CanEnterNearby()) return;
-    uintptr_t veh = NearestEnterable(5.0f, nullptr);
-    if(!veh) return;
-    uintptr_t drv = Field<uintptr_t>(veh, off::VehDriver);
-    int seat = 0;
-    if(drv && drv == g_ctx.remote)
-    {
-        int p = FreePassengerSeat(veh, 0);
-        if(p < 0) { Log(false, "[КНОПКА] в машине друга нет свободного места"); return; }
-        seat = p + 1;
-    }
-    GiveEnterTask(g_ctx.local, veh, seat);
-    Log(false, "[КНОПКА] «Сесть» (кнопка мода): машина %d, %s", ModelOf(veh), seat ? "пассажиром" : "за руль");
-}
-
 // ---------- подробный лог ----------
 namespace
 {
@@ -957,32 +893,84 @@ namespace
     const char* ModeName(int m) __attribute__((unused));
     const char* ModeName(int m) { return m == 0 ? "перенос" : m == 1 ? "стоит" : m == 2 ? "едет" : "-"; }
 
-    // Переходы (пишем сразу, как изменилось)
+    // Переходы (пишем сразу, как изменилось) и снимки раз в секунду
+    struct PedTrace { int task = -9, state = -9, weapon = -1, area = -1; uintptr_t veh = 1; int seat = -9;
+                      bool aim = false, duck = false, alive = true, disabled = false; float health = -1, armour = -1; };
+    PedTrace g_tl, g_tr;
+    int      g_lastWanted = -1;
+    uint32_t g_lastFriendSeq = 0; uint64_t g_lastFriendSeqUs = 0; int g_friendPkts = 0, g_friendLost = 0;
+    CarInput g_lastCarIn;
+
+    void TracePed(const char* who, uintptr_t ped, PedTrace& t, bool local)
+    {
+        int task = ActiveTaskType(ped), st = Field<int>(ped, off::PedState);
+        uintptr_t v = PedVehicle(ped);
+        int seat = v ? SeatOf(ped, v) : -1;
+        int w = CurrentWeaponType(ped);
+        bool aim = (Field<uint8_t>(ped, off::PedFlagsWord) & 0x10) != 0;
+        bool duck = (Field<uint8_t>(ped, off::PedFlags587) & 0x04) != 0;
+        bool alive = PedIsAlive(ped);
+        int area = Field<uint8_t>(ped, off::EntArea);
+        float hp = Field<float>(ped, off::PedHealth), ar = Field<float>(ped, off::PedArmour);
+        if(task != t.task || st != t.state)
+        { Log(false, "[%s] задача %d -> %d, состояние %d -> %d", who, t.task, task, t.state, st); t.task = task; t.state = st; }
+        if(v != t.veh || seat != t.seat)
+        {
+            NetVeh* nv = FindVeh(v);
+            if(v) Log(false, "[%s] в машине %d (%s %04X), место %d, за рулём: %s", who, ModelOf(v), nv ? (nv->copy ? "копия" : "общая") : "обычная", nv ? nv->id : 0, seat, WhoDrives(v));
+            else  Log(false, "[%s] вне машины", who);
+            t.veh = v; t.seat = seat;
+        }
+        if(w != t.weapon) { Log(false, "[%s] оружие %d -> %d", who, t.weapon, w); t.weapon = w; }
+        if(aim != t.aim)  { Log(false, "[%s] %s", who, aim ? "целится" : "опустил оружие"); t.aim = aim; }
+        if(duck != t.duck){ Log(false, "[%s] %s", who, duck ? "присел" : "встал"); t.duck = duck; }
+        if(alive != t.alive) { Log(false, "[%s] %s", who, alive ? "ЖИВ" : "ПОГИБ"); t.alive = alive; }
+        if(area != t.area){ Log(false, "[%s] интерьер %d -> %d", who, t.area, area); t.area = area; }
+        if(fabsf(hp - t.health) >= 1.0f || fabsf(ar - t.armour) >= 1.0f)
+        { Log(false, "[%s] здоровье %.0f -> %.0f, броня %.0f -> %.0f", who, t.health, hp, t.armour, ar); t.health = hp; t.armour = ar; }
+        if(local)
+        {
+            bool dis = Field<uint16_t>(GetPad(0), off::PadDisableCtrl) != 0;
+            if(dis != t.disabled) { Log(false, "[%s] управление %s", who, dis ? "ВЫКЛЮЧЕНО игрой" : "включено"); t.disabled = dis; }
+        }
+    }
+
     void TraceTransitions()
     {
-        static int lt = -9, ls = -9, rt = -9, rs = -9, ldis = -1;
-        static uintptr_t rveh = 1;
-        uintptr_t l = g_ctx.local, r = g_ctx.remote;
-        if(l)
+        if(g_ctx.local) TracePed("ТЫ", g_ctx.local, g_tl, true);
+        if(g_ctx.remote) TracePed("ВТОРОЙ CJ", g_ctx.remote, g_tr, false);
+        else g_tr = PedTrace();
+
+        if(FindPlayerWanted)
         {
-            int t = ActiveTaskType(l), st = Field<int>(l, off::PedState);
-            int dis = Field<uint16_t>(GetPad(0), off::PadDisableCtrl) ? 1 : 0;
-            if(t != lt || st != ls) { Log(false, "[ТЫ] задача %d, состояние %d", t, st); lt = t; ls = st; }
-            if(dis != ldis) { Log(false, "[ТЫ] управление %s", dis ? "ВЫКЛЮЧЕНО игрой" : "включено"); ldis = dis; }
+            uintptr_t w = FindPlayerWanted(0);
+            int lv = w ? Field<int>(w, off::WantedStars) : 0;
+            if(lv != g_lastWanted) { Log(false, "[РОЗЫСК] у тебя %d -> %d зв.", g_lastWanted, lv); g_lastWanted = lv; }
         }
-        if(r)
+        // Пакеты друга: пропуски и потери
+        if(g_ctx.rs)
         {
-            int t = ActiveTaskType(r), st = Field<int>(r, off::PedState);
-            uintptr_t v = PedVehicle(r);
-            if(t != rt || st != rs || v != rveh)
+            uint32_t sq = g_ctx.rs->seq;
+            if(sq != g_lastFriendSeq)
             {
-                NetVeh* nv = FindVeh(v);
-                Log(false, "[ВТОРОЙ CJ] задача %d, состояние %d, %s%04X место %d, здоровье %.0f",
-                    t, st, v ? "в машине " : "пешком ", nv ? nv->id : 0, v ? SeatOf(r, v) : -1, Field<float>(r, off::PedHealth));
-                rt = t; rs = st; rveh = v;
+                if(g_lastFriendSeqUs)
+                {
+                    uint64_t gap = g_ctx.now - g_lastFriendSeqUs;
+                    int lost = (int)(sq - g_lastFriendSeq) - 1;
+                    if(lost > 0 && lost < 1000) g_friendLost += lost;
+                    if(gap > 300000) Log(false, "[СЕТЬ] от друга не было пакетов %.0f мс (потеряно %d)", gap / 1000.0f, lost > 0 ? lost : 0);
+                }
+                g_lastFriendSeq = sq; g_lastFriendSeqUs = g_ctx.now; ++g_friendPkts;
             }
         }
-        else rt = rs = -9;
+        // Педали и руль, которые мод «жмёт» за второго CJ
+        if(g_carIn.on != g_lastCarIn.on || abs(g_carIn.accel - g_lastCarIn.accel) > 40 || abs(g_carIn.brake - g_lastCarIn.brake) > 40 ||
+           abs(g_carIn.steer - g_lastCarIn.steer) > 24 || g_carIn.handbrake != g_lastCarIn.handbrake)
+        {
+            if(g_carIn.on) Log(false, "[ПЕДАЛИ ВТОРОГО CJ] газ %d, тормоз %d, руль %d, ручник %s", g_carIn.accel, g_carIn.brake, g_carIn.steer, g_carIn.handbrake ? "да" : "нет");
+            else if(g_lastCarIn.on) Log(false, "[ПЕДАЛИ ВТОРОГО CJ] не за рулём");
+            g_lastCarIn = g_carIn;
+        }
     }
 
     // Раз в секунду, пока есть общие машины
@@ -994,6 +982,27 @@ namespace
         if(g_shotsOut || g_shotsIn)
             Log(false, "[ВЫСТРЕЛЫ] за секунду: твоих %d, от друга %d (повторено %d)", g_shotsOut, g_shotsIn, g_shotsReplayed);
         g_shotsOut = g_shotsIn = g_shotsReplayed = 0;
+        if(g_friendPkts || g_friendLost)
+            Log(false, "[СЕТЬ] за секунду от друга пакетов %d, потеряно %d", g_friendPkts, g_friendLost);
+        g_friendPkts = g_friendLost = 0;
+        // Снимок своего и второго CJ
+        for(int k = 0; k < 2; ++k)
+        {
+            uintptr_t ped = k ? g_ctx.remote : g_ctx.local;
+            if(!ped) continue;
+            CVector p = GetPosition(ped);
+            uintptr_t pv = PedVehicle(ped);
+            CVector ms = Field<CVector>(pv ? pv : ped, off::PhysMoveSpeed);
+            Log(false, "[%s] снимок: %.1f,%.1f,%.1f, скорость %.1f м/с, курс %.0f°, задача %d, состояние %d, оружие %d, здоровье %.0f%s",
+                k ? "ВТОРОЙ CJ" : "ТЫ", p.x, p.y, p.z, sqrtf(ms.x * ms.x + ms.y * ms.y) * 50.0f,
+                Field<float>(ped, off::PedRotCurrent) * 57.2958f, ActiveTaskType(ped), Field<int>(ped, off::PedState),
+                CurrentWeaponType(ped), Field<float>(ped, off::PedHealth), pv ? ", в машине" : "");
+        }
+        if(g_ctx.rs && g_ctx.remote)
+        {
+            CVector rp = GetPosition(g_ctx.remote), pp = V(g_ctx.rs->pos);
+            Log(false, "[ДРУГ] по пакету: %.1f,%.1f,%.1f — второй CJ от этой точки в %.1f м", pp.x, pp.y, pp.z, Dist(rp, pp));
+        }
         if(g_vehs.empty()) return;
         CVector lp = GetPosition(g_ctx.local);
         for(auto& v : g_vehs)
@@ -1009,14 +1018,20 @@ namespace
                 float kmh = sqrtf(ms.x * ms.x + ms.y * ms.y) * 50.0f * 3.6f;
                 uintptr_t r = g_ctx.remote;
                 bool remoteIn = r && PedVehicle(r) == v.veh;
-                Log(false, "[МАШИНА %04X] %s, модель %d, %.0f,%.0f,%.1f, до тебя %.0f м, %.0f км/ч, здоровье %.0f, за рулём: %s%s; "
-                           "%s, расхождение %.2f м, переносов %d; пакетов за с: ушло %u, пришло %u, последнее %.0f мс назад",
-                    v.id, v.copy ? "копия" : "своя", ModelOf(v.veh), p.x, p.y, p.z, Dist(p, lp), kmh,
+                uintptr_t mm = Field<uintptr_t>(v.veh, off::EntMatrix);
+                CVector fw = mm ? Field<CVector>(mm, off::MatForward) : CVector{ 0, 1, 0 };
+                CVector ts = Field<CVector>(v.veh, off::PhysTurnSpeed);
+                Log(false, "[МАШИНА %04X] %s, модель %d, %.1f,%.1f,%.1f, курс %.0f°, до тебя %.0f м, %.0f км/ч, вращение %.3f, здоровье %.0f, за рулём: %s%s; "
+                           "руль %.2f, газ %.2f, тормоз %.2f, ручник %d; режим %s, расхождение %.2f м / %.0f°, поправок %d, переносов %d; "
+                           "пакетов за с: ушло %u, пришло %u, последнее %.0f мс назад",
+                    v.id, v.copy ? "копия" : "своя", ModelOf(v.veh), p.x, p.y, p.z, atan2f(-fw.x, fw.y) * 57.2958f, Dist(p, lp), kmh, ts.z,
                     Field<float>(v.veh, off::VehHealth), WhoDrives(v.veh), remoteIn ? " (второй CJ внутри)" : "",
-                    ModeName(v.mode), v.lastErr, v.snaps, v.pktsOut, v.pktsIn,
+                    Field<float>(v.veh, off::VehSteerInput), Field<float>(v.veh, off::VehGas), Field<float>(v.veh, off::VehBrake),
+                    (Field<uint8_t>(v.veh, off::VehFlags) >> 5) & 1,
+                    ModeName(v.mode), v.lastErr, v.lastYawErr, v.corrections, v.snaps, v.pktsOut, v.pktsIn,
                     v.stUs ? (float)(g_ctx.now - v.stUs) / 1000.0f : -1.0f);
             }
-            v.snaps = 0; v.pktsIn = v.pktsOut = 0; v.mode = -1;
+            v.snaps = 0; v.corrections = 0; v.pktsIn = v.pktsOut = 0;
         }
         if(g_ctx.rs)
             Log(false, "[ДРУГ] машина %04X, место %d, садится %d, второй CJ занят машиной: %s, пешком %.1f с",
@@ -1026,13 +1041,15 @@ namespace
     }
 }
 
-const char* WhoDrivesFwd(uintptr_t veh) { return WhoDrives(veh); }
 
 // ---------- перехваты ----------
 
 // Кнопка «сесть» у машины, где за рулём друг: садимся пассажиром, а не выкидываем его
 DECL_HOOKv(EnterAsDriverCtor, void* task, uintptr_t veh)
 {
+    if(g_active && veh)
+        Log(false, "[ПОСАДКА] игра создаёт «сесть за руль»: машина %d, за рулём %s, вызвано из +0x%lX",
+            ModelOf(veh), WhoDrives(veh), (unsigned long)((uintptr_t)__builtin_return_address(0) - g_libBase));
     if(g_active && veh && g_ctx.remote && Field<uintptr_t>(veh, off::VehDriver) == g_ctx.remote)
     {
         int seat = FreePassengerSeat(veh, 0);
@@ -1046,12 +1063,26 @@ DECL_HOOKv(EnterAsDriverCtor, void* task, uintptr_t veh)
     EnterAsDriverCtor(task, veh);
 }
 
+// Кнопка «сесть» самой игры: пишем каждое изменение (что показала / спрятала и кто вызвал)
+DECL_HOOKv(EnterCarWidgetSet, uintptr_t self, int vehType, int flags, bool entering, const CVector& at, int model)
+{
+    static int lastType = -100, lastModel = -100; static bool lastEntering = false;
+    if(g_active && (vehType != lastType || model != lastModel || entering != lastEntering))
+    {
+        Log(false, "[КНОПКА ИГРЫ] %s: тип машины %d, модель %d, %s, вызвано из +0x%lX",
+            vehType < 0 ? "СПРЯТАНА" : "показана", vehType, model, entering ? "сесть" : "выйти",
+            (unsigned long)((uintptr_t)__builtin_return_address(0) - g_libBase));
+        lastType = vehType; lastModel = model; lastEntering = entering;
+    }
+    EnterCarWidgetSet(self, vehType, flags, entering, at, model);
+}
+
 // Педали и руль второго CJ в машине (пульт 2)
 static bool RemoteCarPad(uintptr_t pad) { return g_active && g_carIn.on && pad == GetPad(1); }
 DECL_HOOK(int16_t, PadAccelerate, uintptr_t pad) { return RemoteCarPad(pad) ? g_carIn.accel : PadAccelerate(pad); }
 DECL_HOOK(int16_t, PadBrake, uintptr_t pad)      { return RemoteCarPad(pad) ? g_carIn.brake : PadBrake(pad); }
 DECL_HOOK(int16_t, PadSteer, uintptr_t pad)      { return RemoteCarPad(pad) ? g_carIn.steer : PadSteer(pad); }
-DECL_HOOK(int16_t, PadHandBrake, uintptr_t pad)  { return RemoteCarPad(pad) ? 0 : PadHandBrake(pad); }
+DECL_HOOK(int16_t, PadHandBrake, uintptr_t pad)  { return RemoteCarPad(pad) ? g_carIn.handbrake : PadHandBrake(pad); }
 
 // Второго CJ полиция у тебя не арестовывает: арест обрабатывает только телефон друга
 // (у себя он завис бы в наручниках — игра «сажает» только первого игрока)
@@ -1132,6 +1163,9 @@ DECL_HOOK(bool, WeaponFireHook, uintptr_t weapon, uintptr_t owner, CVector* star
     }
     g_lastAim = V(p.end); g_lastAimUs = g_ctx.now;
     SendGame(&p, sizeof(p)); ++g_shotsOut;
+    if(g_shotsOut <= 10)
+        Log(false, "[ВЫСТРЕЛ] твой: оружие %d, из %.1f,%.1f,%.1f в %.1f,%.1f,%.1f%s", p.weapon, p.start[0], p.start[1], p.start[2],
+            p.end[0], p.end[1], p.end[2], (p.flags & net::SHOT_HIT_MATE) ? ", попал во второго CJ" : "");
     return r;
 }
 
@@ -1139,6 +1173,17 @@ DECL_HOOK(bool, WeaponFireHook, uintptr_t weapon, uintptr_t owner, CVector* star
 // по себе — только событием от друга
 DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool painAudio)
 {
+    if(g_active && victim && (victim == g_ctx.local || victim == g_ctx.remote))
+    {
+        uintptr_t inf = Field<uintptr_t>(calc, off::CalcInflictor);
+        const char* who = !inf ? "ничего" : inf == g_ctx.local ? "ты" : inf == g_ctx.remote ? "второй CJ" :
+                          EntType(inf) == 2 ? (IsLocalSide(inf) ? "твоя машина" : IsRemoteSide(inf) ? "машина второго CJ" : "машина") :
+                          EntType(inf) == 3 ? "пед" : "что-то";
+        bool blocked = (victim == g_ctx.remote && !g_allowRemoteDamage) || (victim == g_ctx.local && IsRemoteSide(inf) && !g_applyingDamage);
+        Log(false, "[УРОН] по %s: %.1f от «%s», оружие %d, часть тела %d%s", victim == g_ctx.local ? "тебе" : "второму CJ",
+            Field<float>(calc, off::CalcDamage), who, Field<int>(calc, off::CalcWeapon), Field<int>(calc, off::CalcPiece),
+            blocked ? " — НЕ применён (урон считает телефон друга)" : "");
+    }
     if(g_active && victim)
     {
         uintptr_t inflictor = Field<uintptr_t>(calc, off::CalcInflictor);
@@ -1172,6 +1217,7 @@ bool Install(void* h, FLogger* log)
 {
     g_log = log;
     g_vehPoolSym = aml->GetSym(h, "_ZN6CPools15ms_pVehiclePoolE");
+    g_libBase = aml->GetLib("libGTASA.so");
     if(!VehiclesReady() || !CombatReady())
     {
         Log(true, "Машины/оружие: не все функции игры найдены — кооп только пешком");
@@ -1184,6 +1230,7 @@ bool Install(void* h, FLogger* log)
         { "_ZN7CWeapon14DoBulletImpactEP7CEntityS1_P7CVectorS3_P9CColPointi", (void*)HookOf_DoBulletImpact, (void**)&DoBulletImpact },
         { "_ZN7CWeapon4FireEP7CEntityP7CVectorS3_S1_S3_S3_", (void*)HookOf_WeaponFireHook, (void**)&WeaponFireHook },
         { "_ZN28CPedDamageResponseCalculator21ComputeDamageResponseEP4CPedR18CPedDamageResponseb", (void*)HookOf_ComputeDamage, (void**)&ComputeDamage },
+        { "_ZN21CWidgetButtonEnterCar22SetEnterCarVehicleTypeEiibRK7CVectori", (void*)HookOf_EnterCarWidgetSet, (void**)&EnterCarWidgetSet },
         { "_ZN4CPed13CanBeArrestedEv",        (void*)HookOf_PedCanBeArrested, (void**)&PedCanBeArrested },
         { "_ZN4CPad13GetAccelerateEv",        (void*)HookOf_PadAccelerate, (void**)&PadAccelerate },
         { "_ZN4CPad8GetBrakeEv",              (void*)HookOf_PadBrake,      (void**)&PadBrake },

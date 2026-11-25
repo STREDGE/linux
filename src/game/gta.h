@@ -71,6 +71,7 @@ namespace gta
         constexpr uintptr_t VehPassengers    = 0x5A8; // CPed*[8]
         constexpr uintptr_t VehMaxPassengers = 0x5EC; // uint8
         constexpr uintptr_t VehSteer         = 0x600;
+        constexpr uintptr_t VehSteerInput    = 0x730; // fSteer: руль −1..1 (из пульта, сглаженный)
         constexpr uintptr_t VehGas           = 0x608;
         constexpr uintptr_t VehBrake         = 0x60C;
         constexpr uintptr_t VehCreatedBy     = 0x610; // 1 — случайная, 2 — миссии (не удаляется)

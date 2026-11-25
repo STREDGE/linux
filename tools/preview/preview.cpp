@@ -41,8 +41,6 @@ namespace coop {
     void AnswerJoin(bool) {}
     void SetTalking(bool) {}
     void SetFriendlyFire(bool) {}
-    bool CanEnterNearby() { return true; }
-    void EnterNearby() {}
     bool GameLoaded() { return true; }
     void LockLocalControls(bool) {}
     uintptr_t HideRemoteBegin() { return 0; }

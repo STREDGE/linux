@@ -814,8 +814,6 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
 void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
 void SetTalking(bool talking) { g_localTalking = talking; }
 void SetFriendlyFire(bool on) { g_friendlyFire = on; }
-bool CanEnterNearby() { return sync::CanEnterNearby(); }
-void EnterNearby() { sync::EnterNearby(); }
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }
