@@ -367,9 +367,37 @@ namespace
         for(const auto& e : g_echo)
             if(e.t && now - e.t >= kEchoDelayUs && (!best || e.t > best->t)) best = &e;
 
+        // «Двойник ждёт в машине»: ты вышел из-за руля — двойник не повторяет выход, а остаётся
+        // за рулём своей машины, чтобы можно было сесть к нему пассажиром. Отпускаем, когда ты
+        // снова сел за руль (своей машины или его), отошёл дальше 60 м или прошло 2 минуты.
+        static bool     hold = false;
+        static uint64_t holdSinceUs = 0;
+        static net::PlayerStatePacket held{}, prev{};
+        static bool     havePrev = false;
         if(best)
         {
-            g_echoRemote.pkt   = best->s;
+            const net::PlayerStatePacket& s = best->s;
+            bool prevDriving = havePrev && prev.vehId && prev.seat == 0;
+            bool nowOnFoot   = s.seat == net::kNoSeat;
+            if(!hold && prevDriving && nowOnFoot && !(s.flags & net::PSF_DEAD))
+            {
+                hold = true; held = prev; holdSinceUs = now;
+                held.vel[0] = held.vel[1] = held.vel[2] = 0; held.moveRatio = 0;
+                Log(false, "Эхо: двойник остаётся за рулём — садись к нему пассажиром (кнопка «сесть» у его машины)");
+            }
+            if(hold)
+            {
+                float dx = local.pos[0] - (held.pos[0] + kEchoOffset), dy = local.pos[1] - held.pos[1];
+                bool far = dx * dx + dy * dy > 60.0f * 60.0f;
+                bool driving = local.seat == 0;
+                if(far || driving || (local.flags & net::PSF_DEAD) || now - holdSinceUs > 120000000ull)
+                {
+                    hold = false;
+                    Log(false, "Эхо: двойник снова повторяет за тобой");
+                }
+            }
+            prev = s; havePrev = true;
+            g_echoRemote.pkt   = hold ? held : s;
             g_echoRemote.pkt.pos[0] += kEchoOffset; // всегда на восток — траектория повторяется точно
             g_echoRemote.receivedUs = now;
             g_echoRemote.valid = true;

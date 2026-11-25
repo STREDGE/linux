@@ -316,24 +316,44 @@ namespace
         uintptr_t veh = v.veh;
         const net::VehiclePacket& s = v.st;
         float age = (float)(g_ctx.now - v.stUs) / 1e6f;
-        if(age > 0.3f) age = 0.3f;
+        if(age > 0.15f) age = 0.15f;
         CVector target{ s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
         CVector cur = GetPosition(veh);
         uintptr_t m = Field<uintptr_t>(veh, off::EntMatrix);
-        if(!m || Dist(cur, target) > kVehSnapDist)
+        float err = Dist(cur, target);
+        float speed = sqrtf(s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1] + s.vel[2] * s.vel[2]);
+        if(!m || err > kVehSnapDist)
         {
             SetMatrix(veh, target, V(s.right), V(s.fwd));
             PhysicalRemoveAndAdd(veh);
+            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ s.vel[0] / 50.0f, s.vel[1] / 50.0f, s.vel[2] / 50.0f };
+            Field<CVector>(veh, off::PhysTurnSpeed) = V(s.turn);
         }
-        else
+        else if(speed < 0.3f && err < 0.3f)
         {
-            float k = 1.0f - expf(-kVehSmooth * dt);
+            // Стоит: не дёргать. Только мягко довернуть, скорости — ноль.
+            float k = 1.0f - expf(-3.0f * dt);
             CVector r = Lerp(Field<CVector>(m, off::MatRight),   V(s.right), k);
             CVector f = Lerp(Field<CVector>(m, off::MatForward), V(s.fwd),   k);
             SetMatrix(veh, Lerp(cur, target, k), r, f);
+            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };
+            Field<CVector>(veh, off::PhysTurnSpeed) = CVector{ 0, 0, 0 };
         }
-        Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ s.vel[0] / 50.0f, s.vel[1] / 50.0f, s.vel[2] / 50.0f };
-        Field<CVector>(veh, off::PhysTurnSpeed) = V(s.turn);
+        else
+        {
+            // Едет: позицию не переставляем (от этого рывки), а подруливаем скоростью —
+            // скорость друга + поправка к нужной точке. Физика игры двигает машину сама, плавно.
+            float gain = 4.0f;                                   // 1/с: ошибка 1 м → +4 м/с
+            CVector corr{ (target.x - cur.x) * gain, (target.y - cur.y) * gain, (target.z - cur.z) * gain };
+            float cl = sqrtf(corr.x * corr.x + corr.y * corr.y + corr.z * corr.z);
+            if(cl > 12.0f) { corr.x *= 12.0f / cl; corr.y *= 12.0f / cl; corr.z *= 12.0f / cl; }
+            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ (s.vel[0] + corr.x) / 50.0f, (s.vel[1] + corr.y) / 50.0f, (s.vel[2] + corr.z) / 50.0f };
+            Field<CVector>(veh, off::PhysTurnSpeed) = V(s.turn);
+            float k = 1.0f - expf(-kVehSmooth * dt);
+            CVector r = Lerp(Field<CVector>(m, off::MatRight),   V(s.right), k);
+            CVector f = Lerp(Field<CVector>(m, off::MatForward), V(s.fwd),   k);
+            SetMatrix(veh, cur, r, f);
+        }
         if(!(s.flags & net::VF_BLOWN)) Field<float>(veh, off::VehHealth) = s.health;
         Field<float>(veh, off::VehSteer) = s.steer;
         Field<float>(veh, off::VehGas)   = s.gas;
@@ -357,6 +377,29 @@ namespace
                 Log(false, "[МАШИНЫ] Машина %04X взорвалась у друга — взрываю копию", v.id);
             }
         }
+    }
+
+    // Управление машиной за второго CJ (пульт 2): как жмёт друг — так «жмём» и мы,
+    // чтобы физика копии ехала сама, без борьбы с тормозом
+    struct CarInput { bool on = false; int16_t accel = 0, brake = 0, steer = 0; };
+    CarInput g_carIn;
+
+    void UpdateCarInput()
+    {
+        g_carIn = CarInput();
+        uintptr_t r = g_ctx.remote;
+        uintptr_t veh = PedVehicle(r);
+        if(!veh || Field<uintptr_t>(veh, off::VehDriver) != r) return;
+        NetVeh* v = FindVeh(veh);
+        if(!v || !v->haveState) return;
+        const net::VehiclePacket& s = v->st;
+        auto clamp = [](float x) { return (int16_t)(x < -255 ? -255 : x > 255 ? 255 : x); };
+        g_carIn.on = true;
+        g_carIn.accel = clamp(s.gas > 0 ? s.gas * 255.0f : 0.0f);
+        float br = s.gas < 0 ? -s.gas : s.brake;
+        g_carIn.brake = clamp(br * 255.0f);
+        float st = -s.steer / 0.6f * 128.0f;
+        g_carIn.steer = (int16_t)(st < -128 ? -128 : st > 128 ? 128 : st);
     }
 
     // ---------- свой CJ: где сидит / куда садится ----------
@@ -769,6 +812,13 @@ DECL_HOOKv(EnterAsDriverCtor, void* task, uintptr_t veh)
     EnterAsDriverCtor(task, veh);
 }
 
+// Педали и руль второго CJ в машине (пульт 2)
+static bool RemoteCarPad(uintptr_t pad) { return g_active && g_carIn.on && pad == GetPad(1); }
+DECL_HOOK(int16_t, PadAccelerate, uintptr_t pad) { return RemoteCarPad(pad) ? g_carIn.accel : PadAccelerate(pad); }
+DECL_HOOK(int16_t, PadBrake, uintptr_t pad)      { return RemoteCarPad(pad) ? g_carIn.brake : PadBrake(pad); }
+DECL_HOOK(int16_t, PadSteer, uintptr_t pad)      { return RemoteCarPad(pad) ? g_carIn.steer : PadSteer(pad); }
+DECL_HOOK(int16_t, PadHandBrake, uintptr_t pad)  { return RemoteCarPad(pad) ? 0 : PadHandBrake(pad); }
+
 // Свои удары считаем, второму CJ «нажимаем» удар
 DECL_HOOK(bool, MeleeJustDown, uintptr_t pad)
 {
@@ -891,6 +941,10 @@ bool Install(void* h, FLogger* log)
         { "_ZN7CWeapon14DoBulletImpactEP7CEntityS1_P7CVectorS3_P9CColPointi", (void*)HookOf_DoBulletImpact, (void**)&DoBulletImpact },
         { "_ZN7CWeapon4FireEP7CEntityP7CVectorS3_S1_S3_S3_", (void*)HookOf_WeaponFireHook, (void**)&WeaponFireHook },
         { "_ZN28CPedDamageResponseCalculator21ComputeDamageResponseEP4CPedR18CPedDamageResponseb", (void*)HookOf_ComputeDamage, (void**)&ComputeDamage },
+        { "_ZN4CPad13GetAccelerateEv",        (void*)HookOf_PadAccelerate, (void**)&PadAccelerate },
+        { "_ZN4CPad8GetBrakeEv",              (void*)HookOf_PadBrake,      (void**)&PadBrake },
+        { "_ZN4CPad20GetSteeringLeftRightEv", (void*)HookOf_PadSteer,      (void**)&PadSteer },
+        { "_ZN4CPad12GetHandBrakeEv",         (void*)HookOf_PadHandBrake,  (void**)&PadHandBrake },
     };
     for(const auto& d : hooks)
         if(!aml->GetSym(h, d.sym)) { Log(true, "Машины/оружие: нет символа %s — кооп только пешком", d.sym); return false; }
@@ -979,6 +1033,7 @@ void Frame(const Ctx& c)
     UpdateVehicles(c.dt);
     if(g_ctx.rs && c.remote) ManageRemoteSeat(*g_ctx.rs);
     else g_remoteBusy = false;
+    UpdateCarInput();
     UpdateCombat();
     UpdateWanted();
 }
