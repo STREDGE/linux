@@ -67,6 +67,7 @@ vtable: `GetTaskType` +0x28, удалить объект +0x08, `CVehicle::BlowU
 ## Режим на двоих (PS2) — где игра смотрит на `Players[1]`
 
 `CGameLogic::Update` (поводок, общая смерть), `CCamera::CamControl` (общая камера),
+`CGameLogic::IsPlayerAllowedToGoInThisDirection` (не пускает дальше предела от игрока 2 — пешком и в машине),
 `CPickups::Update`, `CDarkel::Update`, `IsCoopGameGoingOn`, `IsPlayerUse2PlayerControls`.
 Мод на время этих функций убирает второго CJ из слота, а две последние возвращают false.
 

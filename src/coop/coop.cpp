@@ -219,7 +219,7 @@ namespace
 
     void UpdateRemote(const net::RemoteState& rs, uintptr_t localPed, float dt, uint64_t now)
     {
-        bool fresh = rs.valid && now - rs.receivedUs < kStaleUs;
+        bool fresh = rs.valid && net::Since(now, rs.receivedUs) < kStaleUs;
         CheckRemoteAlive();
 
         if(!fresh) { DespawnRemote(g_cfg.role == net::Role::Echo ? "эхо: нет данных" : "нет данных от друга"); return; }
@@ -228,15 +228,16 @@ namespace
         if(g_cutsceneRunning && *g_cutsceneRunning) { DespawnRemote("заставка"); return; }
         // Не создавать сразу после загрузки/новой игры: модель CJ ещё собирается,
         // и копия получилась бы невидимой. Ждём, пока игрок пробудет в игре пару секунд.
-        if(!g_remotePed && now - g_localSinceUs < kSpawnDelayUs) return;
+        if(!g_remotePed && net::Since(now, g_localSinceUs) < kSpawnDelayUs) return;
 
         const net::PlayerStatePacket& s = rs.pkt;
-        float   age    = (float)(now - rs.receivedUs) / 1e6f;
+        float   age    = (float)net::Since(now, rs.receivedUs) / 1e6f;
         if(age > 0.25f) age = 0.25f;
         CVector target { s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
 
         g_where = "создание второго CJ";
         if(!g_remotePed && !SpawnRemote(target, s.heading)) return;
+        Field<uint8_t>(g_remotePed, off::EntArea) = s.area;   // сразу в том же интерьере, что друг
 
         // Смерть: друг погиб — второй CJ лежит (уложит sync); друг ожил — создаём заново
         bool friendDead = (s.flags & net::PSF_DEAD) != 0;
@@ -528,7 +529,7 @@ namespace
             UpdateRemote(ers, local, dt, now);
             sc.connected = true;
             sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
-            sc.rs = (ers.valid && now - ers.receivedUs < kStaleUs) ? &ers.pkt : nullptr;
+            sc.rs = (ers.valid && net::Since(now, ers.receivedUs) < kStaleUs) ? &ers.pkt : nullptr;
             g_where = "синхронизация машин/оружия (эхо)";
             sync::Frame(sc);
             // Голос в одиночку: говоришь — через 0,5 с слышишь себя (как двойник повторяет движения)
@@ -555,7 +556,7 @@ namespace
         UpdateRemote(rs, local, dt, now);
         sc.connected = g_session.Connected();
         sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
-        sc.rs = (rs.valid && now - rs.receivedUs < kStaleUs) ? &rs.pkt : nullptr;
+        sc.rs = (rs.valid && net::Since(now, rs.receivedUs) < kStaleUs) ? &rs.pkt : nullptr;
         g_where = "синхронизация машин/оружия";
         sync::Frame(sc);
     }
@@ -625,6 +626,14 @@ DECL_HOOKv(PlayerInfoProcess, uintptr_t self, int player)
 }
 
 DECL_HOOKb(IsCoopGameGoingOn)                         { return false; }
+
+// «Поводок» режима на двоих: игра не даёт уйти/уехать дальше заданного расстояния от игрока 2
+// (CPlayerTaskSimpleOnFoot / CAutomobile::ProcessControlInputs). У нас игроки ходят где хотят.
+DECL_HOOK(bool, AllowedToGoInDirection, uintptr_t ped, CVector dir, float dist)
+{
+    if(g_remotePed) return true;
+    return AllowedToGoInDirection(ped, dir, dist);
+}
 DECL_HOOKb(IsPlayerUse2PlayerControls, uintptr_t ped) { (void)ped; return false; }
 
 DECL_HOOKv(GameLogicUpdate)             { g_where = "CGameLogic::Update (слот скрыт)"; { HideRemoteSlot h; GameLogicUpdate(); } g_where = "игра (не код мода)"; }
@@ -684,6 +693,7 @@ bool Install(void* h, FLogger* log)
         { "_ZN4CPad9GetSprintEi",                                    (void*)HookOf_PadGetSprint,               (void**)&PadGetSprint },
         { "_ZN4CPad12JumpJustDownEv",                                (void*)HookOf_PadJumpJustDown,            (void**)&PadJumpJustDown },
         { "_ZN11CPlayerInfo7ProcessEi",                              (void*)HookOf_PlayerInfoProcess,          (void**)&PlayerInfoProcess },
+        { "_ZN10CGameLogic34IsPlayerAllowedToGoInThisDirectionEP10CPlayerPed7CVectorf", (void*)HookOf_AllowedToGoInDirection, (void**)&AllowedToGoInDirection },
         { "_ZN10CGameLogic17IsCoopGameGoingOnEv",                    (void*)HookOf_IsCoopGameGoingOn,          (void**)&IsCoopGameGoingOn },
         { "_ZN10CGameLogic26IsPlayerUse2PlayerControlsEP10CPlayerPed",(void*)HookOf_IsPlayerUse2PlayerControls, (void**)&IsPlayerUse2PlayerControls },
         { "_ZN10CGameLogic6UpdateEv",                                (void*)HookOf_GameLogicUpdate,            (void**)&GameLogicUpdate },

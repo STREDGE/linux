@@ -298,11 +298,11 @@ namespace
         if(!ModelLoaded(model))
         {
             if(!v.requestUs) { RequestModel(model, 2); v.requestUs = g_ctx.now; return false; }
-            if(g_ctx.now - v.requestUs < 1500000) return false;
+            if(net::Since(g_ctx.now, v.requestUs) < 1500000) return false;
             LoadAllRequestedModels(false);
             if(!ModelLoaded(model))
             {
-                if(g_ctx.now - v.requestUs > 8000000) { Log(true, "[МАШИНЫ] Модель %d не грузится — копии %04X не будет", model, v.id); v.dead = true; }
+                if(net::Since(g_ctx.now, v.requestUs) > 8000000) { Log(true, "[МАШИНЫ] Модель %d не грузится — копии %04X не будет", model, v.id); v.dead = true; }
                 return false;
             }
         }
@@ -368,7 +368,7 @@ namespace
         if(v.appliedSeq == s.seq && v.appliedSeqValid) return ApplyCosmetics(v);
         v.appliedSeq = s.seq; v.appliedSeqValid = true;
 
-        float age = (float)(g_ctx.now - v.stUs) / 1e6f;
+        float age = (float)(net::Since(g_ctx.now, v.stUs)) / 1e6f;
         if(age > 0.15f) age = 0.15f;
         CVector target{ s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
         CVector cur = GetPosition(veh);
@@ -515,10 +515,18 @@ namespace
         return !who || who == forPed;
     }
 
+    uint64_t g_lastEnterTaskUs = 0;
     void GiveEnterTask(uintptr_t ped, uintptr_t veh, int seat)
     {
         uintptr_t mgr = TaskManager(ped);
         if(!mgr) return;
+        // Не чаще раза в 2 с: в 0.8.7 задача «сесть» выдавалась десятки раз в секунду — игра упала
+        // в CVehicleAnimGroup::ComputeAnimDoorOffsets (анимация двери для удалённого CJ)
+        if(ped == g_ctx.remote)
+        {
+            if(g_lastEnterTaskUs && net::Since(g_ctx.now, g_lastEnterTaskUs) < 2000000) return;
+            g_lastEnterTaskUs = g_ctx.now;
+        }
         void* t = TaskNew(0x80);
         if(!t) return;
         if(seat == 0) TaskEnterAsDriver(t, veh);
@@ -586,7 +594,7 @@ namespace
                 Log(false, "[МАШИНЫ] Друг в машине %04X — второй CJ садится (место %d)", s.vehId, seat);
                 return;
             }
-            if(d >= 12.0f || (g_enterSinceUs && now - g_enterSinceUs > kEnterTimeoutUs))
+            if(d >= 12.0f || (g_enterSinceUs && net::Since(now, g_enterSinceUs) > kEnterTimeoutUs))
             {
                 WarpIn(r, tv, seat);
                 g_enterSinceUs = 0;
@@ -600,7 +608,7 @@ namespace
         bool onFoot = s.enterSeat == net::kNoSeat;
         if(!onFoot) g_onFootSinceUs = 0;
         else if(!g_onFootSinceUs) g_onFootSinceUs = now;
-        bool surelyOnFoot = onFoot && now - g_onFootSinceUs > kOnFootConfirmUs;
+        bool surelyOnFoot = onFoot && net::Since(now, g_onFootSinceUs) > kOnFootConfirmUs;
         if(cur && !surelyOnFoot) { g_remoteBusy = true; return; }
         if(onFoot && !surelyOnFoot && (tt == TASK_ENTER_AS_DRIVER || tt == TASK_ENTER_AS_PASSENGER)) { g_remoteBusy = true; return; }
         if(surelyOnFoot) g_enterSinceUs = 0;
@@ -608,7 +616,7 @@ namespace
         {
             g_remoteBusy = true;
             if(!g_leaveSinceUs) { GiveLeaveTask(r, cur); g_leaveSinceUs = now; Log(false, "[МАШИНЫ] Друг вышел — второй CJ выходит"); }
-            else if(now - g_leaveSinceUs > kLeaveTimeoutUs) { WarpOut(r); g_leaveSinceUs = 0; }
+            else if(net::Since(now, g_leaveSinceUs) > kLeaveTimeoutUs) { WarpOut(r); g_leaveSinceUs = 0; }
             return;
         }
         g_leaveSinceUs = 0;
@@ -669,7 +677,7 @@ namespace
             }
             else
             {
-                if(v.haveState && g_ctx.now - v.stUs > kVehStaleUs && !localDriver)
+                if(v.haveState && net::Since(g_ctx.now, v.stUs) > kVehStaleUs && !localDriver)
                 {   // хозяин замолчал
                     DropCopy(v, "нет вестей");
                     if(v.copy) v.dead = true;
@@ -695,7 +703,7 @@ namespace
                 CVector ms = Field<CVector>(v.veh, off::PhysMoveSpeed);
                 if(ms.x * ms.x + ms.y * ms.y + ms.z * ms.z > 0.0001f) moving = true;
                 uint64_t interval = (localUses || remoteUses || moving) ? kVehFastUs : kVehSlowUs;
-                if(g_ctx.now - v.lastSendUs >= interval)
+                if(net::Since(g_ctx.now, v.lastSendUs) >= interval)
                 {
                     net::VehiclePacket p;
                     FillVehicle(v, localDriver, p);
@@ -955,7 +963,7 @@ namespace
             {
                 if(g_lastFriendSeqUs)
                 {
-                    uint64_t gap = g_ctx.now - g_lastFriendSeqUs;
+                    uint64_t gap = net::Since(g_ctx.now, g_lastFriendSeqUs);
                     int lost = (int)(sq - g_lastFriendSeq) - 1;
                     if(lost > 0 && lost < 1000) g_friendLost += lost;
                     if(gap > 300000) Log(false, "[СЕТЬ] от друга не было пакетов %.0f мс (потеряно %d)", gap / 1000.0f, lost > 0 ? lost : 0);
@@ -1029,7 +1037,7 @@ namespace
                     Field<float>(v.veh, off::VehSteerInput), Field<float>(v.veh, off::VehGas), Field<float>(v.veh, off::VehBrake),
                     (Field<uint8_t>(v.veh, off::VehFlags) >> 5) & 1,
                     ModeName(v.mode), v.lastErr, v.lastYawErr, v.corrections, v.snaps, v.pktsOut, v.pktsIn,
-                    v.stUs ? (float)(g_ctx.now - v.stUs) / 1000.0f : -1.0f);
+                    v.stUs ? (float)(net::Since(g_ctx.now, v.stUs)) / 1000.0f : -1.0f);
             }
             v.snaps = 0; v.corrections = 0; v.pktsIn = v.pktsOut = 0;
         }
@@ -1037,7 +1045,7 @@ namespace
             Log(false, "[ДРУГ] машина %04X, место %d, садится %d, второй CJ занят машиной: %s, пешком %.1f с",
                 g_ctx.rs->vehId, g_ctx.rs->seat == net::kNoSeat ? -1 : g_ctx.rs->seat,
                 g_ctx.rs->enterSeat == net::kNoSeat ? -1 : g_ctx.rs->enterSeat, g_remoteBusy ? "да" : "нет",
-                g_onFootSinceUs ? (float)(g_ctx.now - g_onFootSinceUs) / 1e6f : 0.0f);
+                g_onFootSinceUs ? (float)(net::Since(g_ctx.now, g_onFootSinceUs)) / 1e6f : 0.0f);
     }
 }
 
@@ -1271,7 +1279,7 @@ void Capture(const Ctx& c, net::PlayerStatePacket& s)
     CVector lp = GetPosition(l);
     CVector aim;
     if(lock && (EntType(lock) == 2 || EntType(lock) == 3)) { aim = GetPosition(lock); aim.z += 0.5f; s.flags |= net::PSF_AIMING; }
-    else if(g_lastAimUs && c.now - g_lastAimUs < 600000) aim = g_lastAim;
+    else if(g_lastAimUs && net::Since(c.now, g_lastAimUs) < 600000) aim = g_lastAim;
     else { float h = Field<float>(l, off::PedRotCurrent); aim = CVector{ lp.x - sinf(h) * 10.0f, lp.y + cosf(h) * 10.0f, lp.z + 0.5f }; }
     Put(s.aim, aim);
 
@@ -1369,7 +1377,7 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
                 g_vehs.push_back(nv);
                 v = &g_vehs.back();
             }
-            if(v->haveState && (int32_t)(p->seq - v->st.seq) <= 0 && g_ctx.now - v->stUs < 2000000) return;
+            if(v->haveState && (int32_t)(p->seq - v->st.seq) <= 0 && net::Since(g_ctx.now, v->stUs) < 2000000) return;
             v->st = *p; v->stUs = g_ctx.now; v->haveState = true; ++v->pktsIn;
             break;
         }
