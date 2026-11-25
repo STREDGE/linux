@@ -5,6 +5,9 @@
 #include <mod/flogger.h>
 
 #include <arpa/inet.h>
+#include <netdb.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -88,11 +91,41 @@ namespace net
         return true;
     }
 
+    static bool ParseHostPort(const char* s, sockaddr_in& out, uint16_t defPort)
+    {
+        char host[64]; snprintf(host, sizeof(host), "%s", s);
+        uint16_t port = defPort;
+        char* colon = strrchr(host, ':');
+        if(colon) { *colon = 0; port = (uint16_t)atoi(colon + 1); }
+        memset(&out, 0, sizeof(out));
+        out.sin_family = AF_INET; out.sin_port = htons(port);
+        if(inet_pton(AF_INET, host, &out.sin_addr) == 1) return true;
+        addrinfo hints{}, *res = nullptr;
+        hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+        if(getaddrinfo(host, nullptr, &hints, &res) != 0 || !res) return false;
+        out.sin_addr = ((sockaddr_in*)res->ai_addr)->sin_addr;
+        freeaddrinfo(res);
+        return true;
+    }
+
     bool Session::Start(const Config& cfg, FLogger* log)
     {
         Stop();
         m_cfg = cfg;
         m_log = log;
+        m_useRelay = false;
+        if(cfg.relay[0])
+        {
+            if(ParseHostPort(cfg.relay, m_relay, 7777)) m_useRelay = true;
+            else Log(true, "Сервер-посредник «%s» не найден — пробую напрямую (Tailscale)", cfg.relay);
+        }
+        bool roomJoin = false;   // клиент: в «адресе» 6 цифр — код комнаты
+        if(m_useRelay && cfg.role == Role::Client)
+        {
+            size_t n = strlen(cfg.hostAddress); roomJoin = n == 6;
+            for(size_t i = 0; i < n; ++i) if(cfg.hostAddress[i] < '0' || cfg.hostAddress[i] > '9') roomJoin = false;
+        }
+        if(m_useRelay && cfg.role == Role::Client && !roomJoin) m_useRelay = false;   // ввели адрес — напрямую
 
         m_sock = socket(AF_INET, SOCK_DGRAM, 0);
         if(m_sock < 0)
@@ -105,7 +138,7 @@ namespace net
         sockaddr_in local{};
         local.sin_family      = AF_INET;
         local.sin_addr.s_addr = htonl(INADDR_ANY);
-        local.sin_port        = htons(cfg.role == Role::Host ? cfg.port : 0);
+        local.sin_port        = htons(cfg.role == Role::Host && !m_useRelay ? cfg.port : 0);
         if(bind(m_sock, (sockaddr*)&local, sizeof(local)) < 0)
         {
             Log(true, "bind(порт %u) не удался: %s", (unsigned)ntohs(local.sin_port), strerror(errno));
@@ -113,6 +146,25 @@ namespace net
             return false;
         }
 
+        if(m_useRelay)
+        {
+            if(cfg.role == Role::Host)
+            {
+                srand((unsigned)NowUs());
+                snprintf(m_room, sizeof(m_room), "%06d", rand() % 1000000);
+                m_link = Link::Idle;
+                Log(false, "[ХОСТ] Мир открыт через сервер %s, код комнаты %s", cfg.relay, m_room);
+            }
+            else
+            {
+                snprintf(m_room, sizeof(m_room), "%s", cfg.hostAddress);
+                m_peer = m_relay; m_hasPeer = true;
+                m_link = Link::Requesting;
+                Log(false, "[КЛИЕНТ] Захожу в комнату %s через сервер %s как «%s» ...", m_room, cfg.relay, cfg.nick);
+            }
+            m_nextRelayUs = 0;
+            return true;
+        }
         if(cfg.role == Role::Client)
         {
             m_peer.sin_family = AF_INET;
@@ -194,10 +246,12 @@ namespace net
             socklen_t   fromLen = sizeof(from);
             ssize_t n = recvfrom(m_sock, buf, sizeof(buf), 0, (sockaddr*)&from, &fromLen);
             if(n <= 0) break;
+            if(m_useRelay && HandleRelay(buf, (int)n, from)) continue;
             HandlePacket(buf, (int)n, from);
         }
 
         uint64_t now = NowUs();
+        if(m_useRelay) RelayTick(now);
 
         // Клиент стучится, пока не приняли
         if(m_cfg.role == Role::Client && m_link == Link::Requesting && now >= m_nextHelloUs)
@@ -248,6 +302,28 @@ namespace net
         }
 
         if(m_link == Link::Connected && !Connected()) DropPeer("нет пакетов 10 с");
+    }
+
+    // Сервер-посредник: хост держит комнату (раз в 5 с), друг заходит по коду (раз в секунду, пока не приняли)
+    void Session::RelayTick(uint64_t now)
+    {
+        if(now < m_nextRelayUs) return;
+        bool host = m_cfg.role == Role::Host;
+        if(!host && m_link != Link::Requesting) { m_nextRelayUs = now + 5000000; }
+        uint8_t p[11]; memcpy(p, "SCRL", 4); p[4] = host ? 'H' : 'C'; memcpy(p + 5, m_room, 6);
+        SendToAddr(p, sizeof(p), m_relay);
+        m_nextRelayUs = now + (host ? 5000000 : 1000000);
+    }
+
+    bool Session::HandleRelay(const uint8_t* data, int len, const sockaddr_in& from)
+    {
+        if(len < 11 || memcmp(data, "SCRL", 4) || !SameAddr(from, m_relay)) return false;
+        if(data[4] == 'N')
+        {
+            static uint64_t warned = 0;
+            if(NowUs() - warned > 10000000) { warned = NowUs(); PushEvent(EventType::RoomNotFound, ""); Log(true, "[КЛИЕНТ] Комнаты %s нет на сервере — проверь код", m_room); }
+        }
+        return true;
     }
 
     void Session::ResetReliable()

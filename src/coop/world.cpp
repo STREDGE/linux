@@ -82,6 +82,9 @@ namespace
     bool     g_wantLoad = false;            // мир получен — загрузить в безопасный момент
     bool     g_usedHostWorld = false;       // мир хоста уже загружен в этом режиме
     char     g_failText[160] = "";
+    bool     g_copyReq = false;             // друг попросил «сохранить мир хоста себе»
+    bool     g_copyMode = false;            // идёт такая передача: файл — в ячейку, без загрузки
+    constexpr const char* kCopySlotFile = "GTASAsf8.b";   // 8-я ячейка
     uint64_t g_startUs = 0;
 
     int Chunks(uint32_t total) { return (int)((total + net::kWorldChunkMax - 1) / net::kWorldChunkMax); }
@@ -179,7 +182,12 @@ namespace
 
     void ClientTick(bool connected, uint64_t now)
     {
-        if(!connected || g_usedHostWorld) return;
+        if(connected && g_copyReq && (g_cs == CState::Idle || g_cs == CState::Done || g_cs == CState::Failed))
+        {
+            g_copyReq = false; g_copyMode = true;
+            g_cs = CState::Requesting; g_myNonce = (uint32_t)(now ^ (now >> 32)) | 1; g_nextReqUs = 0; g_startUs = now;
+        }
+        if(!connected || (g_usedHostWorld && !g_copyMode)) return;
         if(g_cs == CState::Idle) { g_cs = CState::Requesting; g_myNonce = (uint32_t)(now ^ (now >> 32)) | 1; g_nextReqUs = 0; g_startUs = now; }
         if(g_cs == CState::Requesting && now >= g_nextReqUs)
         {
@@ -188,6 +196,17 @@ namespace
             g_nextReqUs = now + kReqEveryUs;
             static uint32_t logged = 0;
             if(logged != g_myNonce) { logged = g_myNonce; Log(false, "[МИР] Прошу у хоста его мир (передача %08X)", g_myNonce); }
+        }
+        if(g_cs == CState::Receiving && g_inChunks && g_inGotCount >= g_inChunks && g_copyMode)
+        {   // «Сохранить мир хоста себе»: в 8-ю ячейку (старое — в .bak), без загрузки
+            std::vector<uint8_t> old;
+            if(ReadGameFile(kCopySlotFile, old)) WriteGameFile("GTASAsf8.b.bak", old);
+            bool ok = WriteGameFile(kCopySlotFile, g_in);
+            g_copyMode = false;
+            g_cs = CState::Done;
+            Log(ok ? false : true, ok ? "[МИР] Мир хоста сохранён тебе в ячейку 8 (прежнее — GTASAsf8.b.bak)" : "[МИР] Не удалось записать мир хоста в ячейку 8");
+            Notice(ok ? "Мир хоста сохранён в ячейку 8 — можно продолжить одному" : "Не удалось сохранить мир хоста");
+            return;
         }
         if(g_cs == CState::Receiving && g_inChunks && g_inGotCount >= g_inChunks)
         {
@@ -348,10 +367,12 @@ void TeleportDone()
     Notice("Ты в мире хоста");
 }
 
+void RequestSaveCopy() { g_copyReq = true; Log(false, "[МИР] Прошу у хоста свежий мир — сохраню в ячейку 8"); }
+
 Progress GetProgress(net::Link link)
 {
     Progress p;
-    if(!g_ok) return p;
+    if(!g_ok || g_copyMode) return p;
     switch(g_cs)
     {
         case CState::Done: case CState::Idle:

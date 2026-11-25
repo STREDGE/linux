@@ -907,6 +907,8 @@ void MenuTick()
 }
 
 bool MenuUpdateTick() { return world::RunDeferredLoad(true); }
+bool CanSaveHostWorld() { return g_cfg.role == net::Role::Client && g_session.Connected(); }
+void SaveHostWorld() { world::RequestSaveCopy(); }
 
 JoinProgress GetJoinProgress()
 {
@@ -955,6 +957,8 @@ Status GetStatus()
     st.pingMs = g_session.LastRttMs();
     st.remoteSpawned = g_remotePed != 0;
     strncpy(st.host, g_cfg.hostAddress, sizeof(st.host) - 1);
+    snprintf(st.room, sizeof(st.room), "%s", g_session.RoomCode());
+    st.relay = g_session.UsingRelay();
     return st;
 }
 

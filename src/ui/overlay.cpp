@@ -206,6 +206,12 @@ namespace
 
     void Toast(const char* s) { snprintf(g_toast, sizeof(g_toast), "%s", s); g_toastAt = g_now; }
 
+    bool RoomCode(const std::string& s)
+    {
+        if(s.size() != 6) return false;
+        for(char c : s) if(c < '0' || c > '9') return false;
+        return true;
+    }
     bool ValidIp(const std::string& s)
     {
         int parts = 0, val = -1;
@@ -594,7 +600,7 @@ namespace
     void Apply()
     {
         g_settings.net.role = g_sel;
-        if(g_sel == net::Role::Client) snprintf(g_settings.net.hostAddress, sizeof(g_settings.net.hostAddress), "%s", g_ip.c_str());
+        if(g_sel == net::Role::Client) snprintf(g_settings.net.hostAddress, sizeof(g_settings.net.hostAddress), "%s", g_ip.c_str());   // адрес или код комнаты
         settings::Save(g_settings);
         coop::SetConfig(g_settings.net);
         if(g_log) g_log->Info("Меню: режим %s, адрес хоста %s", settings::RoleToString(g_sel), g_settings.net.hostAddress);
@@ -859,22 +865,28 @@ namespace
             else if(g_sel == net::Role::Host)
             {
                 if(g_now - g_myIpAt > 1.0) { g_myIpOk = platform::FindTailscaleIPv4(g_myIp, sizeof(g_myIp)); g_myIpAt = g_now; }
-                Text(F_SMALL, ImVec2(px, y), C(kGold), "ТВОЙ АДРЕС В TAILSCALE"); y += U(3.8f);
+                bool relay = g_settings.net.relay[0] != 0;
+                coop::Status cst = coop::GetStatus();
+                bool roomOk = relay && cst.relay && cst.room[0] && cst.role == net::Role::Host;
+                Text(F_SMALL, ImVec2(px, y), C(kGold), relay ? "КОД КОМНАТЫ (СЕРВЕР)" : "ТВОЙ АДРЕС В TAILSCALE"); y += U(3.8f);
                 const char* copyLbl = "Копировать";
                 float cw = ChipWidth(copyLbl);
                 ImVec2 ra(px, y), rb(px + pw, y + U(11));
-                IpReadout(ra, ImVec2(rb.x - cw - U(2.4f), rb.y), g_myIpOk ? g_myIp : "Tailscale выкл.", false, !g_myIpOk);
+                const char* shown = relay ? (roomOk ? cst.room : "нажми «Открыть мир»") : (g_myIpOk ? g_myIp : "Tailscale выкл.");
+                bool okShown = relay ? roomOk : g_myIpOk;
+                IpReadout(ra, ImVec2(rb.x - cw - U(2.4f), rb.y), shown, false, !okShown);
                 bool copy = false;
                 Chip(ImVec2(rb.x - cw, y + U(2.2f)), ImVec2(rb.x, rb.y - U(2.2f)), copyLbl, &copy);
                 if(copy)
                 {
-                    if(!g_myIpOk) Toast("Включи Tailscale — адреса пока нет");
-                    else if(platform::ClipboardSetText(g_myIp)) { char t[192]; snprintf(t, sizeof(t), "Адрес %s скопирован", g_myIp); Toast(t); }
+                    if(!okShown) Toast(relay ? "Сначала нажми «Открыть мир» — появится код" : "Включи Tailscale — адреса пока нет");
+                    else if(platform::ClipboardSetText(shown)) { char t[192]; snprintf(t, sizeof(t), "%s %s скопирован", relay ? "Код" : "Адрес", shown); Toast(t); }
                     else Toast("Не удалось скопировать");
                 }
                 y = rb.y + U(1.6f);
                 y = NickRow(ImVec2(px, y), pw) + U(2);
-                const char* p = g_myIpOk ? "Отправь этот адрес другу. Когда он постучится, ты увидишь запрос и нажмёшь «Принять»."
+                const char* p = relay ? "Отправь другу код комнаты. Он введёт его в «Подключиться», ты нажмёшь «Принять»."
+                              : g_myIpOk ? "Отправь этот адрес другу. Когда он постучится, ты увидишь запрос и нажмёшь «Принять»."
                                          : "Включи Tailscale на телефоне — здесь появится твой адрес для друга.";
                 Text(F_BODY, ImVec2(px, y), C(kDim), p, pw); y += TextSize(F_BODY, p, pw).y + U(2.4f);
                 FriendlyFireRow(ImVec2(px, y), pw);
@@ -883,7 +895,7 @@ namespace
             {
                 float keysW = U(34);
                 float lw = pw - keysW - U(3);
-                Text(F_SMALL, ImVec2(px, y), C(kGold), "АДРЕС ХОСТА"); float ly = y + U(3.8f);
+                Text(F_SMALL, ImVec2(px, y), C(kGold), g_settings.net.relay[0] ? "АДРЕС ХОСТА ИЛИ КОД КОМНАТЫ" : "АДРЕС ХОСТА"); float ly = y + U(3.8f);
                 IpReadout(ImVec2(px, ly), ImVec2(px + lw, ly + U(11)), g_ip.c_str(), true, false);
                 ly += U(11) + U(2.4f);
                 bool paste = false, clear = false;
@@ -893,7 +905,7 @@ namespace
                 Chip(ImVec2(px + w1 + U(1.6f), ly), ImVec2(px + w1 + U(1.6f) + w2, ly + U(6.4f)), l2, &clear);
                 ly += U(6.4f) + U(1.6f);
                 ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
-                Text(F_SMALL, ImVec2(px, ly), C(kDim), "Адрес пришлёт друг: «Копировать» в его меню. Он начинается на 100.", lw);
+                Text(F_SMALL, ImVec2(px, ly), C(kDim), g_settings.net.relay[0] ? "Код комнаты (6 цифр) или адрес Tailscale пришлёт друг." : "Адрес пришлёт друг: «Копировать» в его меню. Он начинается на 100.", lw);
                 Keypad(ImVec2(px + pw - keysW, y), keysW);
                 if(paste)
                 {
@@ -914,12 +926,21 @@ namespace
             float dy = (1 - k) * barH;
             const char* label = g_sel == net::Role::Off ? "Применить" : g_sel == net::Role::Echo ? "Запустить"
                               : g_sel == net::Role::Host ? "Открыть мир" : "Подключиться";
-            bool enabled = g_sel != net::Role::Client || ValidIp(g_ip);
+            bool enabled = g_sel != net::Role::Client || ValidIp(g_ip) || (g_settings.net.relay[0] && RoomCode(g_ip));
             float bw = TextSize(F_HEAD, label).x + U(12);
             ImVec2 ba(x1 - bw, y1 - barH + U(1) + dy), bb(x1, y1 + dy);
             const char* hint = enabled ? "Выбери режим и нажми кнопку справа" : "Введи адрес хоста полностью, например 100.87.12.40";
             ImVec2 hs = TextSize(F_SMALL, hint);
             float hx = x0;
+            if(g_sel == net::Role::Client && coop::CanSaveHostWorld())
+            {   // друг: сохранить свежий мир хоста себе в ячейку 8 (продолжить потом одному)
+                const char* sl = "Сохранить мир хоста себе";
+                float sw = ChipWidth(sl) + U(2);
+                bool sc = false;
+                Chip(ImVec2(x0, ba.y + U(1.2f)), ImVec2(x0 + sw, bb.y - U(1.2f)), sl, &sc);
+                if(sc) { coop::SaveHostWorld(); Toast("Сохраняю мир хоста в ячейку 8…"); }
+                hx = x0 + sw + U(2.4f);
+            }
             if(g_sel == net::Role::Host)
             {   // кнопка «Оружие» (только у хоста)
                 const char* wl = g_weapOpen ? "Скрыть оружие" : "Оружие";
@@ -992,6 +1013,7 @@ namespace
                 case net::EventType::DeniedByHost:   Feed(kRed,  "Хост отклонил запрос"); break;
                 case net::EventType::HostBusy:       Feed(kGold, "У хоста уже играет другой игрок"); break;
                 case net::EventType::RequestExpired: Feed(kGold, "Запрос %s истёк", e.nick); break;
+                case net::EventType::RoomNotFound:   Feed(kRed, "Комнаты с таким кодом нет — проверь код"); break;
                 case net::EventType::JoinRequest:    break; // показывается окном запроса
             }
         }
@@ -1595,7 +1617,7 @@ void Open()
     g_settings = settings::Load();
     g_sel = coop::GetConfig().role;
     g_ip = coop::GetConfig().hostAddress;
-    if(!ValidIp(g_ip)) g_ip = "100.";
+    if(!ValidIp(g_ip) && !RoomCode(g_ip)) g_ip = g_settings.net.relay[0] ? "" : "100.";
     g_ffKnob = g_settings.friendlyFire ? 1.0f : 0.0f;
     g_swKnob = g_settings.sharedWanted ? 1.0f : 0.0f;
     g_now = NowSec();

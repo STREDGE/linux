@@ -25,6 +25,7 @@ namespace net
         char     hostAddress[64] = "100.64.0.1";
         uint16_t port = 7777;
         char     nick[kNickLen] = "Player";
+        char     relay[64] = "";          // сервер-посредник «адрес:порт» (пусто — напрямую, Tailscale)
     };
 
     // Последнее полученное состояние друга
@@ -36,7 +37,7 @@ namespace net
     };
 
     // События для интерфейса (уведомления)
-    enum class EventType { JoinRequest, Connected, Disconnected, DeniedByHost, HostBusy, RequestExpired };
+    enum class EventType { JoinRequest, Connected, Disconnected, DeniedByHost, HostBusy, RequestExpired, RoomNotFound };
     struct Event { EventType type; char nick[kNickLen]; int pingMs; };
 
     enum class Link
@@ -77,6 +78,8 @@ namespace net
         // PKT_RELIABLE — только полезные данные события.
         typedef void (*GameSink)(uint8_t type, const uint8_t* data, int len);
         void  SetGameSink(GameSink fn) { m_gameSink = fn; }
+        bool  UsingRelay() const { return m_useRelay; }
+        const char* RoomCode() const { return m_room; }     // хост через посредника: код комнаты (6 цифр)
         void  SendGame(const void* pkt, int len);       // заголовок уже заполнен
         void  SendReliable(const void* data, int len);  // до kReliableMax байт
 
@@ -121,6 +124,12 @@ namespace net
         VoiceSink   m_voiceSink = nullptr;
         ModSink     m_modSink = nullptr;
         GameSink    m_gameSink = nullptr;
+        bool        m_useRelay = false;     // через сервер-посредник с кодом комнаты
+        sockaddr_in m_relay{};
+        char        m_room[8] = "";
+        uint64_t    m_nextRelayUs = 0;
+        void        RelayTick(uint64_t now);
+        bool        HandleRelay(const uint8_t* data, int len, const sockaddr_in& from);
 
         struct RelOut { uint32_t seq; uint64_t firstUs, lastUs; int len; uint8_t data[kReliableMax]; };
         std::vector<RelOut> m_relOut;

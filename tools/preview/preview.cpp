@@ -54,6 +54,8 @@ namespace coop {
     }
     void CancelJoin() {}
     bool MenuUpdateTick() { return false; }
+    bool CanSaveHostWorld() { return false; }
+    void SaveHostWorld() {}
     bool CanGiveToFriend() { return true; }
     bool PopNotice(char*, size_t) { return false; }
     bool GameLoaded() { return true; }

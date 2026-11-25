@@ -46,6 +46,7 @@ Data Load()
     char model[net::kNickLen] = "Player";
     platform::DeviceModel(model, sizeof(model));
     cfg->GetString(d.net.nick, sizeof(d.net.nick), "Nick", model, "Network");
+    cfg->GetString(d.net.relay, sizeof(d.net.relay), "Relay", "", "Network");   // сервер-посредник (адрес:порт), пусто — Tailscale
     cfg->Save();
     return d;
 }
@@ -60,6 +61,7 @@ void Save(const Data& d)
     e = cfg->Bind("HostAddress", "100.64.0.1", "Network"); e->SetString(d.net.hostAddress);    delete e;
     e = cfg->Bind("Port", 7777, "Network");             e->SetInt(d.net.port);                 delete e;
     e = cfg->Bind("Nick", "Player", "Network");         e->SetString(d.net.nick);              delete e;
+    e = cfg->Bind("Relay", "", "Network");              e->SetString(d.net.relay);             delete e;
     cfg->Save();
 }
 

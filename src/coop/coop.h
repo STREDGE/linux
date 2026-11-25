@@ -34,6 +34,8 @@ namespace coop
         int       pingMs;         // -1 — неизвестен (у хоста)
         bool      remoteSpawned;  // второй CJ на карте
         char      host[64];
+        char      room[8];        // хост через сервер-посредник: код комнаты
+        bool      relay;          // режим посредника
     };
     Status GetStatus();
 
@@ -78,7 +80,9 @@ namespace coop
     struct JoinProgress { bool active = false; int percent = 0; char title[96] = ""; char detail[160] = ""; };
     JoinProgress GetJoinProgress();
     void CancelJoin();                                               // «Отмена» на экране подключения
-    bool MenuUpdateTick();                                           // из MobileMenu::Update; true — меню закрыто, идёт загрузка мира хоста
+    bool MenuUpdateTick();
+    bool CanSaveHostWorld();                                         // друг на связи с хостом
+    void SaveHostWorld();                                            // «Сохранить мир хоста себе» (ячейка 8)                                           // из MobileMenu::Update; true — меню закрыто, идёт загрузка мира хоста
 
     // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
     // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).

@@ -32,6 +32,8 @@ namespace coop { namespace world {
     bool TeleportPending();
     void TeleportDone();
 
+    void RequestSaveCopy();             // друг: «Сохранить мир хоста себе» (ячейка 8)
+
     struct Progress
     {
         bool active = false;            // показывать экран подключения
