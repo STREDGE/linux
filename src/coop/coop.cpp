@@ -603,6 +603,19 @@ DECL_HOOK(bool,    PadJumpJustDown, uintptr_t self)
     return r;
 }
 
+// CPlayerInfo::Process для второго игрока не выполняем: им управляет мод. Иначе игра «за него»
+// прятала общую кнопку «сесть» (CWidgetButtonEnterCar) и могла засчитать ему твоё нажатие.
+DECL_HOOKv(PlayerInfoProcess, uintptr_t self, int player)
+{
+    if(g_remotePed && self == Players + off::PlayerInfoSize && SlotPed(kRemoteSlot) == g_remotePed)
+    {
+        static bool logged = false;
+        if(!logged) { logged = true; Log(false, "Обработка игрока 2 (CPlayerInfo::Process) отключена — вторым CJ управляет мод"); }
+        return;
+    }
+    PlayerInfoProcess(self, player);
+}
+
 DECL_HOOKb(IsCoopGameGoingOn)                         { return false; }
 DECL_HOOKb(IsPlayerUse2PlayerControls, uintptr_t ped) { (void)ped; return false; }
 
@@ -662,6 +675,7 @@ bool Install(void* h, FLogger* log)
         { "_ZN4CPad16GetPedWalkUpDownEv",                            (void*)HookOf_PadGetPedWalkUpDown,        (void**)&PadGetPedWalkUpDown },
         { "_ZN4CPad9GetSprintEi",                                    (void*)HookOf_PadGetSprint,               (void**)&PadGetSprint },
         { "_ZN4CPad12JumpJustDownEv",                                (void*)HookOf_PadJumpJustDown,            (void**)&PadJumpJustDown },
+        { "_ZN11CPlayerInfo7ProcessEi",                              (void*)HookOf_PlayerInfoProcess,          (void**)&PlayerInfoProcess },
         { "_ZN10CGameLogic17IsCoopGameGoingOnEv",                    (void*)HookOf_IsCoopGameGoingOn,          (void**)&IsCoopGameGoingOn },
         { "_ZN10CGameLogic26IsPlayerUse2PlayerControlsEP10CPlayerPed",(void*)HookOf_IsPlayerUse2PlayerControls, (void**)&IsPlayerUse2PlayerControls },
         { "_ZN10CGameLogic6UpdateEv",                                (void*)HookOf_GameLogicUpdate,            (void**)&GameLogicUpdate },
