@@ -17,7 +17,7 @@ namespace net
 {
     constexpr uint64_t kPingIntervalUs  = 1000000;   // 1 c
     constexpr uint64_t kHelloIntervalUs = 1000000;   // клиент стучится раз в секунду
-    constexpr uint64_t kTimeoutUs       = 10000000;  // 10 c без пакетов = связь потеряна
+    constexpr uint64_t kTimeoutUs       = 60000000;  // 60 c без пакетов = связь потеряна (свернул игру / пауза — ждём)
     constexpr uint64_t kRequestTtlUs    = 15000000;  // запрос висит 15 с
     constexpr uint64_t kRejoinWindowUs  = 300000000; // тот же друг в течение 5 мин — без вопроса
     constexpr uint64_t kDenyHoldUs      = 30000000;  // отказанный адрес молчит 30 с

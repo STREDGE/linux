@@ -26,7 +26,7 @@ namespace
 {
     constexpr int      kRemoteSlot       = 1;          // CWorld::Players[1]
     constexpr uint64_t kSendIntervalUs   = 50000;      // 20 пакетов в секунду
-    constexpr uint64_t kStaleUs          = 3000000;    // нет данных 3 с — убрать второго CJ
+    constexpr uint64_t kStaleUs          = 60000000;   // нет данных 60 с — убрать второго CJ (пока друг свернул игру, он «замирает»)
     constexpr float    kActiveRadius     = 180.0f;     // дальше — CJ скрыт, видна только метка
     constexpr float    kSnapDistance     = 10.0f;      // дальше — мгновенно переносим
     constexpr float    kSmoothRate       = 12.0f;      // скорость сглаживания (1/с)
@@ -238,8 +238,11 @@ namespace
 
         const net::PlayerStatePacket& s = rs.pkt;
         float   age    = (float)net::Since(now, rs.receivedUs) / 1e6f;
+        bool    frozen = age > 0.6f;            // друг свернул игру / пауза: стоит на месте, не идёт
         if(age > 0.25f) age = 0.25f;
-        CVector target { s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
+        net::PlayerStatePacket sf = s;
+        if(frozen) { sf.vel[0] = sf.vel[1] = sf.vel[2] = 0; sf.moveRatio = 0; sf.flags &= ~net::PSF_SPRINT; }
+        CVector target { sf.pos[0] + sf.vel[0] * age, sf.pos[1] + sf.vel[1] * age, sf.pos[2] + sf.vel[2] * age };
 
         g_where = "создание второго CJ";
         if(!g_remotePed && !SpawnRemote(target, s.heading)) return;
@@ -314,7 +317,7 @@ namespace
             ++g_headingErrCount;
         }
 
-        float ratio = (s.flags & net::PSF_IN_VEHICLE) ? 0.0f : s.moveRatio;
+        float ratio = (sf.flags & net::PSF_IN_VEHICLE) ? 0.0f : sf.moveRatio;
         if(ratio > kMinMoveRatio)
         {
             float mag = ratio * off::StickScale;
@@ -322,7 +325,7 @@ namespace
             float a = g_shownHeading + Field<float>(TheCamera, off::CamOrientation);
             g_stickX = (int16_t)(-mag * sinf(a));
             g_stickY = (int16_t)(-mag * cosf(a));
-            g_sprint = (s.flags & net::PSF_SPRINT) != 0;
+            g_sprint = (sf.flags & net::PSF_SPRINT) != 0;
             g_intendedHeading = g_shownHeading;
             g_stickActive = true;
         }
