@@ -393,15 +393,20 @@ namespace
         {
             // Стоит: высоту и наклон решает игра (подвеска, земля), мы только держим место и курс.
             // Иначе на склоне колёса уходили в землю или висели.
-            float k = 1.0f - expf(-3.0f * dt);
-            if(errXY > 0.05f)
+            // Мелкое расхождение (до 0,3 м) не правим вовсе: иначе на склоне мод и физика
+            // перетягивали машину каждый кадр, игра считала её едущей и отменяла посадку.
+            float k = 1.0f - expf(-2.0f * dt);
+            if(errXY > 0.3f)
             {
                 CVector p{ cur.x + dx * k, cur.y + dy * k, cur.z };
                 SetPosition(veh, p);
             }
-            CorrectYaw(veh, V(s.fwd), k);
-            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ 0, 0, ms.z };
+            CVector f = Field<CVector>(m, off::MatForward);
+            float yawErr = fabsf(WrapA(atan2f(-s.fwd[0], s.fwd[1]) - atan2f(-f.x, f.y)));
+            if(yawErr > 0.05f) CorrectYaw(veh, V(s.fwd), k);
+            Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ 0, 0, ms.z < 0 ? ms.z : 0.0f };
             Field<CVector>(veh, off::PhysTurnSpeed) = CVector{ ts.x, ts.y, 0 };
+            Field<uint8_t>(veh, off::VehFlags) |= 0x20;            // ручник — не катится со склона
             v.mode = 1;
         }
         else
@@ -417,6 +422,7 @@ namespace
             Field<CVector>(veh, off::PhysMoveSpeed) = CVector{ (s.vel[0] + cx) / 50.0f, (s.vel[1] + cy) / 50.0f, vz / 50.0f };
             Field<CVector>(veh, off::PhysTurnSpeed) = CVector{ ts.x, ts.y, s.turn[2] };
             CorrectYaw(veh, V(s.fwd), 1.0f - expf(-kVehSmooth * dt));
+            Field<uint8_t>(veh, off::VehFlags) &= ~0x20;
             v.mode = 2;
         }
         if(!(s.flags & net::VF_BLOWN)) Field<float>(veh, off::VehHealth) = s.health;
@@ -873,6 +879,70 @@ namespace
     }
 }
 
+const char* WhoDrivesFwd(uintptr_t veh);
+// ---------- своя кнопка «сесть» ----------
+namespace
+{
+    uintptr_t NearestEnterable(float maxDist, float* distOut)
+    {
+        if(!g_vehPoolSym || !g_ctx.local) return 0;
+        uintptr_t pool = *(uintptr_t*)g_vehPoolSym;
+        if(!pool) return 0;
+        uintptr_t objs = Field<uintptr_t>(pool, 0), flags = Field<uintptr_t>(pool, 8);
+        int size = Field<int>(pool, 0x10);
+        if(!objs || !flags || size <= 0 || size > 4096) return 0;
+        CVector lp = GetPosition(g_ctx.local);
+        uintptr_t best = 0; float bd = maxDist;
+        for(int i = 0; i < size; ++i)
+        {
+            if(Field<uint8_t>(flags, i) & 0x80) continue;
+            uintptr_t veh = objs + (uintptr_t)i * kVehPoolEntry;
+            if(EntStatus(veh) == 5 || Field<int>(veh, off::VehBaseType) == 6) continue;   // разбита / поезд
+            float d = Dist(GetPosition(veh), lp);
+            if(d < bd) { bd = d; best = veh; }
+        }
+        if(distOut) *distOut = bd;
+        return best;
+    }
+    uint64_t g_nextEnterLogUs = 0;
+}
+
+bool CanEnterNearby()
+{
+    if(!g_installed || !g_active || !g_ctx.local || PedVehicle(g_ctx.local) || !PedIsAlive(g_ctx.local)) return false;
+    int tt = ActiveTaskType(g_ctx.local);
+    if(tt == TASK_ENTER_AS_DRIVER || tt == TASK_ENTER_AS_PASSENGER) return false;
+    float d = 0;
+    uintptr_t veh = NearestEnterable(5.0f, &d);
+    if(veh && g_ctx.now >= g_nextEnterLogUs)
+    {   // почему игра могла не показать свою кнопку
+        g_nextEnterLogUs = g_ctx.now + 2000000;
+        NetVeh* nv = FindVeh(veh);
+        Log(false, "[КНОПКА] рядом машина %d (%s%04X) в %.1f м: за рулём %s, замок %d, статус %d, учитывается игроком %d, коллизия %d, задача твоя %d",
+            ModelOf(veh), nv ? (nv->copy ? "копия " : "общая ") : "обычная ", nv ? nv->id : 0, d, WhoDrivesFwd(veh),
+            Field<int>(veh, off::VehDoorLock), EntStatus(veh), (Field<uint8_t>(veh, off::VehFlags + 6) >> 5) & 1,
+            Field<uint8_t>(veh, off::EntFlags) & 1, tt);
+    }
+    return veh != 0;
+}
+
+void EnterNearby()
+{
+    if(!CanEnterNearby()) return;
+    uintptr_t veh = NearestEnterable(5.0f, nullptr);
+    if(!veh) return;
+    uintptr_t drv = Field<uintptr_t>(veh, off::VehDriver);
+    int seat = 0;
+    if(drv && drv == g_ctx.remote)
+    {
+        int p = FreePassengerSeat(veh, 0);
+        if(p < 0) { Log(false, "[КНОПКА] в машине друга нет свободного места"); return; }
+        seat = p + 1;
+    }
+    GiveEnterTask(g_ctx.local, veh, seat);
+    Log(false, "[КНОПКА] «Сесть» (кнопка мода): машина %d, %s", ModelOf(veh), seat ? "пассажиром" : "за руль");
+}
+
 // ---------- подробный лог ----------
 namespace
 {
@@ -884,6 +954,7 @@ namespace
         if(d == g_ctx.remote) return "второй CJ";
         return "пед игры";
     }
+    const char* ModeName(int m) __attribute__((unused));
     const char* ModeName(int m) { return m == 0 ? "перенос" : m == 1 ? "стоит" : m == 2 ? "едет" : "-"; }
 
     // Переходы (пишем сразу, как изменилось)
@@ -954,6 +1025,8 @@ namespace
                 g_onFootSinceUs ? (float)(g_ctx.now - g_onFootSinceUs) / 1e6f : 0.0f);
     }
 }
+
+const char* WhoDrivesFwd(uintptr_t veh) { return WhoDrives(veh); }
 
 // ---------- перехваты ----------
 

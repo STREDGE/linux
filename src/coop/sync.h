@@ -51,6 +51,10 @@ namespace coop { namespace sync {
     // Смена режима / загрузка игры: убрать все копии машин, забыть номера
     void Reset(const char* why);
 
+    // Своя кнопка «Сесть» (на случай, если игра свою не показывает)
+    bool CanEnterNearby();
+    void EnterNearby();
+
     // Для строки состояния в логе
     int  TrackedVehicles();
 }}

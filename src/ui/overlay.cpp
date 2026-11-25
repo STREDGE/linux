@@ -1135,6 +1135,20 @@ namespace
         g_s = l.item[settings::L_TALK].s; g_editBox[settings::L_TALK] = DrawTalking(t, ItemPos(l, settings::L_TALK), sample);
         if(t.show || sample) { g_s = l.item[settings::L_MIC].s; g_editBox[settings::L_MIC] = DrawMic(t, ItemPos(l, settings::L_MIC), !sample); }
         else if(g_micHeld) { g_micHeld = false; coop::SetTalking(false); }
+        if(t.show && !sample && coop::CanEnterNearby())
+        {   // своя кнопка «Сесть» под микрофоном: если игра свою не показала
+            g_s = l.item[settings::L_MIC].s;
+            ImVec2 mc = ItemPos(l, settings::L_MIC);
+            ImVec2 c(mc.x, mc.y + U(17.5f));
+            ImVec2 ts = TextSize(F_SMALL, "СЕСТЬ");
+            ImVec2 a(c.x - ts.x * 0.5f - U(3), c.y - ts.y * 0.5f - U(1.6f)), b(c.x + ts.x * 0.5f + U(3), c.y + ts.y * 0.5f + U(1.6f));
+            bool held = Held(a, b);
+            DL()->AddRectFilled(a, b, C(held ? kGold : Rgb{ 11, 15, 21 }, held ? 0.95f : 0.78f), U(2.2f));
+            DL()->AddRect(a, b, C(kGold, 0.9f), U(2.2f), 0, U(0.35f));
+            Text(F_SMALL, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), C(held ? Rgb{ 11, 15, 21 } : kGold), "СЕСТЬ");
+            if(Clicked(a, b)) coop::EnterNearby();
+            g_s = 1.0f;
+        }
         g_s = l.item[settings::L_FEED].s; g_editBox[settings::L_FEED] = DrawFeed(ItemPos(l, settings::L_FEED), sample);
         g_s = 1.0f;
     }
