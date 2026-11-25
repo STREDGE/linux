@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include <string>
 #include <vector>
 
 #include "game/gta.h"
@@ -1400,6 +1401,12 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
             if(len == sizeof(net::ShotPacket)) { ++g_shotsIn; ReplayShot(*(const net::ShotPacket*)data); }
             break;
         case net::PKT_RELIABLE:
+            if(len >= 1 && data[0] == net::REL_GIVE_WEAPON && len == sizeof(net::GiveWeaponEvent))
+            {
+                const auto* e = (const net::GiveWeaponEvent*)data;
+                if(g_ctx.role == net::Role::Client) GiveWeaponLocal(e->weapon, (int)e->ammo, "Хост выдал тебе");
+                return;
+            }
             if(len >= 1 && data[0] == net::REL_DAMAGE && len == sizeof(net::DamageEvent))
             {
                 const auto* e = (const net::DamageEvent*)data;
@@ -1412,6 +1419,60 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
             }
             break;
     }
+}
+
+namespace
+{
+    std::vector<std::string> g_notices;
+    const char* WeaponName(int w)
+    {
+        switch(w)
+        {
+            case 1: return "кастет"; case 2: return "клюшка"; case 3: return "дубинка"; case 4: return "нож"; case 5: return "бита";
+            case 6: return "лопата"; case 7: return "кий"; case 8: return "катана"; case 9: return "бензопила";
+            case 16: return "гранаты"; case 17: return "слезоточивый газ"; case 18: return "коктейль Молотова";
+            case 22: return "пистолет"; case 23: return "пистолет с глушителем"; case 24: return "Desert Eagle";
+            case 25: return "дробовик"; case 26: return "обрез"; case 27: return "боевой дробовик";
+            case 28: return "Micro Uzi"; case 29: return "MP5"; case 30: return "AK-47"; case 31: return "M4"; case 32: return "Tec-9";
+            case 33: return "винтовка"; case 34: return "снайперская винтовка"; case 35: return "РПГ"; case 36: return "ракетница с наведением";
+            case 37: return "огнемёт"; case 38: return "миниган"; case 39: return "взрывчатка"; case 41: return "баллончик";
+            case 42: return "огнетушитель"; case 43: return "фотоаппарат"; case 46: return "парашют";
+            default: return "оружие";
+        }
+    }
+}
+
+void GiveWeaponLocal(int w, int ammo, const char* from)
+{
+    uintptr_t l = g_ctx.local;
+    if(!g_installed || !l || w <= 0 || w > 46) return;
+    int model = WeaponModel(w);
+    if(model && !ModelLoaded(model)) { RequestModel(model, 2); LoadAllRequestedModels(false); }
+    if(model && !ModelLoaded(model)) { Log(true, "[ОРУЖИЕ] модель %d не загрузилась — %s не выдано", model, WeaponName(w)); return; }
+    if(ammo < 1) ammo = 1;
+    GiveWeapon(l, w, (unsigned)ammo, false);
+    SetCurrentWeaponType(l, w);
+    Log(false, "[ОРУЖИЕ] %s: %s, патронов %d", from, WeaponName(w), ammo);
+    char t[160];
+    snprintf(t, sizeof(t), "%s: %s (%d)", from, WeaponName(w), ammo);
+    if(g_notices.size() < 8) g_notices.push_back(t);
+}
+
+bool SendGiveWeapon(int w, int ammo)
+{
+    if(!g_installed || g_echo || !g_ctx.connected || w <= 0 || w > 46) return false;
+    net::GiveWeaponEvent e{ net::REL_GIVE_WEAPON, (uint8_t)w, 0, (uint32_t)(ammo < 1 ? 1 : ammo) };
+    SendReliable(&e, sizeof(e));
+    Log(false, "[ОРУЖИЕ] выдано другу: %s, патронов %d", WeaponName(w), ammo);
+    return true;
+}
+
+bool PopNotice(char* out, int len)
+{
+    if(g_notices.empty()) return false;
+    snprintf(out, len, "%s", g_notices.front().c_str());
+    g_notices.erase(g_notices.begin());
+    return true;
 }
 
 bool RemoteBusy() { return g_active && g_remoteBusy; }

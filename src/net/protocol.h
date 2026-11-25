@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 11;
+    constexpr uint8_t  kProtocolVersion = 12;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -151,7 +151,7 @@ namespace net
     };
 
     // Надёжные события: повторяем, пока не придёт ACK
-    enum ReliableType : uint8_t { REL_DAMAGE = 1 };
+    enum ReliableType : uint8_t { REL_DAMAGE = 1, REL_GIVE_WEAPON = 2 };
     struct DamageEvent
     {
         uint8_t type;         // REL_DAMAGE
@@ -159,6 +159,13 @@ namespace net
         uint8_t piece;        // ePedPieceTypes
         uint8_t viaVehicle;   // удар машиной
         float   amount;
+    };
+    struct GiveWeaponEvent        // хост выдаёт оружие другу
+    {
+        uint8_t  type;            // REL_GIVE_WEAPON
+        uint8_t  weapon;          // eWeaponType
+        uint16_t pad;
+        uint32_t ammo;
     };
     constexpr int kReliableMax = 64;
     struct ReliablePacket

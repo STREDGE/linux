@@ -602,6 +602,98 @@ namespace
 
     void Close() { if(!g_closing) { g_closing = true; g_closeAt = g_now; } }
 
+    // ---------- выдача оружия (только хост) ----------
+    struct WeapItem { int id; const char* name; bool melee; };
+    const WeapItem kWeaps[] = {
+        { 1, "Кастет", true }, { 2, "Клюшка", true }, { 3, "Дубинка", true }, { 4, "Нож", true }, { 5, "Бита", true },
+        { 6, "Лопата", true }, { 7, "Кий", true }, { 8, "Катана", true }, { 9, "Бензопила", true },
+        { 16, "Гранаты", false }, { 17, "Газ", false }, { 18, "Молотов", false }, { 39, "Взрывчатка", false },
+        { 22, "Пистолет", false }, { 23, "Глушитель", false }, { 24, "Deagle", false },
+        { 25, "Дробовик", false }, { 26, "Обрез", false }, { 27, "Боевой дроб.", false },
+        { 28, "Uzi", false }, { 32, "Tec-9", false }, { 29, "MP5", false }, { 30, "AK-47", false }, { 31, "M4", false },
+        { 33, "Винтовка", false }, { 34, "Снайперка", false }, { 35, "РПГ", false }, { 36, "Ракетница", false },
+        { 37, "Огнемёт", false }, { 38, "Миниган", false }, { 41, "Баллончик", false }, { 42, "Огнетушитель", false },
+        { 43, "Фотоаппарат", false }, { 46, "Парашют", true },
+    };
+    bool g_weapOpen = false;
+    int  g_weapSel = 13;        // индекс в kWeaps (пистолет)
+    int  g_weapAmmo = 100;
+
+    void DrawWeapons(float x0, float y0, float x1, float y1)
+    {
+        Panel(ImVec2(x0, y0), ImVec2(x1, y1), U(2), kPanel);
+        float px = x0 + CW(2.4f), pw = (x1 - x0) - CW(4.8f);
+        float y = y0 + U(2.4f);
+        Text(F_SMALL, ImVec2(px, y), C(kGold), "ВЫДАТЬ ОРУЖИЕ  ·  ТОЛЬКО ХОСТ");
+        const char* backL = "Назад";
+        float bw = ChipWidth(backL);
+        bool back = false;
+        Chip(ImVec2(px + pw - bw, y - U(1)), ImVec2(px + pw, y + U(5)), backL, &back);
+        if(back) g_weapOpen = false;
+        y += U(6);
+
+        const int cols = 8;
+        const int n = (int)(sizeof(kWeaps) / sizeof(kWeaps[0]));
+        float gap = U(1.1f), cw = (pw - gap * (cols - 1)) / cols, ch = U(6.2f);
+        for(int i = 0; i < n; ++i)
+        {
+            int r = i / cols, c = i % cols;
+            ImVec2 a(px + c * (cw + gap), y + r * (ch + gap)), b(a.x + cw, a.y + ch);
+            bool sel = i == g_weapSel, held = Held(a, b);
+            DL()->AddRectFilled(a, b, C(sel ? Rgb{ 52, 44, 18 } : held ? kLine : kPanel2), U(1.2f));
+            DL()->AddRect(a, b, C(sel ? kGold : kLine), U(1.2f), 0, U(sel ? 0.5f : 0.3f));
+            ImVec2 ts = TextSize(F_SMALL, kWeaps[i].name);
+            Text(F_SMALL, ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f), C(sel ? kGold : kInk), kWeaps[i].name);
+            if(Clicked(a, b)) g_weapSel = i;
+        }
+        y += ((n + cols - 1) / cols) * (ch + gap) + U(1.2f);
+
+        // Патроны
+        const WeapItem& w = kWeaps[g_weapSel];
+        float rowH = U(7);
+        if(w.melee)
+        {
+            Text(F_BODY, ImVec2(px, y + U(1.4f)), C(kDim), "Холодное оружие — без патронов");
+        }
+        else
+        {
+            Text(F_SMALL, ImVec2(px, y + U(2)), C(kGold), "ПАТРОНЫ");
+            float x = px + TextSize(F_SMALL, "ПАТРОНЫ").x + U(2.4f);
+            struct Step { const char* l; int d; bool set; };
+            const Step steps[] = { { "-100", -100, false }, { "-10", -10, false }, { "+10", 10, false }, { "+100", 100, false },
+                                   { "30", 30, true }, { "100", 100, true }, { "500", 500, true }, { "9999", 9999, true } };
+            char num[16]; snprintf(num, sizeof(num), "%d", g_weapAmmo);
+            ImVec2 ns = TextSize(F_KEY, "99999");
+            ImVec2 na(x, y), nb(x + ns.x + U(3), y + rowH);
+            DL()->AddRectFilled(na, nb, C(Rgb{ 4, 8, 6 }), U(1.2f));
+            DL()->AddRect(na, nb, C(kLine), U(1.2f), 0, U(0.3f));
+            ImVec2 ts = TextSize(F_KEY, num);
+            Text(F_KEY, ImVec2((na.x + nb.x - ts.x) * 0.5f, (na.y + nb.y - ts.y) * 0.5f), C(kGrove), num);
+            x = nb.x + U(1.6f);
+            for(const auto& st : steps)
+            {
+                float sw = ChipWidth(st.l);
+                bool c = false;
+                Chip(ImVec2(x, y + U(0.4f)), ImVec2(x + sw, y + rowH - U(0.4f)), st.l, &c);
+                if(c) g_weapAmmo = st.set ? st.d : g_weapAmmo + st.d;
+                x += sw + U(1.1f);
+            }
+            if(g_weapAmmo < 1) g_weapAmmo = 1;
+            if(g_weapAmmo > 9999) g_weapAmmo = 9999;
+        }
+        y += rowH + U(2);
+
+        // Кому
+        bool friendOk = coop::CanGiveToFriend();
+        float bh = U(8), half = (pw - U(2)) * 0.5f;
+        bool me = false, fr = false;
+        BigButton(ImVec2(px, y), ImVec2(px + half, y + bh), "Выдать себе", true, &me);
+        BigButton(ImVec2(px + half + U(2), y), ImVec2(px + pw, y + bh), friendOk ? "Выдать другу" : "Друг не на связи", friendOk, &fr);
+        int ammo = w.melee ? 1 : g_weapAmmo;
+        if(me) { coop::GiveWeapon(false, w.id, ammo); char t[128]; snprintf(t, sizeof(t), "Тебе: %s%s", w.name, w.melee ? "" : " + патроны"); Toast(t); }
+        if(fr) { coop::GiveWeapon(true, w.id, ammo); char t[128]; snprintf(t, sizeof(t), "Другу: %s%s", w.name, w.melee ? "" : " + патроны"); Toast(t); }
+    }
+
     // ---------- кадр меню ----------
     void DrawMenu()
     {
@@ -643,6 +735,9 @@ namespace
             StatusPill(ImVec2(ca.x - U(2), cc.y - U(3.2f)), U(6.4f));
         }
 
+        if(g_weapOpen && g_sel != net::Role::Host) g_weapOpen = false;
+        if(g_weapOpen) DrawWeapons(x0, bodyY0, x1, bodyY1);
+        else {
         // --- режимы слева ---
         {
             float gap = U(1.6f);
@@ -779,6 +874,8 @@ namespace
             }
         }
 
+        } // режимы и панель
+
         // --- нижняя полоса ---
         {
             float k = anim(0.2f);
@@ -790,7 +887,17 @@ namespace
             ImVec2 ba(x1 - bw, y1 - barH + U(1) + dy), bb(x1, y1 + dy);
             const char* hint = enabled ? "Выбери режим и нажми кнопку справа" : "Введи адрес хоста полностью, например 100.87.12.40";
             ImVec2 hs = TextSize(F_SMALL, hint);
-            Text(F_SMALL, ImVec2(x0, (ba.y + bb.y - hs.y) * 0.5f), C(kDim), hint);
+            float hx = x0;
+            if(g_sel == net::Role::Host)
+            {   // кнопка «Оружие» (только у хоста)
+                const char* wl = g_weapOpen ? "Скрыть оружие" : "Оружие";
+                float ww = ChipWidth(wl) + U(2);
+                bool wc = false;
+                Chip(ImVec2(x0, ba.y + U(1.2f)), ImVec2(x0 + ww, bb.y - U(1.2f)), wl, &wc);
+                if(wc) g_weapOpen = !g_weapOpen;
+                hx = x0 + ww + U(2.4f);
+            }
+            if(!g_weapOpen) Text(F_SMALL, ImVec2(hx, (ba.y + bb.y - hs.y) * 0.5f), C(kDim), hint);
             bool go = false;
             BigButton(ba, bb, label, enabled, &go);
             if(go)
@@ -838,6 +945,8 @@ namespace
 
     void ProcessEvents()
     {
+        char note[160];
+        while(coop::PopNotice(note, sizeof(note))) Feed(kGold, "%s", note);
         net::Event e;
         while(coop::PopEvent(e))
         {

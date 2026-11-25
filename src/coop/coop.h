@@ -67,6 +67,10 @@ namespace coop
     void SetTalking(bool talking);                                   // кнопка микрофона зажата
     void SetFriendlyFire(bool on);                                   // огонь по своим (у клиента решает хост)
     void SetSharedWanted(bool on);                                   // общий розыск (у клиента решает хост)
+    // Хост выдаёт оружие (меню CO-OP): toFriend — другу, иначе себе. Выполнится в игровом кадре.
+    void GiveWeapon(bool toFriend, int weapon, int ammo);
+    bool CanGiveToFriend();                                          // хост и друг на связи
+    bool PopNotice(char* out, size_t len);                           // «Хост выдал тебе …» и т.п.
 
     // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
     // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).

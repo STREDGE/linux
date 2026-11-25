@@ -52,6 +52,12 @@ namespace coop { namespace sync {
     // Смена режима / загрузка игры: убрать все копии машин, забыть номера
     void Reset(const char* why);
 
+    // Оружие от хоста (меню CO-OP): себе — сразу, другу — надёжным событием
+    void GiveWeaponLocal(int weapon, int ammo, const char* from);
+    bool SendGiveWeapon(int weapon, int ammo);
+    // Сообщения для ленты уведомлений («Хост выдал тебе …»)
+    bool PopNotice(char* out, int len);
+
     // Для строки состояния в логе
     int  TrackedVehicles();
 }}

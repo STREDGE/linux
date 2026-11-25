@@ -60,6 +60,8 @@ namespace
     bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
     bool      g_friendlyFire = false;  // свой тумблер «огонь по своим»
     bool      g_sharedWanted = true;   // свой тумблер «общий розыск»
+    struct GiveReq { bool toFriend; int weapon, ammo; };
+    std::vector<GiveReq> g_giveQueue;   // выдача оружия из меню (под g_cfgMutex)
     std::vector<net::Event> g_echoEvents;
     bool      g_echoAnnounced = false;
 
@@ -501,6 +503,18 @@ namespace
         sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
         sync::Capture(sc, me);
 
+        // Выдача оружия из меню CO-OP (только хост)
+        {
+            std::vector<GiveReq> q;
+            { std::lock_guard<std::mutex> lock(g_cfgMutex); q.swap(g_giveQueue); }
+            for(const auto& r : q)
+            {
+                if(g_cfg.role != net::Role::Host) { Log(true, "[ОРУЖИЕ] выдавать может только хост"); continue; }
+                if(r.toFriend) sync::SendGiveWeapon(r.weapon, r.ammo);
+                else           sync::GiveWeaponLocal(r.weapon, r.ammo, "Выдано себе");
+            }
+        }
+
         if(now >= g_nextStatusUs)
         {
             g_nextStatusUs = now + kStatusLogUs;
@@ -826,6 +840,14 @@ void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
 void SetTalking(bool talking) { g_localTalking = talking; }
 void SetFriendlyFire(bool on) { g_friendlyFire = on; }
 void SetSharedWanted(bool on) { g_sharedWanted = on; }
+
+void GiveWeapon(bool toFriend, int weapon, int ammo)
+{
+    std::lock_guard<std::mutex> lock(g_cfgMutex);
+    g_giveQueue.push_back(GiveReq{ toFriend, weapon, ammo });
+}
+bool CanGiveToFriend() { return g_cfg.role == net::Role::Host && g_session.Connected(); }
+bool PopNotice(char* out, size_t len) { return sync::PopNotice(out, (int)len); }
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }

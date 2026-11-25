@@ -42,6 +42,9 @@ namespace coop {
     void SetTalking(bool) {}
     void SetFriendlyFire(bool) {}
     void SetSharedWanted(bool) {}
+    void GiveWeapon(bool, int, int) {}
+    bool CanGiveToFriend() { return true; }
+    bool PopNotice(char*, size_t) { return false; }
     bool GameLoaded() { return true; }
     void LockLocalControls(bool) {}
     uintptr_t HideRemoteBegin() { return 0; }
@@ -183,6 +186,8 @@ int main(int argc, char** argv)
     Tap(cx, card(0)); Frames(0.9); Save("off.ppm");
     Tap(cx, card(1)); Frames(0.9); Save("solo.ppm");
     Tap(cx, card(2)); Frames(0.9); Save("host.ppm");
+    Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.6); Save("weapons.ppm");   // «Оружие» у хоста
+    Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.4);
 
     // слой поверх игры: закрываем меню крестиком, затем запрос, подключение, разговор
     overlay::Render2dStuff = NoR2d;
