@@ -427,6 +427,8 @@ namespace
     uint64_t g_enterSinceUs = 0;     // когда дали задачу «сесть»
     uint16_t g_enterVehId = 0;
     uint64_t g_leaveSinceUs = 0;
+    uint64_t g_onFootSinceUs = 0;    // с какого момента друг «пешком» (для задержки выхода)
+    constexpr uint64_t kOnFootConfirmUs = 400000;
     bool     g_remoteBusy = false;
 
     int FreePassengerSeat(uintptr_t veh, int preferred)
@@ -494,6 +496,7 @@ namespace
 
         if(s.seat != net::kNoSeat)
         {
+            g_onFootSinceUs = 0;
             int seat = s.seat;
             // уже в нужной машине (место могло быть занято — тогда сидит на другом, это нормально)
             if(cur && cur == tv) { g_remoteBusy = true; g_enterSinceUs = 0; g_leaveSinceUs = 0; return; }
@@ -512,6 +515,7 @@ namespace
             {
                 GiveEnterTask(r, tv, seat);
                 g_enterSinceUs = now; g_enterVehId = s.vehId;
+                Log(false, "[МАШИНЫ] Друг в машине %04X — второй CJ садится (место %d)", s.vehId, seat);
                 return;
             }
             if(d >= 12.0f || (g_enterSinceUs && now - g_enterSinceUs > kEnterTimeoutUs))
@@ -523,12 +527,19 @@ namespace
             return;
         }
 
-        // Друг пешком
-        g_enterSinceUs = (s.enterSeat != net::kNoSeat) ? g_enterSinceUs : 0;
+        // Друг пешком. Короткие «пешком» между «садится» и «сел» бывают — не реагируем
+        // на них сразу (иначе второй CJ садился, выходил и садился снова).
+        bool onFoot = s.enterSeat == net::kNoSeat;
+        if(!onFoot) g_onFootSinceUs = 0;
+        else if(!g_onFootSinceUs) g_onFootSinceUs = now;
+        bool surelyOnFoot = onFoot && now - g_onFootSinceUs > kOnFootConfirmUs;
+        if(cur && !surelyOnFoot) { g_remoteBusy = true; return; }
+        if(onFoot && !surelyOnFoot && (tt == TASK_ENTER_AS_DRIVER || tt == TASK_ENTER_AS_PASSENGER)) { g_remoteBusy = true; return; }
+        if(surelyOnFoot) g_enterSinceUs = 0;
         if(cur)
         {
             g_remoteBusy = true;
-            if(!g_leaveSinceUs) { GiveLeaveTask(r, cur); g_leaveSinceUs = now; }
+            if(!g_leaveSinceUs) { GiveLeaveTask(r, cur); g_leaveSinceUs = now; Log(false, "[МАШИНЫ] Друг вышел — второй CJ выходит"); }
             else if(now - g_leaveSinceUs > kLeaveTimeoutUs) { WarpOut(r); g_leaveSinceUs = 0; }
             return;
         }
@@ -988,6 +999,17 @@ void Capture(const Ctx& c, net::PlayerStatePacket& s)
 
     // Машина: та, в которой сидишь, или в которую садишься
     LocalSeat ls = ReadLocalSeat(l);
+    {
+        static int lastState = -2;
+        int st = ls.veh ? 100 + ls.seat : ls.enterVeh ? 200 + ls.enterSeat : -1;
+        if(st != lastState)
+        {
+            if(st < 0)        Log(false, "[МАШИНЫ] Ты пешком");
+            else if(st < 200) Log(false, "[МАШИНЫ] Ты в машине %d, место %d", ModelOf(ls.veh), ls.seat);
+            else              Log(false, "[МАШИНЫ] Ты садишься в машину %d, место %d", ModelOf(ls.enterVeh), ls.enterSeat);
+            lastState = st;
+        }
+    }
     if(ls.veh)
     {
         NetVeh* v = FindVeh(ls.veh);
@@ -1027,8 +1049,9 @@ void Frame(const Ctx& c)
     if(c.role == net::Role::Client) g_ff = g_ctx.rs ? (g_ctx.rs->flags & net::PSF_FF) != 0 : false;
     else g_ff = c.friendlyFireLocal;
 
-    // Второго CJ нельзя вытащить из машины
-    if(c.remote) Field<uint8_t>(c.remote, off::PedFlags587) |= 0x20;
+    // Флаг «не вытаскивать из машины» второму CJ НЕ ставим: с ним игра не предлагает дверь водителя
+    // и прячет кнопку «сесть» (CCarEnterExit::GetNearestCarDoor). Выкидывания нет и так —
+    // перехват EnterAsDriverCtor сажает пассажиром.
 
     UpdateVehicles(c.dt);
     if(g_ctx.rs && c.remote) ManageRemoteSeat(*g_ctx.rs);
