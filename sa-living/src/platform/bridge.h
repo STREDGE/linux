@@ -34,4 +34,20 @@ namespace bridge
     void TtsStop();
     struct TtsEvent { std::string id; int state; };          // 0 начал, 1 закончил, 2 ошибка
     bool PollTts(TtsEvent& out);
+    void PushTtsEvent(const std::string& id, int state);
+
+    // ---- голосовой пакет: скачивание (план — строки, см. Bridge.downloadPack) ----
+    void DownloadPack(const std::string& plan);
+    void CancelDownload();
+    struct DlEvent { int state; long long done, total; std::string msg; };   // 0 идёт, 1 готово, 2 ошибка
+    bool PollDl(DlEvent& out);
+
+    // ---- микрофон (16 кГц моно, 16 бит); запись приходит целиком после MicStop ----
+    bool MicStart();
+    void MicStop();
+    bool PollMic(std::vector<int16_t>& out);
+
+    // ---- воспроизведение готового звука (своя озвучка); можно из любого потока ----
+    void PlayPcm(const float* samples, int n, int sampleRate, float pitch, float speed, const std::string& id);
+    void PlayStop();
 }

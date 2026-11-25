@@ -22,6 +22,8 @@ namespace
     std::deque<HttpEvent> g_http;
     std::deque<SttEvent>  g_stt;
     std::deque<TtsEvent>  g_tts;
+    std::deque<DlEvent>   g_dl;
+    std::deque<std::vector<int16_t>> g_mic;
 
     struct Env
     {
@@ -102,6 +104,17 @@ namespace
         std::lock_guard<std::mutex> l(g_mx); g_tts.push_back(std::move(e));
     }
     void JNICALL N_TtsReady(JNIEnv*, jclass, jint ok) { g_ttsReady = ok != 0; }
+    void JNICALL N_Dl(JNIEnv* env, jclass, jint state, jlong done, jlong total, jstring msg)
+    {
+        DlEvent e{ state, (long long)done, (long long)total, FromJ(env, msg) };
+        std::lock_guard<std::mutex> l(g_mx); g_dl.push_back(std::move(e));
+    }
+    void JNICALL N_Mic(JNIEnv* env, jclass, jshortArray arr, jint n)
+    {
+        std::vector<int16_t> v(n > 0 ? n : 0);
+        if(n > 0) env->GetShortArrayRegion(arr, 0, n, (jshort*)v.data());
+        std::lock_guard<std::mutex> l(g_mx); g_mic.push_back(std::move(v));
+    }
 
     jmethodID M(JNIEnv* env, const char* name, const char* sig) { return env->GetStaticMethodID(g_cls, name, sig); }
 }
@@ -138,6 +151,8 @@ bool Init()
         { (char*)"nativeStt",      (char*)"(ILjava/lang/String;)V", (void*)N_Stt },
         { (char*)"nativeTts",      (char*)"(Ljava/lang/String;I)V", (void*)N_Tts },
         { (char*)"nativeTtsReady", (char*)"(I)V",                   (void*)N_TtsReady },
+        { (char*)"nativeDl",       (char*)"(IJJLjava/lang/String;)V", (void*)N_Dl },
+        { (char*)"nativeMic",      (char*)"([SI)V",                 (void*)N_Mic },
     };
     if(env->RegisterNatives(g_cls, nm, sizeof(nm) / sizeof(nm[0])) != 0 || j.Fail())
     { logger->Error("Мост: RegisterNatives не удался"); return false; }
@@ -239,5 +254,59 @@ bool PollTts(TtsEvent& out)
     if(g_tts.empty()) return false;
     out = std::move(g_tts.front()); g_tts.pop_front(); return true;
 }
+
+void PushTtsEvent(const std::string& id, int state)
+{
+    std::lock_guard<std::mutex> l(g_mx); g_tts.push_back(TtsEvent{ id, state });
+}
+
+void DownloadPack(const std::string& plan)
+{
+    if(!g_ready) return;
+    Env j; if(!j.env) return;
+    jstring p = ToJ(j.env, plan);
+    j.env->CallStaticVoidMethod(g_cls, M(j.env, "downloadPack", "(Ljava/lang/String;)V"), p);
+    j.env->DeleteLocalRef(p); j.Fail();
+}
+
+void CancelDownload() { CallVoid("cancelDownload"); }
+
+bool PollDl(DlEvent& out)
+{
+    std::lock_guard<std::mutex> l(g_mx);
+    if(g_dl.empty()) return false;
+    out = std::move(g_dl.front()); g_dl.pop_front(); return true;
+}
+
+bool MicStart()
+{
+    if(!g_ready) return false;
+    Env j; if(!j.env) return false;
+    jboolean r = j.env->CallStaticBooleanMethod(g_cls, M(j.env, "micStart", "()Z"));
+    return !j.Fail() && r;
+}
+
+void MicStop() { CallVoid("micStop"); }
+
+bool PollMic(std::vector<int16_t>& out)
+{
+    std::lock_guard<std::mutex> l(g_mx);
+    if(g_mic.empty()) return false;
+    out = std::move(g_mic.front()); g_mic.pop_front(); return true;
+}
+
+void PlayPcm(const float* samples, int n, int sampleRate, float pitch, float speed, const std::string& id)
+{
+    if(!g_ready || n <= 0) return;
+    Env j; if(!j.env) return;
+    jfloatArray arr = j.env->NewFloatArray(n);
+    if(!arr) { j.Fail(); return; }
+    j.env->SetFloatArrayRegion(arr, 0, n, samples);
+    jstring jid = ToJ(j.env, id);
+    j.env->CallStaticVoidMethod(g_cls, M(j.env, "playPcm", "([FIFFLjava/lang/String;)V"), arr, (jint)sampleRate, (jfloat)pitch, (jfloat)speed, jid);
+    j.env->DeleteLocalRef(arr); j.env->DeleteLocalRef(jid); j.Fail();
+}
+
+void PlayStop() { CallVoid("playStop"); }
 
 } // namespace bridge
