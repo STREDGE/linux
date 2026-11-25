@@ -30,10 +30,9 @@ $NDK/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATIO
 ANDROID_JAR=.../android.jar D8=.../build-tools/d8 bash tools/build_dex.sh
 ```
 
-## В работе (0.2.0)
+## В работе (0.2.0) — на паузе
 
-- `src/speech/` — встроенная речь без Google: распознавание GigaAM v3 через sherpa-onnx (C API 1.12.21,
-  `sherpa-onnx-c-api.h` — Apache-2.0, © Xiaomi Corporation). Голос: Piper отклонён игроком (мало голосов),
-  план — xVibePocketTTS (русская Pocket TTS с копированием голоса по образцу).
-- Java-мост: скачивание голосового пакета, запись микрофона 16 кГц, воспроизведение с высотой/скоростью голоса.
-- `docs/samples/piper_ru_4_voices.wav` — образец голосов Piper (для сравнения).
+**Где остановились и что делать дальше — [`STATUS.md`](STATUS.md).** Коротко: своя речь без Google —
+распознавание GigaAM v3 (sherpa-onnx) и голоса xVibePocketTTS на своём движке `src/speech/xvibe.*` (готов,
+проверен на компьютере), Java-мост готов; `speech.cpp`, меню пакета, групповые разговоры — не сделаны.
+Подробности по модели голоса — `tools/xvibe/README.md`, образцы — `docs/samples/`.
