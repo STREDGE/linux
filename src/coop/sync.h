@@ -29,6 +29,7 @@ namespace coop { namespace sync {
         uint64_t  now = 0;
         float     dt = 0;
         bool      friendlyFireLocal = false;
+        bool      sharedWantedLocal = true;
         float     echoOffset = 0;         // эхо: сдвиг на восток
     };
 

@@ -59,6 +59,7 @@ namespace
     bool      g_localTalking = false;  // кнопка микрофона зажата
     bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
     bool      g_friendlyFire = false;  // свой тумблер «огонь по своим»
+    bool      g_sharedWanted = true;   // свой тумблер «общий розыск»
     std::vector<net::Event> g_echoEvents;
     bool      g_echoAnnounced = false;
 
@@ -496,7 +497,7 @@ namespace
         net::PlayerStatePacket me = CaptureLocal(local);
         sync::Ctx sc;
         sc.role = g_cfg.role; sc.local = local; sc.now = now; sc.dt = dt;
-        sc.friendlyFireLocal = g_friendlyFire; sc.echoOffset = kEchoOffset;
+        sc.friendlyFireLocal = g_friendlyFire; sc.sharedWantedLocal = g_sharedWanted; sc.echoOffset = kEchoOffset;
         sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
         sync::Capture(sc, me);
 
@@ -824,6 +825,7 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
 void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
 void SetTalking(bool talking) { g_localTalking = talking; }
 void SetFriendlyFire(bool on) { g_friendlyFire = on; }
+void SetSharedWanted(bool on) { g_sharedWanted = on; }
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }

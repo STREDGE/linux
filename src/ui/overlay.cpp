@@ -183,6 +183,7 @@ namespace
     double    g_ipShakeAt = -10;
     settings::Data g_settings;
     float     g_ffKnob = 0;             // 0..1 положение тумблера
+    float     g_swKnob = 0;             // тумблер «общий розыск»
 
     char      g_toast[192] = "";
     double    g_toastAt = -10;
@@ -377,26 +378,42 @@ namespace
         DL()->AddCircleFilled(ImVec2(kc.x - r * 0.25f, kc.y - r * 0.3f), r * 0.55f, C(kWhite, 0.85f), 20);
     }
 
-    // Строка «Огонь по своим» с тумблером. Возвращает её нижний край.
-    float FriendlyFireRow(ImVec2 a, float width)
+    // Строка с тумблером. Возвращает true, если нажали.
+    bool ToggleRow(ImVec2 a, float width, const char* title, const char* hint, bool value, float knob, float* bottom)
     {
         float h = U(11);
         ImVec2 b(a.x + width, a.y + h);
         DL()->AddRectFilled(a, b, C(kPanel2), U(1.6f));
         DL()->AddRect(a, b, C(kLine), U(1.6f), 0, U(0.3f));
-        Text(F_HEAD, ImVec2(a.x + U(2.4f), a.y + U(1.3f)), C(kInk), "Огонь по своим");
-        Text(F_SMALL, ImVec2(a.x + U(2.4f), a.y + U(6.8f)), C(kDim), "Можно ли ранить друга");
+        Text(F_HEAD, ImVec2(a.x + U(2.4f), a.y + U(1.3f)), C(kInk), title);
+        Text(F_SMALL, ImVec2(a.x + U(2.4f), a.y + U(6.8f)), C(kDim), hint);
         float sh = U(7.6f);
         ImVec2 sa(b.x - U(2.4f) - sh * 2.1f, a.y + (h - sh) * 0.5f);
-        Switch(sa, sh, g_settings.friendlyFire, g_ffKnob);
-        if(Clicked(a, b))
+        Switch(sa, sh, value, knob);
+        if(bottom) *bottom = b.y;
+        return Clicked(a, b);
+    }
+
+    // «Огонь по своим» и «Общий розыск» (решает хост). Возвращает нижний край.
+    float FriendlyFireRow(ImVec2 a, float width)
+    {
+        float y = a.y;
+        if(ToggleRow(ImVec2(a.x, y), width, "Огонь по своим", "Можно ли ранить друга", g_settings.friendlyFire, g_ffKnob, &y))
         {
             g_settings.friendlyFire = !g_settings.friendlyFire;
             settings::Save(g_settings);
             coop::SetFriendlyFire(g_settings.friendlyFire);
             Toast(g_settings.friendlyFire ? "Огонь по своим: ВКЛ" : "Огонь по своим: ВЫКЛ");
         }
-        return b.y;
+        y += U(1.6f);
+        if(ToggleRow(ImVec2(a.x, y), width, "Общий розыск", "Звёзды одни на двоих; выкл. — у каждого свои", g_settings.sharedWanted, g_swKnob, &y))
+        {
+            g_settings.sharedWanted = !g_settings.sharedWanted;
+            settings::Save(g_settings);
+            coop::SetSharedWanted(g_settings.sharedWanted);
+            Toast(g_settings.sharedWanted ? "Розыск: общий на двоих" : "Розыск: у каждого свой");
+        }
+        return y;
     }
 
     void Chip(ImVec2 a, ImVec2 b, const char* label, bool* clicked);
@@ -802,6 +819,8 @@ namespace
         // тумблер плавно догоняет состояние
         float target = g_settings.friendlyFire ? 1.0f : 0.0f;
         g_ffKnob += (target - g_ffKnob) * Clamp01(ImGui::GetIO().DeltaTime * 14.0f);
+        float target2 = g_settings.sharedWanted ? 1.0f : 0.0f;
+        g_swKnob += (target2 - g_swKnob) * Clamp01(ImGui::GetIO().DeltaTime * 14.0f);
     }
 
 
@@ -1434,6 +1453,7 @@ void Open()
     g_ip = coop::GetConfig().hostAddress;
     if(!ValidIp(g_ip)) g_ip = "100.";
     g_ffKnob = g_settings.friendlyFire ? 1.0f : 0.0f;
+    g_swKnob = g_settings.sharedWanted ? 1.0f : 0.0f;
     g_now = NowSec();
     g_openedAt = g_now; g_selAt = -10; g_toastAt = -10;
     ResetFingers();

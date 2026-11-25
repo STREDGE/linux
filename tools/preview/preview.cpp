@@ -41,6 +41,7 @@ namespace coop {
     void AnswerJoin(bool) {}
     void SetTalking(bool) {}
     void SetFriendlyFire(bool) {}
+    void SetSharedWanted(bool) {}
     bool GameLoaded() { return true; }
     void LockLocalControls(bool) {}
     uintptr_t HideRemoteBegin() { return 0; }

@@ -10,6 +10,7 @@ namespace settings
     {
         bool        enabled = true;
         bool        friendlyFire = false;
+        bool        sharedWanted = true;    // розыск общий на двоих (решает хост)
         net::Config net;
     };
 

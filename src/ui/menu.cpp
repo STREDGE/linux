@@ -51,6 +51,13 @@ namespace
         logger->Info("Меню: режим -> %s", settings::RoleToString(g_data.net.role));
     }
 
+    void OnSharedWantedChanged(int, int newValue, void*)
+    {
+        g_data.sharedWanted = newValue != 0;
+        coop::SetSharedWanted(g_data.sharedWanted);
+        settings::Save(g_data);
+    }
+
     void OnFriendlyFireChanged(int, int newValue, void*)
     {
         g_data.friendlyFire = newValue != 0;
@@ -135,6 +142,7 @@ void Init(ISAUtils* sau)
     sau->AddButton(tab, "Paste host address", OnPasteHostAddress);
 
     sau->AddClickableItem(tab, "Friendly fire", g_data.friendlyFire ? 1 : 0, 0, 1, kOffOn, OnFriendlyFireChanged, nullptr);
+    sau->AddClickableItem(tab, "Shared wanted level", g_data.sharedWanted ? 1 : 0, 0, 1, kOffOn, OnSharedWantedChanged, nullptr);
 
     logger->Info("Меню Co-op добавлено в настройки игры");
 }

@@ -57,6 +57,7 @@ namespace
     bool       g_echo = false;
     uint16_t   g_myBit = 0;        // старший бит своих номеров машин (хост 0, клиент 0x8000)
     bool       g_ff = false;       // огонь по своим (решение хоста)
+    bool       g_sharedWanted = true; // общий розыск (решение хоста)
 
     // ---------- машины ----------
     struct NetVeh
@@ -843,7 +844,7 @@ namespace
 
     void UpdateWanted()
     {
-        if(g_echo || !g_ctx.rs || !FindPlayerWanted) return;
+        if(g_echo || !g_ctx.rs || !FindPlayerWanted || !g_sharedWanted) return;
         uintptr_t w = FindPlayerWanted(0);
         if(!w) return;
         int mine = Field<int>(w, off::WantedStars);
@@ -1273,6 +1274,7 @@ void Capture(const Ctx& c, net::PlayerStatePacket& s)
     if(Field<uint8_t>(l, off::PedFlagsWord) & 0x10) s.flags |= net::PSF_AIMING;
     if(Field<uint8_t>(l, off::PedFlags587) & 0x04) s.flags |= net::PSF_DUCK;
     if(c.role != net::Role::Client && c.friendlyFireLocal) s.flags |= net::PSF_FF;
+    if(c.role != net::Role::Client && c.sharedWantedLocal) s.flags |= net::PSF_SHARED_WANTED;
 
     // Куда целится: захваченная цель, свежий выстрел или прямо перед собой
     uintptr_t lock = Field<uintptr_t>(l, off::PedLockOnTarget);
@@ -1336,6 +1338,12 @@ void Frame(const Ctx& c)
     // Огонь по своим: решает хост
     if(c.role == net::Role::Client) g_ff = g_ctx.rs ? (g_ctx.rs->flags & net::PSF_FF) != 0 : false;
     else g_ff = c.friendlyFireLocal;
+    {
+        bool sw = c.role == net::Role::Client ? (g_ctx.rs ? (g_ctx.rs->flags & net::PSF_SHARED_WANTED) != 0 : g_sharedWanted)
+                                              : c.sharedWantedLocal;
+        if(sw != g_sharedWanted) { Log(false, "[РОЗЫСК] режим: %s", sw ? "общий на двоих" : "у каждого свой"); g_lastRemoteWanted = -1; }
+        g_sharedWanted = sw;
+    }
 
     // «Не вытаскивать из машины» — только пока ты сидишь в той же машине (копы не выволакивают
     // второго CJ). Когда ты снаружи, флаг снят: с ним игра прячет кнопку «сесть»

@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 10;
+    constexpr uint8_t  kProtocolVersion = 11;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -73,6 +73,7 @@ namespace net
         PSF_AIMING     = 1 << 4, // целится
         PSF_DUCK       = 1 << 5, // присел
         PSF_FF         = 1 << 6, // огонь по своим включён (решает хост)
+        PSF_SHARED_WANTED = 1 << 7, // розыск общий (решает хост); нет — у каждого свой
     };
 
     constexpr uint8_t kNoSeat = 0xFF;
