@@ -586,6 +586,11 @@ namespace
             if(cur && cur != tv) { WarpOut(r); return; }
             if(!tv) return;                                  // копия ещё не готова — пусть идёт пешком
             g_remoteBusy = true;
+            if(seat == 0)
+            {   // друг угнал машину с педом за рулём — у хоста пед тоже вылетает (как при обычном угоне)
+                uintptr_t drv = Field<uintptr_t>(tv, off::VehDriver);
+                if(drv && drv != r && drv != g_ctx.local) { WarpOut(drv); Log(false, "[МАШИНЫ] Друг угнал машину %04X — водитель-пед выкинут", s.vehId); }
+            }
             if(!SeatFree(tv, seat, r))
             {
                 // место занято (например, за рулём сидишь ты) — свободное пассажирское
@@ -753,6 +758,7 @@ namespace
     uint64_t g_lastAimUs = 0;
     bool     g_replaying = false;          // повтор выстрела друга
     bool     g_applyingDamage = false;     // урон от друга по событию
+    bool     g_applyingNpcDamage = false;  // хост: урон педу по событию от друга
     bool     g_allowRemoteDamage = false;  // убить второго CJ (друг погиб)
     uint64_t g_nextWeaponTryUs = 0;
     bool     g_remoteAiming = false;
@@ -1281,6 +1287,12 @@ DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool
         bool fromCopy = inf && (crowd::IsCopy(inf) || (EntType(inf) == 2 && crowd::IsCopy(Field<uintptr_t>(inf, off::VehDriver))));
         if(victim == g_ctx.local && fromCopy && !g_applyingDamage) { ZeroResponse(resp); return; }
     }
+    if(g_active && victim && victim != g_ctx.remote && victim != g_ctx.local && !g_applyingNpcDamage &&
+       g_ctx.role == net::Role::Host && crowd::Active() && crowd::TrackedId(victim) && IsRemoteSide(Field<uintptr_t>(calc, off::CalcInflictor)))
+    {   // хост: педа ранил второй CJ у меня — урон придёт точным событием от друга, здесь не считаем (иначе дважды)
+        ZeroResponse(resp);
+        return;
+    }
     if(g_active && victim && victim == g_ctx.remote && !g_allowRemoteDamage && crowd::Active() && g_ctx.role == net::Role::Host)
     {   // хост: пед хоста ранил второго CJ — урон уходит другу (как от этого педа)
         uintptr_t inf = Field<uintptr_t>(calc, off::CalcInflictor);
@@ -1520,7 +1532,9 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
                 uintptr_t ped = crowd::TrackedPed(e->npc);
                 if(ped && PedIsAlive(ped))
                 {
+                    g_applyingNpcDamage = true;
                     GenerateDamageEvent(ped, g_ctx.remote, e->weapon, (int)(e->amount + 0.5f), e->piece, 0);
+                    g_applyingNpcDamage = false;
                     Log(false, "[УРОН] Друг ранил педа %u: %.0f (оружие %d)%s", e->npc, e->amount, e->weapon, PedIsAlive(ped) ? "" : " — убит");
                 }
                 return;
