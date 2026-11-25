@@ -150,10 +150,12 @@ namespace net
         FLogger* log = m_log;
         VoiceSink sink = m_voiceSink;
         ModSink msink = m_modSink;
+        GameSink gsink = m_gameSink;
         *this = Session();
         m_log = log;
         m_voiceSink = sink;
         m_modSink = msink;
+        m_gameSink = gsink;
     }
 
     bool Session::Connected() const
@@ -176,6 +178,7 @@ namespace net
         Log(true, "Связь с «%s» потеряна (%s)", m_peerNick, why);
         PushEvent(EventType::Disconnected, m_peerNick);
         m_remote.valid = false;
+        ResetReliable();
         if(m_cfg.role == Role::Host) { m_hasPeer = false; m_link = Link::Idle; }
         else                         { m_link = Link::Requesting; m_helloSent = 0; } // клиент стучится снова
     }
@@ -184,8 +187,8 @@ namespace net
     {
         if(m_sock < 0) return;
 
-        uint8_t buf[512];
-        for(int i = 0; i < 64; ++i) // не больше 64 пакетов за кадр
+        uint8_t buf[2048];
+        for(int i = 0; i < 128; ++i) // не больше 64 пакетов за кадр
         {
             sockaddr_in from{};
             socklen_t   fromLen = sizeof(from);
@@ -226,7 +229,51 @@ namespace net
             m_link = Link::Idle;
         }
 
+        // Надёжные события: повтор раз в 150 мс, пока не подтвердят (не дольше 15 с)
+        if(m_link == Link::Connected)
+        {
+            for(size_t i = 0; i < m_relOut.size();)
+            {
+                RelOut& r = m_relOut[i];
+                if(now - r.firstUs > 15000000ull) { m_relOut.erase(m_relOut.begin() + i); continue; }
+                if(now - r.lastUs >= 150000ull)
+                {
+                    ReliablePacket p; p.hdr = MakeHeader(PKT_RELIABLE); p.seq = r.seq; p.len = (uint8_t)r.len;
+                    p.pad[0] = p.pad[1] = p.pad[2] = 0; memcpy(p.data, r.data, r.len);
+                    SendTo(&p, kReliableHeaderSize + r.len);
+                    r.lastUs = now;
+                }
+                ++i;
+            }
+        }
+
         if(m_link == Link::Connected && !Connected()) DropPeer("нет пакетов 10 с");
+    }
+
+    void Session::ResetReliable()
+    {
+        m_relOut.clear();
+        memset(m_relSeen, 0, sizeof(m_relSeen));
+        m_relSeenHead = 0;
+    }
+
+    void Session::SendGame(const void* pkt, int len)
+    {
+        if(m_link != Link::Connected || len <= 0) return;
+        SendTo(pkt, len);
+    }
+
+    void Session::SendReliable(const void* data, int len)
+    {
+        if(m_link != Link::Connected || len <= 0 || len > kReliableMax) return;
+        if(m_relOut.size() > 256) m_relOut.erase(m_relOut.begin());
+        RelOut r; r.seq = ++m_relSeq; r.firstUs = NowUs(); r.lastUs = 0; r.len = len;
+        memcpy(r.data, data, len);
+        m_relOut.push_back(r);
+        ReliablePacket p; p.hdr = MakeHeader(PKT_RELIABLE); p.seq = r.seq; p.len = (uint8_t)len;
+        p.pad[0] = p.pad[1] = p.pad[2] = 0; memcpy(p.data, data, len);
+        SendTo(&p, kReliableHeaderSize + len);
+        m_relOut.back().lastUs = r.firstUs;
     }
 
     void Session::AnswerJoin(bool accept)
@@ -240,7 +287,7 @@ namespace net
             AcceptPacket a{ MakeHeader(PKT_ACCEPT), "" };
             CopyNick(a.nick, m_cfg.nick);
             SendTo(&a, sizeof(a));
-            m_link = Link::Connected; m_lastRecvUs = now; m_nextPingUs = 0;
+            m_link = Link::Connected; m_lastRecvUs = now; m_nextPingUs = 0; ResetReliable();
             m_lastAccepted = m_peer; CopyNick(m_lastAcceptedNick, m_peerNick); m_lastAcceptedUs = now;
             PushEvent(EventType::Connected, m_peerNick);
             Log(false, "[ХОСТ] «%s» принят", m_peerNick);
@@ -279,7 +326,7 @@ namespace net
                     if(SameAddr(from, m_peer)) // друг переподключился, пока мы его ещё держим
                     {
                         AcceptPacket a{ MakeHeader(PKT_ACCEPT), "" }; CopyNick(a.nick, m_cfg.nick);
-                        SendTo(&a, sizeof(a)); m_lastRecvUs = now;
+                        SendTo(&a, sizeof(a)); m_lastRecvUs = now; ResetReliable();
                     }
                     else { DenyPacket d{ MakeHeader(PKT_DENY), DENY_BUSY, {} }; SendToAddr(&d, sizeof(d), from); }
                     return;
@@ -314,7 +361,7 @@ namespace net
                 if(m_link != Link::Connected)
                 {
                     CopyNick(m_peerNick, ((const AcceptPacket*)data)->nick);
-                    m_link = Link::Connected; m_lastRecvUs = now; m_nextPingUs = 0;
+                    m_link = Link::Connected; m_lastRecvUs = now; m_nextPingUs = 0; ResetReliable();
                     PushEvent(EventType::Connected, m_peerNick);
                     Log(false, "[КЛИЕНТ] «%s» принял тебя в свой мир", m_peerNick);
                 }
@@ -380,6 +427,39 @@ namespace net
                 {
                     const ModPacket* mp = (const ModPacket*)data;
                     if(mp->len <= kModMaxBytes && kModHeaderSize + mp->len == len && m_modSink) m_modSink(mp->channel, mp->data, mp->len);
+                }
+                break;
+
+            case PKT_VEHICLE:
+                if(len == sizeof(VehiclePacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_VEHICLE_GONE:
+                if(len == sizeof(VehicleGonePacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_SHOT:
+                if(len == sizeof(ShotPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+
+            case PKT_RELIABLE:
+                if(len >= kReliableHeaderSize)
+                {
+                    const ReliablePacket* rp = (const ReliablePacket*)data;
+                    if(rp->len == 0 || rp->len > kReliableMax || kReliableHeaderSize + rp->len != len) break;
+                    AckPacket a{ MakeHeader(PKT_ACK), rp->seq };
+                    SendTo(&a, sizeof(a));
+                    bool seen = false;
+                    for(uint32_t s2 : m_relSeen) if(s2 == rp->seq) { seen = true; break; }
+                    if(seen) break;
+                    m_relSeen[m_relSeenHead] = rp->seq; m_relSeenHead = (m_relSeenHead + 1) % 128;
+                    if(m_gameSink) m_gameSink(PKT_RELIABLE, rp->data, rp->len);
+                }
+                break;
+            case PKT_ACK:
+                if(len == sizeof(AckPacket))
+                {
+                    uint32_t sq = ((const AckPacket*)data)->seq;
+                    for(size_t i = 0; i < m_relOut.size(); ++i)
+                        if(m_relOut[i].seq == sq) { m_relOut.erase(m_relOut.begin() + i); break; }
                 }
                 break;
 

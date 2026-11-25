@@ -393,6 +393,7 @@ namespace
         {
             g_settings.friendlyFire = !g_settings.friendlyFire;
             settings::Save(g_settings);
+            coop::SetFriendlyFire(g_settings.friendlyFire);
             Toast(g_settings.friendlyFire ? "Огонь по своим: ВКЛ" : "Огонь по своим: ВЫКЛ");
         }
         return b.y;

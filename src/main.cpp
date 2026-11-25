@@ -20,7 +20,7 @@
 #include "ui/overlay.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 0.7.0, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 0.8.0, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -129,6 +129,7 @@ ON_MOD_LOAD()
     if(g_installed)
     {
         coop::SetConfig(st.net);
+        coop::SetFriendlyFire(st.friendlyFire);
         g_overlayOk = overlay::Init(hGTASA, &g_fileLog);
         g_fileLog.Info(g_overlayOk ? "Своё меню Co-op готово" : "Своё меню не запустилось — будет простая вкладка SAUtils");
     }

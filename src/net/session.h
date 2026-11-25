@@ -72,6 +72,14 @@ namespace net
         typedef void (*ModSink)(uint8_t channel, const uint8_t* data, int len);
         void  SetModSink(ModSink fn) { m_modSink = fn; }
 
+        // Игровые пакеты (машины, выстрелы) и надёжные события (урон).
+        // В приёмник приходят: PKT_VEHICLE / PKT_VEHICLE_GONE / PKT_SHOT — весь пакет,
+        // PKT_RELIABLE — только полезные данные события.
+        typedef void (*GameSink)(uint8_t type, const uint8_t* data, int len);
+        void  SetGameSink(GameSink fn) { m_gameSink = fn; }
+        void  SendGame(const void* pkt, int len);       // заголовок уже заполнен
+        void  SendReliable(const void* data, int len);  // до kReliableMax байт
+
     private:
         void HandlePacket(const uint8_t* data, int len, const sockaddr_in& from);
         void SendTo(const void* data, int len);
@@ -79,6 +87,7 @@ namespace net
         void PushEvent(EventType t, const char* nick);
         void Log(bool error, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
         void DropPeer(const char* why);
+        void ResetReliable();
 
         Config      m_cfg{};
         FLogger*    m_log = nullptr;
@@ -111,6 +120,13 @@ namespace net
         std::vector<Event> m_events;
         VoiceSink   m_voiceSink = nullptr;
         ModSink     m_modSink = nullptr;
+        GameSink    m_gameSink = nullptr;
+
+        struct RelOut { uint32_t seq; uint64_t firstUs, lastUs; int len; uint8_t data[kReliableMax]; };
+        std::vector<RelOut> m_relOut;
+        uint32_t    m_relSeq = 0;
+        uint32_t    m_relSeen[128] = {};    // последние принятые номера (повторы отбрасываем)
+        int         m_relSeenHead = 0;
         uint32_t    m_voiceIn = 0, m_voiceOut = 0;
     };
 

@@ -54,6 +54,7 @@ namespace
     void OnFriendlyFireChanged(int, int newValue, void*)
     {
         g_data.friendlyFire = newValue != 0;
+        coop::SetFriendlyFire(g_data.friendlyFire);
         settings::Save(g_data);
     }
 

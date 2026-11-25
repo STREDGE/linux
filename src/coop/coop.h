@@ -65,6 +65,7 @@ namespace coop
     bool PendingRequest(char* nick, size_t len, float* secondsLeft); // хост: висит запрос?
     void AnswerJoin(bool accept);
     void SetTalking(bool talking);                                   // кнопка микрофона зажата
+    void SetFriendlyFire(bool on);                                   // огонь по своим (у клиента решает хост)
 
     // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
     // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).

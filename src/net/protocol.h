@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 8;
+    constexpr uint8_t  kProtocolVersion = 9;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -20,6 +20,11 @@ namespace net
         PKT_DENY         = 6, // хост -> клиент: отклонён / занято
         PKT_VOICE        = 7, // голос: один кадр Opus (20 мс), пока зажата кнопка
         PKT_MOD          = 8, // данные другого мода (SA Living): канал + байты
+        PKT_VEHICLE      = 9, // состояние машины от того, кто ей управляет (20/с в движении, 1/с стоя)
+        PKT_VEHICLE_GONE = 10,// машина больше не общая — удалить копию
+        PKT_SHOT         = 11,// выстрел: повторить у друга (звук, вспышка, след пули)
+        PKT_RELIABLE     = 12,// событие с подтверждением (урон и т.п.), повтор до ACK
+        PKT_ACK          = 13,// подтверждение PKT_RELIABLE
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -64,7 +69,13 @@ namespace net
         PSF_IN_VEHICLE = 1 << 0,
         PSF_SPRINT     = 1 << 1, // кнопка спринта нажата
         PSF_TALKING    = 1 << 2, // зажата кнопка микрофона
+        PSF_DEAD       = 1 << 3, // погиб (лежит / ждёт больницы)
+        PSF_AIMING     = 1 << 4, // целится
+        PSF_DUCK       = 1 << 5, // присел
+        PSF_FF         = 1 << 6, // огонь по своим включён (решает хост)
     };
+
+    constexpr uint8_t kNoSeat = 0xFF;
 
     struct PlayerStatePacket
     {
@@ -79,8 +90,90 @@ namespace net
         uint8_t  jumpCount;   // счётчик прыжков: изменился — второй CJ прыгает
         float    moveRatio;   // сила движения 0..~2 (как от джойстика: 1 = шаг, больше — бег)
         uint8_t  armour;
+        uint8_t  weapon;      // eWeaponType в руках
+        uint8_t  meleeCount;  // счётчик ударов: изменился — второй CJ бьёт
+        uint8_t  wanted;      // звёзды розыска
+        uint16_t vehId;       // машина: в которой сидит или в которую садится (0 — нет)
+        uint8_t  seat;        // kNoSeat — пешком, 0 — водитель, 1.. — пассажир (номер места + 1)
+        uint8_t  enterSeat;   // садится: kNoSeat — нет, 0 — за руль, 1.. — пассажиром
+        uint8_t  area;        // интерьер (CGame::currArea; 0 — улица)
+        float    aim[3];      // куда целится (точка в мире)
+    };
+
+    enum VehicleFlags : uint8_t
+    {
+        VF_BLOWN   = 1 << 0,  // взорвана
+        VF_SIREN   = 1 << 1,
+        VF_HORN    = 1 << 2,
+        VF_ENGINE  = 1 << 3,
+        VF_LIGHTS  = 1 << 4,
+        VF_DRIVEN  = 1 << 5,  // за рулём игрок отправителя
+    };
+
+    struct VehiclePacket
+    {
+        Header   hdr;
+        uint32_t seq;
+        uint16_t id;          // сетевой номер машины (старший бит — чья)
+        uint16_t model;
+        float    pos[3];
+        float    right[3];    // ориентация: правый и передний векторы матрицы
+        float    fwd[3];
+        float    vel[3];      // м/с
+        float    turn[3];     // скорость вращения (как в игре, за кадр 50 к/с)
+        float    health;
+        float    steer, gas, brake;
+        uint8_t  col[4];
+        uint8_t  flags;       // VehicleFlags
+        uint8_t  wheels[4];   // состояние колёс (лопнуло)
         uint8_t  pad[3];
     };
+
+    struct VehicleGonePacket
+    {
+        Header   hdr;
+        uint16_t id;
+        uint16_t pad;
+    };
+
+    enum ShotFlags : uint8_t { SHOT_HIT_MATE = 1 << 0 };   // попал во второго игрока
+    struct ShotPacket
+    {
+        Header   hdr;
+        uint16_t seq;
+        uint8_t  weapon;
+        uint8_t  flags;
+        float    shooter[3];  // где стоял стрелок
+        float    start[3];
+        float    end[3];
+    };
+
+    // Надёжные события: повторяем, пока не придёт ACK
+    enum ReliableType : uint8_t { REL_DAMAGE = 1 };
+    struct DamageEvent
+    {
+        uint8_t type;         // REL_DAMAGE
+        uint8_t weapon;
+        uint8_t piece;        // ePedPieceTypes
+        uint8_t viaVehicle;   // удар машиной
+        float   amount;
+    };
+    constexpr int kReliableMax = 64;
+    struct ReliablePacket
+    {
+        Header   hdr;
+        uint32_t seq;
+        uint8_t  len;
+        uint8_t  pad[3];
+        uint8_t  data[kReliableMax];
+    };
+    constexpr int kReliableHeaderSize = (int)sizeof(Header) + 8;
+    struct AckPacket
+    {
+        Header   hdr;
+        uint32_t seq;
+    };
+
     constexpr int kVoiceMaxBytes = 255;
     struct VoicePacket            // шлётся только заголовок + len байт данных
     {

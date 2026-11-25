@@ -13,6 +13,7 @@
 #include "game/gta.h"
 #include "voice/voice.h"
 #include "net/sacoop_api.h"
+#include "coop/sync.h"
 #include <mod/interface.h>
 
 using namespace gta;
@@ -28,7 +29,7 @@ namespace
     constexpr float    kSnapDistance     = 10.0f;      // дальше — мгновенно переносим
     constexpr float    kSmoothRate       = 12.0f;      // скорость сглаживания (1/с)
     constexpr uint64_t kEchoDelayUs      = 500000;     // эхо-режим: повтор с задержкой 0,5 с
-    constexpr float    kEchoOffset       = 1.5f;       // эхо-режим: постоянный сдвиг на восток, м
+    constexpr float    kEchoOffset       = 3.5f;       // эхо-режим: постоянный сдвиг на восток, м (машина двойника не наезжает на твою)
     constexpr float    kMinMoveRatio     = 0.05f;      // меньше — стоит на месте
     constexpr uint64_t kEchoSampleUs     = 50000;      // эхо-режим: запись 20 раз в секунду (буфер 3,2 с)
     constexpr uint64_t kStatusLogUs      = 15000000;   // раз в 15 с — строка состояния в лог
@@ -57,6 +58,7 @@ namespace
     constexpr uint64_t kSpawnDelayUs = 3000000; // 3 с
     bool      g_localTalking = false;  // кнопка микрофона зажата
     bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
+    bool      g_friendlyFire = false;  // свой тумблер «огонь по своим»
     std::vector<net::Event> g_echoEvents;
     bool      g_echoAnnounced = false;
 
@@ -125,6 +127,7 @@ namespace
     {
         if(!CheckRemoteAlive()) return;
         if(g_blip >= 0) { ClearBlip(g_blip); g_blip = -1; }
+        sync::BeforeRemoteDespawn(g_remotePed);   // высадить из машины, если сидит
         if(SlotPed(kRemoteSlot) == g_remotePed)
         {
             if(!g_inWorld) WorldAdd(g_remotePed); // RemovePlayerPed сам вызывает CWorld::Remove
@@ -171,7 +174,7 @@ namespace
         return true;
     }
 
-    void PlaceRemote(const CVector& pos, float heading)
+    void PlaceRemote(const CVector& pos, float heading, float health)
     {
         uintptr_t ped = g_remotePed;
         uintptr_t mat = Field<uintptr_t>(ped, off::EntMatrix);
@@ -183,7 +186,7 @@ namespace
         Field<float>(ped, off::PedRotAiming)  = heading;
         Field<CVector>(ped, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };
         Field<CVector>(ped, off::PhysTurnSpeed) = CVector{ 0, 0, 0 };
-        Field<float>(ped, off::PedHealth) = 100.0f; // этап 1: друга нельзя убить у нас
+        Field<float>(ped, off::PedHealth) = health < 1.0f ? 1.0f : health; // здоровье — как у друга (урон считает его телефон)
 
         if(g_inWorld)
         {
@@ -235,7 +238,29 @@ namespace
         g_where = "создание второго CJ";
         if(!g_remotePed && !SpawnRemote(target, s.heading)) return;
 
-        if(!PedIsAlive(g_remotePed)) { DespawnRemote("персонаж погиб у нас"); return; }
+        // Смерть: друг погиб — второй CJ лежит (уложит sync); друг ожил — создаём заново
+        bool friendDead = (s.flags & net::PSF_DEAD) != 0;
+        if(!PedIsAlive(g_remotePed))
+        {
+            if(friendDead) return;
+            DespawnRemote("друг снова в игре после смерти");
+            return;
+        }
+        if(friendDead) return;   // sync уложит его в этом же кадре
+
+        // Интерьер: второго CJ видно, только если вы в одном здании (игра сама не рисует чужую зону)
+        Field<uint8_t>(g_remotePed, off::EntArea) = s.area;
+
+        // В машине / садится / выходит — им управляет sync (задачи игры), не трогаем
+        if(sync::RemoteBusy())
+        {
+            g_shownPos = GetPosition(g_remotePed);
+            g_shownHeading = Field<float>(g_remotePed, off::PedRotCurrent);
+            g_stickX = g_stickY = 0; g_sprint = false; g_stickActive = false;
+            if(!g_inWorld) { WorldAdd(g_remotePed); g_inWorld = true; }
+            g_haveRemoteJumpCount = false;
+            return;
+        }
 
         // Сглаживание: плавно догоняем цель, при большом расхождении — переносим сразу
         if(Dist2D(g_shownPos, target) > kSnapDistance || fabsf(g_shownPos.z - target.z) > kSnapDistance)
@@ -298,7 +323,7 @@ namespace
         }
 
         g_where = "перенос второго CJ";
-        PlaceRemote(g_shownPos, g_shownHeading);
+        PlaceRemote(g_shownPos, g_shownHeading, (float)s.health);
     }
 
     net::PlayerStatePacket CaptureLocal(uintptr_t ped)
@@ -363,6 +388,7 @@ namespace
         }
 
         DespawnRemote("смена режима");
+        sync::Reset("смена режима");
         g_session.Stop();
         voice::Stop();
         memset(g_echo, 0, sizeof(g_echo));
@@ -428,10 +454,16 @@ namespace
         }
 
         net::PlayerStatePacket me = CaptureLocal(local);
+        sync::Ctx sc;
+        sc.role = g_cfg.role; sc.local = local; sc.now = now; sc.dt = dt;
+        sc.friendlyFireLocal = g_friendlyFire; sc.echoOffset = kEchoOffset;
+        sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
+        sync::Capture(sc, me);
 
         if(now >= g_nextStatusUs)
         {
             g_nextStatusUs = now + kStatusLogUs;
+            if(sync::TrackedVehicles()) Log(false, "Статус: общих машин %d", sync::TrackedVehicles());
             if(!CheckRemoteAlive())
                 Log(false, "Статус: второго CJ нет, FPS ~%.0f", dt > 0 ? 1.0f / dt : 0.0f);
             else
@@ -448,11 +480,17 @@ namespace
             g_headingErrSum = 0; g_headingErrCount = 0;
         }
 
-        if(g_cfg.role == net::Role::Off) return;
+        if(g_cfg.role == net::Role::Off) { sync::Frame(sc); return; }
 
         if(g_cfg.role == net::Role::Echo)
         {
-            UpdateRemote(EchoUpdate(me, now), local, dt, now);
+            const net::RemoteState& ers = EchoUpdate(me, now);
+            UpdateRemote(ers, local, dt, now);
+            sc.connected = true;
+            sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
+            sc.rs = (ers.valid && now - ers.receivedUs < kStaleUs) ? &ers.pkt : nullptr;
+            g_where = "синхронизация машин/оружия (эхо)";
+            sync::Frame(sc);
             // Голос в одиночку: говоришь — через 0,5 с слышишь себя (как двойник повторяет движения)
             voice::SetLoopback(true, (int)(kEchoDelayUs / 1000));
             voice::SetTransmit(g_localTalking);
@@ -473,7 +511,13 @@ namespace
             g_nextSendUs = now + kSendIntervalUs;
         }
         PumpVoice();
-        UpdateRemote(g_session.Remote(), local, dt, now);
+        const net::RemoteState& rs = g_session.Remote();
+        UpdateRemote(rs, local, dt, now);
+        sc.connected = g_session.Connected();
+        sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
+        sc.rs = (rs.valid && now - rs.receivedUs < kStaleUs) ? &rs.pkt : nullptr;
+        g_where = "синхронизация машин/оружия";
+        sync::Frame(sc);
     }
 
     // Временно прячет второго CJ из слота игрока 2, чтобы игра
@@ -537,8 +581,8 @@ DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот �
 
 // Перед сохранением/загрузкой/рестартом второго CJ убираем,
 // чтобы он не попал в сохранение и не остался висящим указателем.
-DECL_HOOK(bool, GenericLoad, bool& ok)      { g_localSinceUs = 0; DespawnRemote("загрузка игры");   return GenericLoad(ok); }
-DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote("рестарт игры");    ShutDownForRestart(); }
+DECL_HOOK(bool, GenericLoad, bool& ok)      { g_localSinceUs = 0; DespawnRemote("загрузка игры"); sync::Reset("загрузка игры"); return GenericLoad(ok); }
+DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote("рестарт игры");  sync::Reset("рестарт игры");  ShutDownForRestart(); }
 
 const char* Where() { return g_where; }
 
@@ -568,6 +612,8 @@ bool Install(void* h, FLogger* log)
     voice::Init(log);
     g_session.SetVoiceSink(voice::PushReceivedFrame);
     g_session.SetModSink(ModSinkDispatch);
+    g_session.SetGameSink(sync::OnPacket);
+    sync::SetSession(&g_session);
     RegisterInterface(SACOOP_NET_INTERFACE, &g_netApi);
     Log(false, "Канал данных для других модов (SACoopNet) зарегистрирован");
     if(!gta::Init(h, 0))
@@ -606,6 +652,7 @@ bool Install(void* h, FLogger* log)
     for(const auto& d : hooks)
         aml->Hook((void*)aml->GetSym(h, d.sym), d.fn, d.orig);
     g_origGetSprint = PadGetSprint;
+    sync::Install(h, g_log);   // машины, оружие, урон (если чего-то нет — кооп пешком, как раньше)
 
     Log(false, "Кооп установлен: перехватов %d", (int)(sizeof(hooks) / sizeof(hooks[0])));
     return true;
@@ -712,6 +759,7 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
 
 void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
 void SetTalking(bool talking) { g_localTalking = talking; }
+void SetFriendlyFire(bool on) { g_friendlyFire = on; }
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }

@@ -40,6 +40,7 @@ namespace coop {
     bool PendingRequest(char* n, size_t l, float* left) { if(!g_pending) return false; snprintf(n, l, "HOMIE_BE"); *left = 11.3f; return true; }
     void AnswerJoin(bool) {}
     void SetTalking(bool) {}
+    void SetFriendlyFire(bool) {}
     bool GameLoaded() { return true; }
     void LockLocalControls(bool) {}
     uintptr_t HideRemoteBegin() { return 0; }

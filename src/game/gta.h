@@ -41,6 +41,59 @@ namespace gta
         constexpr uintptr_t PadDisableCtrl   = 0x110; // uint16 DisablePlayerControls
 
         constexpr uintptr_t CamOrientation   = 0x154; // float TheCamera.Orientation (PlayerControlZelda)
+
+        // --- из отладочной информации libGTASA (DWARF), см. docs/libgtasa-2.10-arm64.md ---
+        constexpr uintptr_t EntFlags         = 0x28;  // CEntity::m_nFlags (uint32)
+        constexpr uintptr_t EntModel         = 0x32;  // int16 m_nModelIndex
+        constexpr uintptr_t EntArea          = 0x4B;  // uint8 m_areaCode (интерьер; 0 — улица)
+        constexpr uintptr_t EntInfo          = 0x5A;  // тип (&7: 2 машина, 3 пед) и статус (>>3: 5 — разбита)
+        constexpr uintptr_t MatRight         = 0x00;
+        constexpr uintptr_t MatUp            = 0x20;
+
+        constexpr uintptr_t PedIntel         = 0x538; // CPedIntelligence*; +8 — CTaskManager
+        constexpr uintptr_t PedFlagsWord     = 0x584; // CPedFlags: байт 0x584 бит 4 — целится
+        constexpr uintptr_t PedFlags587      = 0x587; // бит 2 — присел, бит 5 — не вытаскивать из машины
+        constexpr uintptr_t PedIK            = 0x678; // CPedIK
+        constexpr uintptr_t PedWeapons       = 0x730; // CWeapon[13], по 0x20
+        constexpr uintptr_t WeaponSize       = 0x20;
+        constexpr uintptr_t PedCurWeaponSlot = 0x8DC; // int8
+        constexpr uintptr_t PedLockOnTarget  = 0x8E0; // CEntity*
+
+        constexpr uintptr_t WeapType         = 0x00;
+        constexpr uintptr_t WeapState        = 0x04;
+        constexpr uintptr_t WeapClip         = 0x08;
+        constexpr uintptr_t WeapTotal        = 0x0C;
+        constexpr uintptr_t WeapTimer        = 0x10;
+
+        constexpr uintptr_t VehFlags         = 0x568; // CVehicleFlags (8 байт)
+        constexpr uintptr_t VehColours       = 0x574; // uint8[4]
+        constexpr uintptr_t VehDriver        = 0x5A0;
+        constexpr uintptr_t VehPassengers    = 0x5A8; // CPed*[8]
+        constexpr uintptr_t VehMaxPassengers = 0x5EC; // uint8
+        constexpr uintptr_t VehSteer         = 0x600;
+        constexpr uintptr_t VehGas           = 0x608;
+        constexpr uintptr_t VehBrake         = 0x60C;
+        constexpr uintptr_t VehCreatedBy     = 0x610; // 1 — случайная, 2 — миссии (не удаляется)
+        constexpr uintptr_t VehHealth        = 0x634;
+        constexpr uintptr_t VehDoorLock      = 0x684;
+        constexpr uintptr_t VehHorn          = 0x6A4;
+        constexpr uintptr_t VehBaseType      = 0x734; // 0 машина … 5 лодка, 6 поезд, 9 мотоцикл, 10 велосипед
+        constexpr uintptr_t AutoWheels       = 0x75D; // CAutomobile: CDamageManager(0x758)::m_Wheel[4]
+        constexpr uintptr_t VtBlowUpCar      = 0x150; // vtable CVehicle::BlowUpCar(CEntity*, bool)
+        constexpr uintptr_t VtDeletingDtor   = 0x08;  // vtable: удалить объект (как CCarCtrl)
+        constexpr uintptr_t VtTaskType       = 0x28;  // vtable CTask::GetTaskType
+
+        constexpr uintptr_t TaskEnterVehicle = 0x18;  // CTaskComplexEnterCar::m_pTargetVehicle
+        constexpr uintptr_t TaskEnterSeat    = 0x2C;  // m_iTargetSeat
+        constexpr uintptr_t WantedStars      = 0x2C;  // CWanted::m_WantedLevel
+        constexpr uintptr_t StreamInfoSize   = 0x14;
+        constexpr uintptr_t StreamStatus     = 0x10;  // 1 — модель загружена
+
+        // CPedDamageResponseCalculator / CPedDamageResponse
+        constexpr uintptr_t CalcInflictor    = 0x00;
+        constexpr uintptr_t CalcDamage       = 0x08;
+        constexpr uintptr_t CalcPiece        = 0x0C;
+        constexpr uintptr_t CalcWeapon       = 0x10;
         constexpr float     StickScale       = 60.0f; // джойстик / 60 = сила движения (константа игры)
     }
 
@@ -66,6 +119,37 @@ namespace gta
     extern bool      (*PedIsAlive)(uintptr_t ped);
     extern void      (*PedSetCharCreatedBy)(uintptr_t ped, uint8_t createdBy); // 2 = персонаж миссии
 
+    // --- машины, задачи, оружие, урон (необязательные: нет — эти части коопа выключены) ---
+    extern uintptr_t (*CreateCarForScript)(int model, CVector pos, bool missionCleanup);
+    extern void      (*RequestModel)(int model, int flags);
+    extern void      (*LoadAllRequestedModels)(bool priorityOnly);
+    extern int       (*GetVehicleRef)(uintptr_t veh);
+    extern uintptr_t (*GetVehicleFromRef)(int ref);
+    extern void*     (*TaskNew)(unsigned long size);
+    extern void      (*TaskMgrSetTask)(uintptr_t mgr, void* task, int slot, bool);
+    extern uintptr_t (*TaskMgrGetActive)(uintptr_t mgr);
+    extern void      (*TaskEnterAsDriver)(void* task, uintptr_t veh);
+    extern void      (*TaskEnterAsPassenger)(void* task, uintptr_t veh, int seat, bool carryOn);
+    extern void      (*TaskLeaveCar)(void* task, uintptr_t veh, int door, int delay, bool sensible, bool force);
+    extern void      (*TaskSetPedOutCtor)(void* task, uintptr_t veh, int door, bool engineOff);
+    extern void      (*TaskSetPedOutDtor)(void* task);
+    extern bool      (*TaskSetPedOutProcess)(void* task, uintptr_t ped);
+    extern bool      (*SetPedInCarDirect)(uintptr_t ped, uintptr_t veh, int door, bool driver);
+    extern int       (*DoorForPassengerSeat)(uintptr_t veh, int seat);
+    extern void      (*GiveWeapon)(uintptr_t ped, int type, unsigned ammo, bool pickup);
+    extern void      (*SetCurrentWeaponType)(uintptr_t ped, int type);
+    extern int       (*GetWeaponSlot)(uintptr_t ped, int type);
+    extern bool      (*WeaponFire)(uintptr_t weapon, uintptr_t owner, CVector* start, CVector* barrel, uintptr_t targetEnt, CVector* target, CVector* alt);
+    extern bool      (*GenerateDamageEvent)(uintptr_t victim, uintptr_t attacker, int weapon, int damage, int piece, int dir);
+    extern void      (*PedSetAimFlag)(uintptr_t ped, float heading);
+    extern void      (*PedClearAimFlag)(uintptr_t ped);
+    extern bool      (*PointGunAtPosition)(uintptr_t ik, const CVector& pos, float blend);
+    extern uintptr_t (*FindPlayerWanted)(int player);
+    extern void      (*WantedSetLevel)(uintptr_t wanted, int level);
+    extern void      (*WantedCheatLevel)(uintptr_t wanted, int level);
+    extern uintptr_t StreamingInfo; // CStreaming::ms_aInfoForModel
+    extern uint8_t*  CurrArea;      // CGame::currArea
+
     extern uintptr_t Players;      // CWorld::Players (массив CPlayerInfo)
     extern uintptr_t TheCamera;    // CCamera
 
@@ -81,6 +165,24 @@ namespace gta
     {
         return (Field<uint8_t>(ped, off::PedFlags585) & 1) && Field<uintptr_t>(ped, off::PedVehicle);
     }
+
+    bool    VehiclesReady();   // всё для машин найдено
+    bool    CombatReady();     // всё для оружия и урона найдено
+
+    inline int  EntType(uintptr_t e)   { return Field<uint8_t>(e, off::EntInfo) & 7; }
+    inline int  EntStatus(uintptr_t e) { return Field<uint8_t>(e, off::EntInfo) >> 3; }
+    inline int  ModelOf(uintptr_t e)   { return Field<int16_t>(e, off::EntModel); }
+    inline uintptr_t TaskManager(uintptr_t ped)
+    {
+        uintptr_t intel = Field<uintptr_t>(ped, off::PedIntel);
+        return intel ? intel + 8 : 0;
+    }
+    int       ActiveTaskType(uintptr_t ped, uintptr_t* taskOut = nullptr);
+    bool      ModelLoaded(int model);
+    uintptr_t CurrentWeapon(uintptr_t ped);          // CWeapon* в руках
+    int       CurrentWeaponType(uintptr_t ped);
+    int       WeaponModel(int weaponType);           // модель оружия (0 — без модели)
+    int       SeatOf(uintptr_t ped, uintptr_t veh);  // -1 нет, 0 водитель, 1.. пассажир+1
 
     CVector GetPosition(uintptr_t entity);
     void    SetPosition(uintptr_t entity, const CVector& pos);
