@@ -30,6 +30,8 @@ namespace
     constexpr uint64_t kEnterTimeoutUs = 4000000;   // не сел с анимацией за 4 с — сажаем сразу
     constexpr uint64_t kLeaveTimeoutUs = 2500000;
     constexpr uint64_t kEchoDelayUs    = 500000;
+    constexpr float    kEchoCarSide    = 6.0f;      // эхо: машина двойника в 6 м справа от твоей
+    constexpr uintptr_t kVehPoolEntry  = 0xC68;     // размер записи пула машин (CPlane — самая большая)
 
     // Типы задач игры
     constexpr int TASK_ENTER_AS_PASSENGER = 700;
@@ -147,8 +149,10 @@ namespace
             if(g_ctx.now < e.at) { ++i; continue; }
             float off = g_ctx.echoOffset;
             if(e.type == net::PKT_VEHICLE)
-            {
-                auto* p = (net::VehiclePacket*)e.data; p->id ^= 0x8000; p->pos[0] += off;
+            {   // машину двойника ставим сбоку от твоей (вдоль её правого вектора), чтобы не столкнулись
+                auto* p = (net::VehiclePacket*)e.data; p->id ^= 0x8000;
+                CVector r = Norm(CVector{ p->right[0], p->right[1], 0.0f });
+                p->pos[0] += r.x * kEchoCarSide; p->pos[1] += r.y * kEchoCarSide;
             }
             else if(e.type == net::PKT_VEHICLE_GONE) ((net::VehicleGonePacket*)e.data)->id ^= 0x8000;
             else if(e.type == net::PKT_SHOT)
@@ -252,6 +256,34 @@ namespace
         Log(false, "[МАШИНЫ] Копия %04X убрана (%s)", v.id, why);
     }
 
+    // Пустые случайные машины на месте копии убираем: иначе копия появится внутри них,
+    // и игра раскидает обе машины столкновением (в тесте машины улетали за 200 м)
+    uintptr_t g_vehPoolSym = 0;
+    void ClearSpaceFor(const CVector& pos, float radius)
+    {
+        if(!g_vehPoolSym) return;
+        uintptr_t pool = *(uintptr_t*)g_vehPoolSym;
+        if(!pool) return;
+        uintptr_t objs = Field<uintptr_t>(pool, 0), flags = Field<uintptr_t>(pool, 8);
+        int size = Field<int>(pool, 0x10);
+        if(!objs || !flags || size <= 0 || size > 4096) return;
+        int removed = 0;
+        for(int i = 0; i < size; ++i)
+        {
+            if(Field<uint8_t>(flags, i) & 0x80) continue;
+            uintptr_t veh = objs + (uintptr_t)i * kVehPoolEntry;
+            if(FindVeh(veh) || Field<uint8_t>(veh, off::VehCreatedBy) != 1) continue;
+            if(Field<uintptr_t>(veh, off::VehDriver)) continue;
+            bool occupied = false;
+            for(int k = 0; k < 8; ++k) if(Field<uintptr_t>(veh, off::VehPassengers + (uintptr_t)k * 8)) { occupied = true; break; }
+            if(occupied || veh == PedVehicle(g_ctx.local) || veh == PedVehicle(g_ctx.remote)) continue;
+            if(Dist(GetPosition(veh), pos) > radius) continue;
+            DeleteVehicle(veh);
+            ++removed;
+        }
+        if(removed) Log(false, "[МАШИНЫ] На месте копии убрано пустых машин: %d", removed);
+    }
+
     bool CreateCopy(NetVeh& v)
     {
         int model = v.st.model;
@@ -267,6 +299,7 @@ namespace
             }
         }
         CVector pos = V(v.st.pos);
+        ClearSpaceFor(pos, 5.5f);
         uintptr_t veh = CreateCarForScript(model, pos, false);
         if(!veh) { Log(true, "[МАШИНЫ] Игра не создала машину %d", model); v.dead = true; return false; }
         v.veh = veh; v.ref = GetVehicleRef(veh); v.model = model;
@@ -940,6 +973,7 @@ DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool
 bool Install(void* h, FLogger* log)
 {
     g_log = log;
+    g_vehPoolSym = aml->GetSym(h, "_ZN6CPools15ms_pVehiclePoolE");
     if(!VehiclesReady() || !CombatReady())
     {
         Log(true, "Машины/оружие: не все функции игры найдены — кооп только пешком");
