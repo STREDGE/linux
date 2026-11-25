@@ -30,6 +30,7 @@ namespace net
         PKT_WORLD_ACK    = 16,// клиент -> хост: кусок получен
         PKT_PEDS         = 17,// хост -> клиент: педы вокруг друга (10 раз/с)
         PKT_WORLD_TIME   = 18,// хост -> клиент: время и погода
+        PKT_BLIPS        = 19,// хост -> клиент: метки миссии на карте (4 раза/с)
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -158,7 +159,16 @@ namespace net
     };
 
     // Надёжные события: повторяем, пока не придёт ACK
-    enum ReliableType : uint8_t { REL_DAMAGE = 1, REL_GIVE_WEAPON = 2, REL_NPC_DAMAGE = 3, REL_BUSTED = 4 };
+    enum ReliableType : uint8_t
+    {
+        REL_DAMAGE = 1, REL_GIVE_WEAPON = 2, REL_NPC_DAMAGE = 3, REL_BUSTED = 4,
+        // миссии вместе (хост ведёт)
+        REL_TEXT = 5,          // текст миссии на экране (уже готовая строка игры)
+        REL_CUTSCENE = 6,      // катсцена у хоста: началась / закончилась (пропущена)
+        REL_MISSION_TEXT = 7,  // хост загрузил тексты миссии (нужны для субтитров катсцены)
+        REL_SEAT = 8,          // хост -> друг: садись в мою машину на это место (начало миссии)
+        REL_RECRUIT = 9,       // друг -> хост: позвал педа банды к себе в группу
+    };
     struct DamageEvent
     {
         uint8_t  type;        // REL_DAMAGE
@@ -182,7 +192,7 @@ namespace net
     struct BustedEvent { uint8_t type; uint8_t pad[3]; };   // REL_BUSTED: копы хоста скрутили второго CJ
 
     // Педы вокруг друга
-    enum PedFlags : uint8_t { PDF_DEAD = 1, PDF_IN_VEHICLE = 2, PDF_DUCK = 4, PDF_AIM = 8 };
+    enum PedFlags : uint8_t { PDF_DEAD = 1, PDF_IN_VEHICLE = 2, PDF_DUCK = 4, PDF_AIM = 8, PDF_HIDDEN = 16 };   // HIDDEN: пед миссии уступил место другу
     struct PedEntry
     {
         uint16_t id;
@@ -225,7 +235,58 @@ namespace net
         uint16_t pad;
         uint32_t ammo;
     };
-    constexpr int kReliableMax = 64;
+    // Текст миссии: строка игры (GxtChar). Буквы < 256 — по байту, иначе по 2 байта.
+    enum TextKind : uint8_t { TXT_MESSAGE = 0, TXT_MESSAGE_NOW = 1, TXT_BIG = 2, TXT_HELP = 3, TXT_HELP_CLEAR = 4 };
+    constexpr int kTextMax = 236;
+    struct TextEvent
+    {
+        uint8_t  type;            // REL_TEXT
+        uint8_t  kind;            // TextKind
+        uint8_t  row;             // большой текст: 0 — по центру (пройдено/провал), 1 — название миссии
+        uint8_t  flags;           // подсказка: 1 — быстрая, 2 — навсегда
+        uint32_t ms;
+        uint16_t colour;
+        uint8_t  wide;            // 1 — по 2 байта на букву
+        uint8_t  len;             // байт в data
+        uint8_t  data[kTextMax];
+    };
+    constexpr int kTextHeaderSize = 12;
+    enum CutsceneOp : uint8_t { CUT_LOAD = 1, CUT_END = 2 };
+    struct CutsceneEvent
+    {
+        uint8_t  type;            // REL_CUTSCENE
+        uint8_t  op;              // CutsceneOp
+        uint16_t counter;         // номер катсцены у хоста (конец раньше начала — не играть)
+        char     name[8];
+        char     textStem[8];     // блок текстов миссии (субтитры)
+    };
+    struct MissionTextEvent { uint8_t type; uint8_t pad[3]; char stem[8]; };
+    struct SeatEvent        { uint8_t type; uint8_t seat; uint16_t vehId; };   // seat: 1.. — пассажир (номер места + 1)
+    struct RecruitEvent     { uint8_t type; uint8_t pad; uint16_t npc; };
+
+    // Метки миссии хоста (у друга — такие же на карте)
+    struct BlipEntry
+    {
+        uint16_t key;             // номер метки у хоста
+        uint8_t  kind;            // eBlipType у хоста (1 машина, 2 пед, 3 объект, 4 точка, 5 контакт, 7 пикап)
+        uint8_t  display;         // 1 маркер, 2 на карте, 3 оба
+        uint32_t colour;
+        float    pos[3];
+        uint16_t scale;
+        uint8_t  flags;
+        uint8_t  pad;
+    };
+    constexpr int kBlipsMax = 32;
+    struct BlipsPacket
+    {
+        Header    hdr;
+        uint8_t   count;
+        uint8_t   pad[3];
+        BlipEntry blips[kBlipsMax];
+    };
+    constexpr int kBlipsHeaderSize = (int)sizeof(Header) + 4;
+
+    constexpr int kReliableMax = 250;
     struct ReliablePacket
     {
         Header   hdr;
@@ -279,6 +340,10 @@ namespace net
     };
     constexpr int kModHeaderSize = (int)sizeof(Header) + 4;
     #pragma pack(pop)
+
+    static_assert(sizeof(TextEvent) == kTextHeaderSize + kTextMax, "TextEvent");
+    static_assert(sizeof(TextEvent) <= kReliableMax && sizeof(CutsceneEvent) <= kReliableMax, "reliable");
+    static_assert(sizeof(BlipEntry) == 24, "BlipEntry");
 
     inline Header MakeHeader(PacketType t) { return Header{ kMagic, kProtocolVersion, (uint8_t)t, 0 }; }
 }

@@ -13,6 +13,7 @@
 
 #include "game/gta.h"
 #include "coop/sync.h"
+#include "coop/mission.h"
 
 using namespace gta;
 
@@ -151,6 +152,7 @@ namespace
             e.flags = dead ? net::PDF_DEAD : 0;
             if(Field<uint8_t>(ped, off::PedFlags587) & 0x04) e.flags |= net::PDF_DUCK;
             if(Field<uint8_t>(ped, off::PedFlagsWord) & 0x10) e.flags |= net::PDF_AIM;
+            if(mission::IsHiddenPed(ped)) e.flags |= net::PDF_HIDDEN;   // уступил место другу — у друга его нет
             e.moveState = (uint8_t)Field<int>(ped, off::PedMoveState);
             e.weapon = (uint8_t)CurrentWeaponType(ped);
             float hp = Field<float>(ped, off::PedHealth);
@@ -296,6 +298,7 @@ namespace
     {
         const net::PedEntry& s = c.st;
         CVector target{ s.pos[0], s.pos[1], s.pos[2] };
+        if(s.flags & net::PDF_HIDDEN) { DeleteCopy(c); return; }   // пед миссии уступил место тебе в машине
         if(!CopyValid(c))
         {
             if(c.killed) return;
