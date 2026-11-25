@@ -47,6 +47,9 @@ mkdir -p /tmp/preview && cd /tmp/preview && bash <repo>/tools/preview/build.sh
 4. Коммит, `git push -u origin ccr-ffecc13b-oyswo0`, отправить игроку `release/libSACoop.so` файлом.
 5. Изменился сетевой протокол → `kProtocolVersion` +1 и сказать игроку, что обновиться должны **оба**.
 
+Сценарий игры (миссии, маркеры, катсцены): выводы — `docs/main-scm-notes.md`, разборщик — `tools/scm/`
+(файлы `mainV1.scm`/`scriptv1.img` в репозитории нет — попросить у игрока).
+
 Отлаживать по логу игрока: `sacoop.txt` (и `sacoop_prev.txt` после вылета; там строка `ВЫЛЕТ … pc/lr`
 и «Мод в момент вылета»). Для вылетов в игре полезен `aml_crashlog`, который присылает игрок.
 

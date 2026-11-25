@@ -1,7 +1,7 @@
 # Что известно из сценария игры (mainV1.scm, GTA SA Android 2.10)
 
 Файлы `mainV1.scm` / `scriptv1.img` прислал игрок (в репозиторий НЕ кладём — это файлы игры).
-Разбирались у себя питоновским разборщиком по описанию команд Sanny Builder (`sannybuilder/library`, `sa_mobile.json`).
+Разборщик — `tools/scm/dis.py` (как запустить — `tools/scm/README.md`), описание команд — Sanny Builder `sa_mobile.json`.
 
 * `$ONMISSION` — глобальная переменная по смещению **1632** (`DECLARE_MISSION_FLAG` 0180 в начале main).
 * Запуск миссии — опкод **0x0417** `LOAD_AND_LAUNCH_MISSION_INTERNAL` (176 мест). Перехват в `mission.cpp` верный.
