@@ -1,0 +1,829 @@
+#include "talk.h"
+
+#include <math.h>
+#include <string.h>
+#include <time.h>
+
+#include <functional>
+#include <vector>
+
+#include "game/game.h"
+#include "net/link.h"
+#include "platform/bridge.h"
+#include "settings.h"
+#include "sim/life.h"
+#include "sim/police.h"
+#include "util/log.h"
+
+using world::Character;
+using world::Fmt;
+
+namespace talk
+{
+namespace
+{
+    // ---- разговор ----
+    struct Conv
+    {
+        int  charId = 0;
+        int  who = world::WHO_CJ;
+        bool phone = false;
+        bool active = false;
+        int  reqId = 0;
+        std::string spoken;           // уже озвученная часть текущего ответа
+        std::string buf;              // хвост, ещё не озвученный
+        double lastAt = 0;
+        int  offer = 0;               // игрок протянул деньги (ждём answer_offer)
+        int  demand = 0;              // пед требует деньги
+        std::string demandWhy;
+        bool endAfterSpeech = false;
+        bool remote = false;          // мы — друг: ответы идут через хоста
+    };
+    Conv g_c;
+
+    // ---- распознавание ----
+    bool g_listening = false, g_waitFinal = false;
+    std::string g_partial;
+    double g_sttUntil = 0;
+
+    std::function<void(const std::string&)> g_sink;
+    std::deque<Sub> g_subs;
+    std::deque<std::string> g_notes;
+    int g_ttsSeq = 0;
+
+    struct Delayed { double at; std::function<void()> fn; };
+    std::vector<Delayed> g_later;
+
+    void Later(double sec, std::function<void()> fn) { g_later.push_back({ Now() + sec, std::move(fn) }); }
+
+    const char* WhoName(int who)
+    {
+        auto& w = world::W();
+        return who == world::WHO_CJ ? w.playerNick.c_str() : (w.friendNick.empty() ? "друг CJ" : w.friendNick.c_str());
+    }
+
+    uintptr_t PlayerFor(int who)
+    {
+        (void)who;   // друг на своём телефоне тоже «игрок 0»
+        return game::Player();
+    }
+
+    // ---------- подсказка: обстановка ----------
+    std::string Situation(Character& c, int who, bool phone)
+    {
+        std::string s = Fmt("[Обстановка: день %d, %02d:%02d, район %s.", world::Day(), game::Hour(), game::Minute(),
+                            game::ZoneName().empty() ? "неизвестен" : game::ZoneName().c_str());
+        if(phone) { s += " Это ТЕЛЕФОННЫЙ разговор: ты не рядом с собеседником, действовать телом не можешь."; s += "]"; return s; }
+        uintptr_t ped = world::PedOf(c), pl = PlayerFor(who);
+        if(ped && pl)
+        {
+            float d = game::Dist(game::Pos(ped), game::Pos(pl));
+            s += Fmt(" Собеседник (%s) в %.0f м от тебя", WhoName(who), d);
+            if(game::PlayerInVehicle()) s += ", сидит в машине";
+            s += ".";
+            if(game::PlayerTarget() == ped) s += " ОН ЦЕЛИТСЯ В ТЕБЯ ИЗ ОРУЖИЯ.";
+            int w = game::Wanted();
+            if(w > 0) s += Fmt(" Его разыскивает полиция: %d зв.", w);
+            int money = game::Money();
+            if(money > 20000) s += " Выглядит очень при деньгах."; else if(money > 3000) s += " Похоже, при деньгах.";
+            // кто рядом
+            int same = 0, cops = 0, people = 0;
+            game::Vec me = game::Pos(ped);
+            game::ForEachPed([&](uintptr_t p) {
+                if(p == ped || game::IsPlayer(p) || !game::Alive(p)) return;
+                if(game::Dist(game::Pos(p), me) > 25) return;
+                int t = game::PedType(p);
+                if(t == game::PT_COP) cops++;
+                else if(world::FactionOfPedType(t) == c.faction && c.faction != world::F_CIVIL) same++;
+                else people++;
+            });
+            if(same) s += Fmt(" Рядом твоих (%s): %d.", world::FactionName(c.faction), same);
+            if(cops) s += Fmt(" Рядом полицейских: %d.", cops);
+            if(people) s += Fmt(" Рядом посторонних: %d.", people);
+            if(!same && !cops && !people) s += " Свидетелей вокруг нет.";
+        }
+        s += Fmt(" У тебя при себе $%d.]", c.money);
+        return s;
+    }
+
+    // ---------- история диалога ----------
+    void TrimDialog(json::Value& d)
+    {
+        if(!d.isArray()) { d = json::Value::Array(); return; }
+        auto& a = d.arr();
+        while(a.size() > 18)
+        {
+            a.erase(a.begin());
+            // первым должно идти сообщение пользователя без «висящих» tool_result
+            while(!a.empty() && a[0]["role"].str() != "user") a.erase(a.begin());
+            if(!a.empty() && a[0]["content"].isArray())
+            {
+                json::Value nc = json::Value::Array();
+                for(auto& b : a[0]["content"].arr()) if(b["type"].str() != "tool_result") nc.push(b);
+                if(nc.size() == 0) { a.erase(a.begin()); continue; }
+                a[0]["content"] = nc;
+            }
+        }
+    }
+
+    void AppendUser(json::Value& d, const std::string& text)
+    {
+        if(!d.isArray()) d = json::Value::Array();
+        json::Value blk = json::Value::Object(); blk["type"] = "text"; blk["text"] = text;
+        auto& a = d.arr();
+        if(!a.empty() && a.back()["role"].str() == "user")
+        {
+            json::Value& c = a.back()["content"];
+            if(!c.isArray()) { json::Value t = json::Value::Object(); t["type"] = "text"; t["text"] = c.str(); json::Value arr = json::Value::Array(); arr.push(t); c = arr; }
+            c.push(blk);
+            return;
+        }
+        json::Value m = json::Value::Object(); m["role"] = "user"; json::Value content = json::Value::Array(); content.push(blk); m["content"] = content;
+        d.push(m);
+    }
+
+    // ---------- озвучка по фразам ----------
+    void SpeakChunk(Character* c, const std::string& text)
+    {
+        std::string t = text;
+        while(!t.empty() && (t[0] == ' ' || t[0] == '\n')) t.erase(0, 1);
+        if(t.empty()) return;
+        if(settings::Get().voices && bridge::TtsReady())
+            bridge::TtsSpeak(t, c ? c->pitch : 1.0f, c ? c->rate : 1.0f, Fmt("u%d", ++g_ttsSeq), true);
+    }
+
+    size_t SentenceEnd(const std::string& s)
+    {
+        for(size_t i = 0; i < s.size(); ++i)
+        {
+            char ch = s[i];
+            if((ch == '.' || ch == '!' || ch == '?' || ch == '\n') && i > 8) return i + 1;
+        }
+        return s.size() > 160 ? s.size() : std::string::npos;
+    }
+
+    void SubAppend(Character* c, const std::string& delta)
+    {
+        if(!settings::Get().subtitles) return;
+        if(g_subs.empty() || g_subs.back().player || g_subs.back().charId != (c ? c->id : 0) || g_subs.back().until < Now())
+        {
+            Sub s; s.who = c ? (c->nick.empty() ? c->name : c->nick) : "?"; s.player = false; s.charId = c ? c->id : 0;
+            g_subs.push_back(s);
+        }
+        g_subs.back().text += delta;
+        g_subs.back().until = Now() + 6 + g_subs.back().text.size() * 0.04;
+        while(g_subs.size() > 4) g_subs.pop_front();
+    }
+
+    // ---------- исполнение «мировых» инструментов (у хоста / в одиночке) ----------
+    std::string ExecuteWorld(Character& c, int who, const std::string& n, const json::Value& in, bool& physical)
+    {
+        auto& W = world::W();
+        world::Relation& r = c.rel[who];
+        physical = false;
+        if(n == "relationship")
+        {
+            world::ChangeRelation(c, who, in["trust"].i(), in["respect"].i(), in["liking"].i(), in["fear"].i(), in["why"].str().c_str());
+            return "ok";
+        }
+        if(n == "remember") { world::Remember(c, in["fact"].str()); return "запомнил"; }
+        if(n == "set_goal")
+        {
+            int h = world::Clamp(in["hours"].i(24), 1, 24 * 14);
+            c.goal = in["kind"].str() + ": " + in["text"].str();
+            c.goalUntilMin = world::NowMin() + h * 60;
+            c.goalTarget = who;
+            world::Remember(c, "Моя цель: " + in["text"].str());
+            return Fmt("цель поставлена на %d ч", h);
+        }
+        if(n == "share_contact")
+        {
+            r.contact = true;
+            if(who == world::WHO_CJ) Notify(Fmt("Номер %s добавлен в телефон", c.name.c_str()));
+            return "номер дан";
+        }
+        if(n == "share_info")
+        {
+            world::News(Fmt("Сведения от %s: %s", c.name.c_str(), in["text"].str().c_str()));
+            if(who == world::WHO_CJ) Notify("Записано в заметки (телефон > Новости)");
+            r.favors++;
+            return "рассказал";
+        }
+        if(n == "spread_rumor")
+        {
+            world::Rumor rm; rm.text = in["text"].str(); rm.zone = c.homeZone; rm.day = W.day; rm.reach = 1;
+            W.rumors.push_back(rm);
+            return "слух пошёл";
+        }
+        if(n == "agree_deal")
+        {
+            std::string k = in["kind"].str(); int price = world::Clamp(in["price"].i(), 0, 1000000);
+            if(k == "payroll") { r.payroll = true; r.weekly = price; r.paidDay = W.day - 8; world::Remember(c, Fmt("Договорились: работаю на %s за $%d в неделю (%s)", WhoName(who), price, in["details"].str().c_str())); if(who == world::WHO_CJ) Notify(Fmt("%s работает на тебя: $%d в неделю. Заплати первую неделю.", c.name.c_str(), price)); }
+            else if(k == "informant") { r.informant = true; r.contact = true; world::Remember(c, "Тайно сливаю сведения " + std::string(WhoName(who))); }
+            else if(k == "truce")
+            {
+                if(c.rank < 3) return "ты не можешь решать за всю банду — только старшие";
+                world::FactionState& f = W.fac[c.faction]; f.truce = true; f.truceUntil = W.day + 7; f.tension = world::Clamp(f.tension - 40, 0, 100);
+                f.hostility[who] = world::Clamp(f.hostility[who] - 30, 0, 100);
+                world::News(Fmt("Перемирие с %s на 7 дней (договорился %s)", world::FactionName(c.faction), c.name.c_str()));
+            }
+            else if(k == "defect")
+            {
+                int old = c.faction;
+                if(old == W.playerGang) return "он и так из твоих";
+                W.fac[old].hostility[who] = world::Clamp(W.fac[old].hostility[who] + 20, 0, 100);
+                c.role = Fmt("бывший %s, перешёл к %s", world::FactionName(old), world::FactionName(W.playerGang));
+                c.faction = W.playerGang; c.exposed = true; c.secretlyLoyal = false;
+                world::News(Fmt("%s ушёл из %s к тебе. Его бывшие будут его искать.", c.name.c_str(), world::FactionName(old)));
+            }
+            else world::Remember(c, Fmt("Договорились (%s, $%d): %s", k.c_str(), price, in["details"].str().c_str()));
+            if(price > 0 && k != "payroll") { g_c.demand = price; g_c.demandWhy = k; }
+            return "договорились";
+        }
+        if(n == "end_deal")
+        {
+            r.payroll = false; r.informant = false;
+            world::Remember(c, "Разорвал договор с " + std::string(WhoName(who)) + ": " + in["why"].str());
+            if(who == world::WHO_CJ) Notify(Fmt("%s больше на тебя не работает", c.name.c_str()));
+            return "договор разорван";
+        }
+        if(n == "betray")
+        {
+            std::string how = in["how"].str();
+            world::Remember(c, "Я сдал " + std::string(WhoName(who)) + " (" + how + "): " + in["details"].str());
+            LOG_INFO("Предательство: #%d %s → %s", c.id, c.name.c_str(), how.c_str());
+            if(how == "tell_gang") { auto& f = W.fac[c.faction]; f.hostility[who] = world::Clamp(f.hostility[who] + 15, 0, 100); f.plan = "засада на " + std::string(WhoName(who)) + ": " + in["details"].str(); }
+            else if(how == "ambush") { c.goal = "hunt_player: засада на " + std::string(WhoName(who)); c.goalUntilMin = world::NowMin() + 48 * 60; c.goalTarget = who; }
+            else if(how == "tell_police") { auto& p = W.pcase[who]; p.heat = world::Clamp(p.heat + 20, 0, 100); p.evidence = world::Clamp(p.evidence + 15, 0, 100); }
+            return "сделано тайно";
+        }
+        if(n == "police_action")
+        {
+            if(c.faction != world::F_POLICE) return "ты не полицейский";
+            std::string a = in["action"].str(); int amt = in["amount"].i();
+            auto& p = W.pcase[who];
+            if(a == "add_charge") { p.charges.push_back(in["note"].str()); p.heat = world::Clamp(p.heat + 5 * world::Clamp(amt, 1, 5), 0, 100); return "статья добавлена"; }
+            if(a == "drop_case")
+            {
+                if(c.rank < 2) return "у тебя нет такой власти — только детектив и выше";
+                p.charges.clear(); p.evidence = 0; p.heat = world::Clamp(p.heat - 40, 0, 100);
+                r.favors++; if(W.pcase[who].iaInvestigation == false && world::Rand(0, 100) < 15) W.pcase[who].iaInvestigation = true;
+                world::News(Fmt("%s развалил дело против тебя", c.name.c_str()));
+                return "дело развалено";
+            }
+            if(a == "warn_raid") { world::News(Fmt("%s: %s", c.name.c_str(), in["note"].str().c_str())); r.favors++; return "предупредил"; }
+            physical = true;  // остальное — у того, кто говорит (розыск, арест, штраф)
+            return "";
+        }
+        physical = true;
+        return "";
+    }
+
+    // ---------- ход ----------
+    void FinishTurn(Character* c, int who, claude::Result& res, bool remoteFriend, json::Value* outActions);
+
+    bool SendTurn(Character& c, int who, const std::string& userText, bool important, bool remoteFriend, std::function<void(json::Value)> remoteDone = nullptr)
+    {
+        if(!claude::HasKey()) { if(!remoteFriend) Notify("Нет ключа ИИ: Меню > ИИ > Вставить ключ"); return false; }
+        if(claude::LimitReached()) { if(!remoteFriend) Notify("Лимит запросов ИИ на сегодня исчерпан"); return false; }
+        bool phone = !remoteFriend && g_c.phone && g_c.charId == c.id;
+
+        json::Value dialog = c.dialog; TrimDialog(dialog);
+        std::string turn = remoteFriend ? userText : (Situation(c, who, phone) + "\n" + userText);
+        AppendUser(dialog, turn);
+
+        claude::Request req;
+        json::Value rules = json::Value::Object(); rules["type"] = "text"; rules["text"] = WorldRules();
+        json::Value cc = json::Value::Object(); cc["type"] = "ephemeral"; rules["cache_control"] = cc;
+        json::Value card = json::Value::Object(); card["type"] = "text";
+        card["text"] = "КТО ТЫ\n" + world::Card(c, who) + "\nЧТО ТЫ ЗНАЕШЬ О СОБЕСЕДНИКЕ И ГОРОДЕ\n" + world::KnownFacts(c, who);
+        req.system = json::Value::Array(); req.system.push(rules); req.system.push(card);
+        req.tools = Tools();
+        req.messages = dialog;
+        req.maxTokens = 700;
+        req.tag = "разговор";
+        if(important || c.faction == world::F_POLICE || c.rank >= 2) req.effort = settings::Get().effort == "low" ? "medium" : settings::Get().effort;
+
+        int charId = c.id;
+        std::string userTurn = turn;
+        if(!remoteFriend)
+        {
+            g_c.spoken.clear(); g_c.buf.clear();
+        }
+        int id = claude::Send(req,
+            [charId, remoteFriend](const std::string& delta) {
+                if(remoteFriend) return;
+                Character* ch = world::Find(charId);
+                SubAppend(ch, delta);
+                g_c.buf += delta;
+                size_t e;
+                while((e = SentenceEnd(g_c.buf)) != std::string::npos)
+                {
+                    SpeakChunk(ch, g_c.buf.substr(0, e));
+                    g_c.spoken += g_c.buf.substr(0, e);
+                    g_c.buf.erase(0, e);
+                }
+            },
+            [charId, who, userTurn, remoteFriend, remoteDone](claude::Result& r) {
+                Character* ch = world::Find(charId);
+                if(!ch) return;
+                if(!remoteFriend) { if(!g_c.buf.empty()) { SpeakChunk(ch, g_c.buf); g_c.buf.clear(); } g_c.reqId = 0; g_c.lastAt = Now(); }
+                if(!r.ok)
+                {
+                    if(!remoteFriend) Notify("ИИ: " + r.error);
+                    if(remoteDone) { json::Value e = json::Value::Object(); e["error"] = r.error; remoteDone(e); }
+                    return;
+                }
+                // история: реплика пользователя + ответ
+                AppendUser(ch->dialog, userTurn);
+                json::Value am = json::Value::Object(); am["role"] = "assistant"; am["content"] = r.assistantContent;
+                if(r.assistantContent.size()) ch->dialog.push(am);
+                ch->lastTalkDay = world::Day(); ch->lastTalkMin = game::Hour() * 60 + game::Minute();
+                json::Value actions = json::Value::Array();
+                FinishTurn(ch, who, r, remoteFriend, &actions);
+                TrimDialog(ch->dialog);
+                if(remoteDone)
+                {
+                    json::Value rep = json::Value::Object();
+                    rep["text"] = r.text; rep["actions"] = actions; rep["charId"] = ch->id;
+                    rep["name"] = ch->nick.empty() ? ch->name : ch->nick; rep["pitch"] = ch->pitch; rep["rate"] = ch->rate;
+                    remoteDone(rep);
+                }
+            });
+        if(!id) { if(!remoteFriend) Notify("ИИ недоступен (нет связи или ключа)"); return false; }
+        if(!remoteFriend) g_c.reqId = id;
+        return true;
+    }
+
+    void FinishTurn(Character* c, int who, claude::Result& r, bool remoteFriend, json::Value* outActions)
+    {
+        json::Value results = json::Value::Array();
+        for(auto& call : r.tools)
+        {
+            std::string res;
+            if(!call.inputOk) res = "ошибка: параметры не разобраны";
+            else
+            {
+                bool physical = false;
+                res = ExecuteWorld(*c, who, call.name, call.input, physical);
+                if(physical)
+                {
+                    if(remoteFriend)
+                    {
+                        json::Value a = json::Value::Object(); a["name"] = call.name; a["input"] = call.input; outActions->push(a);
+                        res = "выполняется у собеседника";
+                    }
+                    else res = ExecutePhysical(c, world::PedOf(*c), who, call.name, call.input);
+                }
+            }
+            json::Value tr = json::Value::Object();
+            tr["type"] = "tool_result"; tr["tool_use_id"] = call.id; tr["content"] = res.empty() ? "ok" : res;
+            results.push(tr);
+        }
+        if(results.size())
+        {
+            json::Value m = json::Value::Object(); m["role"] = "user"; m["content"] = results;
+            c->dialog.push(m);
+        }
+    }
+
+    // ---------- выбор собеседника ----------
+    uintptr_t PickTarget()
+    {
+        uintptr_t pl = game::Player(); if(!pl) return 0;
+        game::Vec me = game::Pos(pl);
+        float h = game::Heading(pl);
+        float fx = -sinf(h), fy = cosf(h);
+        uintptr_t target = game::PlayerTarget();
+        if(target && game::Alive(target) && game::Dist(game::Pos(target), me) < 15) return target;
+        uintptr_t best = 0; float bestScore = 1e9f;
+        game::ForEachPed([&](uintptr_t p) {
+            if(p == pl || game::IsPlayer(p) || !game::Alive(p)) return;
+            game::Vec v = game::Pos(p);
+            float d = game::Dist(v, me);
+            if(d > 8.0f) return;
+            float dx = (v.x - me.x) / (d + 0.01f), dy = (v.y - me.y) / (d + 0.01f);
+            float facing = dx * fx + dy * fy;          // 1 — прямо перед CJ
+            float score = d * (1.6f - facing);
+            if(score < bestScore) { bestScore = score; best = p; }
+        });
+        return best;
+    }
+
+    void StartWith(uintptr_t ped)
+    {
+        Character& c = world::Promote(ped);
+        if(!c.aiProfile) life::RequestProfile(c);
+        if(g_c.active && g_c.charId != c.id) EndConversation();
+        if(!g_c.active || g_c.charId != c.id)
+        {
+            g_c = Conv(); g_c.active = true; g_c.charId = c.id; g_c.who = world::WHO_CJ; g_c.remote = coopnet::GetRole() == coopnet::CLIENT;
+            if(!game::Vehicle(ped)) { game::TaskTurnTo(ped, game::Player()); }
+            c.rel[world::WHO_CJ].met = true;
+            LOG_INFO("Разговор с #%d %s (%s)", c.id, c.name.c_str(), game::PedTypeName(c.pedType));
+        }
+        g_c.lastAt = Now();
+    }
+}
+
+double Now() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec / 1e9; }
+
+void Init() {}
+
+bool Listening() { return g_listening; }
+const std::string& Partial() { return g_partial; }
+bool InConversation() { return g_c.active; }
+bool Thinking() { return g_c.reqId != 0; }
+bool PhoneMode() { return g_c.active && g_c.phone; }
+Character* Current() { return g_c.active ? world::Find(g_c.charId) : nullptr; }
+uintptr_t CurrentPed() { Character* c = Current(); return c ? world::PedOf(*c) : 0; }
+const std::deque<Sub>& Subs() { return g_subs; }
+int PendingDemand() { return g_c.active ? g_c.demand : 0; }
+
+void Notify(const std::string& s) { g_notes.push_back(s); if(g_notes.size() > 8) g_notes.pop_front(); LOG_INFO("Уведомление: %s", s.c_str()); }
+bool PopNotify(std::string& out) { if(g_notes.empty()) return false; out = g_notes.front(); g_notes.pop_front(); return true; }
+
+void Say(const std::string& who, const std::string& text, bool player, int charId, float pitch, float rate, bool voice)
+{
+    Sub s; s.who = who; s.text = text; s.player = player; s.charId = charId; s.until = Now() + 5 + text.size() * 0.04;
+    g_subs.push_back(s); while(g_subs.size() > 4) g_subs.pop_front();
+    if(voice && settings::Get().voices && bridge::TtsReady()) bridge::TtsSpeak(text, pitch, rate, Fmt("s%d", ++g_ttsSeq), true);
+}
+
+void EndConversation()
+{
+    if(!g_c.active) return;
+    if(g_c.reqId) claude::Cancel(g_c.reqId);
+    if(Character* c = Current())
+    {
+        uintptr_t ped = world::PedOf(*c);
+        if(ped && !g_c.phone && game::ActiveTaskType(ped) == 203 /*стоит*/) game::TaskWander(ped);
+    }
+    g_c = Conv();
+}
+
+void StartPhoneCall(int charId)
+{
+    Character* c = world::Find(charId);
+    if(!c || !c->alive) { Notify("Номер не отвечает"); return; }
+    if(c->jailUntilDay > world::Day()) { Notify(Fmt("%s сейчас в тюрьме", c->name.c_str())); return; }
+    EndConversation();
+    g_c.active = true; g_c.charId = charId; g_c.phone = true; g_c.remote = coopnet::GetRole() == coopnet::CLIENT;
+    if(uintptr_t pl = game::Player()) game::TaskPhone(pl, 4000);
+    Notify(Fmt("Звонок: %s. Зажми «Говорить»", c->name.c_str()));
+}
+
+void SetSpeechSink(std::function<void(const std::string&)> fn) { g_sink = std::move(fn); }
+
+void PttDown()
+{
+    if(!bridge::Ready()) { Notify("Мост Android не запустился — голос недоступен"); return; }
+    if(g_sink) { g_partial.clear(); g_listening = true; g_waitFinal = false; bridge::TtsStop(); bridge::SttStart(settings::Get().lang.c_str()); return; }
+    if(!g_c.phone)
+    {
+        uintptr_t ped = PickTarget();
+        if(!ped) { Notify("Рядом никого — подойди к человеку ближе"); return; }
+        StartWith(ped);
+    }
+    if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; bridge::TtsStop(); }
+    if(Character* c = Current()) { uintptr_t ped = world::PedOf(*c); if(ped && !g_c.phone && !game::Vehicle(ped)) game::TaskStand(ped, 15000); }
+    g_partial.clear();
+    g_listening = true; g_waitFinal = false;
+    bridge::TtsStop();
+    bridge::SttStart(settings::Get().lang.c_str());
+}
+
+void PttUp()
+{
+    if(!g_listening) return;
+    g_listening = false; g_waitFinal = true; g_sttUntil = Now() + 6;
+    bridge::SttStop();
+}
+
+static void SendToHost(Character& c, const std::string& text, bool phone)
+{
+    json::Value m = json::Value::Object();
+    m["t"] = "talk"; m["text"] = text; m["situation"] = phone ? std::string("[Телефонный разговор]") : Situation(c, world::WHO_FRIEND, phone);
+    m["pedType"] = c.pedType; m["model"] = c.model; m["phone"] = phone; m["hostCharId"] = c.hostId; m["localId"] = c.id;
+    m["nick"] = world::W().playerNick;
+    if(!coopnet::Send(m)) { Notify("Нет связи с хостом"); return; }
+    if(g_c.active && g_c.charId == c.id) g_c.reqId = -1;
+}
+
+static void OnPlayerSaid(const std::string& text)
+{
+    if(g_sink) { if(!text.empty()) { Say(world::W().playerNick, text, true, 0, 1, 1, false); g_sink(text); } return; }
+    g_c.lastAt = Now();
+    Character* c = Current();
+    if(!c) return;
+    if(text.empty()) { Notify("Не расслышал — попробуй ещё раз"); return; }
+    Say(world::W().playerNick, text, true, 0, 1, 1, false);
+    std::string line = Fmt("%s говорит: «%s»", world::W().playerNick.c_str(), text.c_str());
+    if(g_c.offer) line += Fmt("\n(Он протягивает тебе $%d.)", g_c.offer);
+    if(g_c.remote) { SendToHost(*c, line, g_c.phone); return; }
+    SendTurn(*c, world::WHO_CJ, line, g_c.offer > 0, false);
+}
+
+void OfferMoney(int amount)
+{
+    Character* c = Current();
+    if(!c || amount <= 0) return;
+    if(game::Money() < amount) { Notify("У тебя нет столько денег"); return; }
+    g_c.offer = amount;
+    std::string line = Fmt("(%s молча протягивает тебе $%d.)", world::W().playerNick.c_str(), amount);
+    Say(world::W().playerNick, Fmt("[протягивает $%d]", amount), true, 0, 1, 1, false);
+    if(g_c.remote) { SendToHost(*c, line, g_c.phone); return; }
+    SendTurn(*c, world::WHO_CJ, line, true, false);
+}
+
+void PayDemand()
+{
+    Character* c = Current();
+    if(!c || g_c.demand <= 0) return;
+    int amt = g_c.demand;
+    if(game::Money() < amt) { Notify("Не хватает денег"); return; }
+    game::AddMoney(-amt); c->money += amt;
+    world::Relation& r = c->rel[world::WHO_CJ];
+    if(r.payroll && g_c.demandWhy == "payroll") r.paidDay = world::Day();
+    world::Remember(*c, Fmt("Получил от игрока $%d (%s)", amt, g_c.demandWhy.c_str()));
+    world::ChangeRelation(*c, world::WHO_CJ, 4, 2, 3, 0, "заплатил");
+    g_c.demand = 0;
+    Say(world::W().playerNick, Fmt("[платит $%d]", amt), true, 0, 1, 1, false);
+    std::string paid = Fmt("(%s заплатил тебе $%d, как ты просил.)", world::W().playerNick.c_str(), amt);
+    if(g_c.remote) SendToHost(*c, paid, g_c.phone); else SendTurn(*c, world::WHO_CJ, paid, false, false);
+}
+
+bool React(Character& c, int who, const std::string& eventText, bool important)
+{
+    if(coopnet::GetRole() == coopnet::CLIENT) { SendToHost(c, "[Событие: " + eventText + "]", false); return true; }   // решает хост, исполняем у себя
+    if(g_c.active && g_c.reqId) return false;
+    if(g_c.active && g_c.charId != c.id) return false;
+    if(!g_c.active && who == world::WHO_CJ)
+    {
+        uintptr_t ped = world::PedOf(c);
+        if(!ped) return false;
+        g_c = Conv(); g_c.active = true; g_c.charId = c.id; g_c.who = who;
+    }
+    return SendTurn(c, who, "[Событие: " + eventText + "]", important, who != world::WHO_CJ);
+}
+
+// ---------- физические действия ----------
+std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::string& n, const json::Value& in)
+{
+    uintptr_t pl = game::Player();
+    bool phone = g_c.active && g_c.phone && c && g_c.charId == c->id;
+    auto needPed = [&]() { return ped && !phone && game::Alive(ped); };
+
+    if(n == "end_conversation") { g_c.endAfterSpeech = true; return "ок"; }
+    if(n == "gesture")
+    {
+        if(!needPed()) return "ты не рядом";
+        struct G { const char* k; const char* block; const char* anim; const char* fbBlock; const char* fbAnim; bool loop; int ms; };
+        static const G kG[] = {
+            { "talk", "GANGS", "prtial_gngtlkA", "ped", "IDLE_chat", false, 0 }, { "agree", "COP_AMBIENT", "Coplook_nod", "ped", "IDLE_chat", false, 0 },
+            { "disagree", "MISC", "plyr_shkhead", "ped", "endchat_02", false, 0 }, { "angry", "RIOT", "RIOT_ANGRY", "ped", "IDLE_chat", false, 0 },
+            { "threaten", "RIOT", "RIOT_challenge", "ped", "fucku", false, 0 }, { "scared", "ped", "handscower", nullptr, nullptr, true, 3000 },
+            { "laugh", "GANGS", "prtial_gngtlkE", "ped", "endchat_01", false, 0 }, { "wave", "ON_LOOKERS", "wave_loop", "ped", "endchat_03", true, 2500 },
+            { "shrug", "ped", "XPRESSscratch", nullptr, nullptr, false, 0 }, { "point", "ON_LOOKERS", "point_loop", "ped", "IDLE_chat", true, 2500 },
+            { "cross_arms", "COP_AMBIENT", "Coplook_loop", "ped", "IDLE_stance", true, 5000 }, { "fuck_you", "ped", "fucku", nullptr, nullptr, false, 0 },
+            { "hands_up", "ped", "handsup", nullptr, nullptr, false, 0 }, { "cower", "ped", "cower", nullptr, nullptr, true, 4000 },
+            { "think", "COP_AMBIENT", "Coplook_think", "ped", "IDLE_tired", false, 0 }, { "celebrate", "ON_LOOKERS", "shout_01", "ped", "IDLE_chat", false, 0 },
+            { "smoke", "GANGS", "smkcig_prtl", "ped", "IDLE_stance", false, 0 }, { "sit", "BEACH", "ParkSit_M_loop", "ped", "SEAT_idle", true, 15000 },
+            { "dance", "DANCING", "dance_loop", "ped", "IDLE_chat", true, 8000 },
+        };
+        const std::string& k = in["kind"].str();
+        for(auto& g : kG)
+            if(k == g.k)
+            {
+                if(game::TaskAnim(ped, g.anim, g.block, g.loop, g.ms, k == "hands_up")) return "ок";
+                if(g.fbAnim && game::TaskAnim(ped, g.fbAnim, g.fbBlock, g.loop, g.ms)) return "ок";
+                return "не вышло";
+            }
+        return "нет такого жеста";
+    }
+    if(n == "move")
+    {
+        if(!needPed()) return "ты не рядом";
+        const std::string& m = in["mode"].str(); bool run = in["run"].b();
+        int ms = run ? 6 : 4;
+        if(m == "follow_player") return game::TaskFollow(ped, pl) ? "идёшь за ним" : "не вышло";
+        if(m == "come_closer") return game::TaskGoTo(ped, game::Pos(pl), ms, 1.2f) ? "подходишь" : "не вышло";
+        if(m == "flee") { if(c) world::ChangeRelation(*c, who, 0, 0, 0, 5, ""); EndConversation(); return game::TaskFlee(ped, pl) ? "убегаешь" : "не вышло"; }
+        if(m == "wait_here") return game::TaskStand(ped, 60000) ? "ждёшь" : "не вышло";
+        if(m == "go_home" && c) { game::Vec h = c->home; g_c.endAfterSpeech = true; return game::TaskGoTo(ped, h, ms, 2.0f) ? "идёшь домой" : "не вышло"; }
+        if(m == "go_away" || m == "wander") { g_c.endAfterSpeech = true; return game::TaskWander(ped) ? "уходишь" : "не вышло"; }
+        return "?";
+    }
+    static const struct { const char* n; int w; int ammo; } kW[] = { { "fists", 0, 0 }, { "knife", 4, 1 }, { "bat", 5, 1 }, { "pistol", 22, 60 },
+        { "uzi", 28, 200 }, { "shotgun", 25, 30 }, { "ak47", 30, 150 } };
+    auto weaponOf = [&](const std::string& s) { for(auto& w : kW) if(s == w.n) return w; return kW[0]; };
+    if(n == "attack")
+    {
+        if(!needPed()) return "ты не рядом";
+        auto w = weaponOf(in["weapon"].str());
+        if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
+        if(c) { world::Remember(*c, "Я напал на " + std::string(WhoName(who))); world::ChangeRelation(*c, who, -10, 0, -10, 0, ""); }
+        EndConversation();
+        return game::TaskAttack(ped, pl) ? "напал" : "не вышло";
+    }
+    if(n == "aim_weapon")
+    {
+        if(!needPed()) return "ты не рядом";
+        auto w = weaponOf(in["weapon"].str());
+        if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
+        return game::TaskAimAt(ped, pl, 8000) ? "держишь на прицеле" : "не вышло";
+    }
+    if(n == "holster") { if(needPed()) { game::SetCurrentWeapon(ped, 0); game::TaskStand(ped, 4000); } return "ок"; }
+    if(n == "give_money")
+    {
+        if(!c) return "?";
+        int a = world::Clamp(in["amount"].i(), 0, c->money);
+        if(a <= 0) return "у тебя нет денег";
+        if(!needPed() && !phone) return "ты не рядом";
+        if(phone) return "по телефону деньги не передашь — договорись о встрече";
+        c->money -= a; game::AddMoney(a);
+        Say(c->nick.empty() ? c->name : c->nick, Fmt("[отдаёт $%d]", a), false, c->id, 1, 1, false);
+        return Fmt("отдал $%d", a);
+    }
+    if(n == "answer_offer")
+    {
+        if(!c) return "?";
+        int a = g_c.offer; g_c.offer = 0;
+        if(a <= 0) return "тебе ничего не предлагали";
+        if(in["accept"].b())
+        {
+            if(game::Money() < a) return "у него уже нет этих денег";
+            game::AddMoney(-a); c->money += a;
+            world::Relation& r = c->rel[who];
+            if(r.payroll) r.paidDay = world::Day();
+            // свидетели взятки
+            if(c->faction == world::F_POLICE)
+            {
+                world::Event& e = world::AddEvent("bribe", Fmt("дал взятку $%d копу %s", a, c->name.c_str()), game::Pos(pl), 2, who);
+                e.victimChar = c->id;
+                if(ped) game::ForEachPed([&](uintptr_t p) {
+                    if(p == ped || game::IsPlayer(p) || !game::Alive(p) || game::Dist(game::Pos(p), game::Pos(ped)) > 15) return;
+                    if(world::Character* wc = world::FindByPed(p)) world::AddWitness(e, wc->id); else e.anonWitnesses++;
+                });
+                if(e.anonWitnesses + (int)e.witnesses.size() > 0 && world::Rand(0, 100) < 20) world::W().pcase[who].iaInvestigation = true;
+            }
+            world::Remember(*c, Fmt("Взял у %s $%d (%s)", WhoName(who), a, in["reason"].str().c_str()));
+            Say(c->nick.empty() ? c->name : c->nick, Fmt("[берёт $%d]", a), false, c->id, 1, 1, false);
+            return Fmt("взял $%d", a);
+        }
+        world::Remember(*c, Fmt("Отказался от $%d от %s (%s)", a, WhoName(who), in["reason"].str().c_str()));
+        return "отказался, деньги остались у игрока";
+    }
+    if(n == "demand_money") { g_c.demand = world::Clamp(in["amount"].i(), 1, 10000000); g_c.demandWhy = in["reason"].str(); return "игрок видит требование и решает сам"; }
+    if(n == "call")
+    {
+        std::string who2 = in["who"].str();
+        if(!needPed() && !phone) return "ты не можешь позвонить";
+        if(needPed()) game::TaskPhone(ped, 6000);
+        int cid = c ? c->id : 0;
+        if(who2 == "police")
+        {
+            Later(6.5, [cid, who]() {
+                world::Character* ch = world::Find(cid);
+                uintptr_t p = ch ? world::PedOf(*ch) : 0;
+                if(ch && p && !game::Alive(p)) return;   // не успел дозвониться
+                if(who == world::WHO_CJ) { int w = game::Wanted(); game::SetWanted(w < 2 ? w + 1 : w); }
+                world::W().pcase[who].heat = world::Clamp(world::W().pcase[who].heat + 10, 0, 100);
+                Notify("Кто-то сообщил о тебе в полицию");
+            });
+            return "звонишь в полицию (6 секунд)";
+        }
+        if(who2 == "gang")
+        {
+            int fac = c ? c->faction : world::F_NONE;
+            bool hostile = c && (c->rel[who].liking < 0 || world::W().fac[fac].hostility[who] > 40);
+            Later(9.0, [fac, hostile]() { life::SpawnHelpers(fac, world::Rand(2, 3), hostile); });
+            return "свои едут (около 10 секунд)";
+        }
+        if(who2 == "boss" && c) { auto& f = world::W().fac[c->faction]; f.hostility[who] = world::Clamp(f.hostility[who] + 5, 0, 100); return "доложил"; }
+        return "позвонил";
+    }
+    if(n == "police_action")
+    {
+        if(!c || c->faction != world::F_POLICE) return "ты не полицейский";
+        std::string a = in["action"].str(); int amt = in["amount"].i();
+        if(a == "order_stop") { Notify("Полиция: «Стоять! Руки!» — кнопка «Сдаться» на экране"); if(needPed()) game::TaskAimAt(ped, pl, 6000); return "приказал"; }
+        if(a == "arrest") { if(!needPed()) return "ты не рядом"; police::StartArrest(ped); return "задерживаешь"; }
+        if(a == "let_go") { police::Release("коп отпустил"); if(who == world::WHO_CJ && c->rank >= 1) game::SetWanted(0); return "отпустил"; }
+        if(a == "fine") { g_c.demand = world::Clamp(amt, 10, 100000); g_c.demandWhy = "штраф"; return "выписал штраф"; }
+        if(a == "reduce_wanted" || a == "clear_wanted")
+        {
+            int maxDrop = c->rank + 1;            // патрульный — 1 звезда, капитан — 4
+            int w = game::Wanted();
+            int drop = a == "clear_wanted" ? w : world::Clamp(amt, 1, 6);
+            if(drop > maxDrop) drop = maxDrop;
+            game::SetWanted(w - drop);
+            c->rel[who].favors++;
+            return Fmt("розыск снижен на %d", drop);
+        }
+        if(a == "return_weapons") { if(c->rank < 1) return "у патрульного нет доступа к складу улик"; if(phone) { world::News("Оружие ждёт тебя у участка — забери при встрече"); return "договорился"; } game::GiveWeapon(pl, 22, 68); return "вернул пистолет"; }
+        return "?";
+    }
+    return "неизвестное действие";
+}
+
+// ---------- кооп ----------
+void HandleFriendTalk(const json::Value& req)
+{
+    if(!settings::Get().shareKeyWithFriend || !claude::HasKey())
+    {
+        json::Value e = json::Value::Object(); e["t"] = "reply"; e["localId"] = req["localId"].i();
+        e["error"] = claude::HasKey() ? "Хост выключил разговоры через свой ключ" : "У хоста нет ключа ИИ";
+        coopnet::Send(e); return;
+    }
+    auto& W = world::W();
+    if(req["nick"].isString()) W.friendNick = req["nick"].str();
+    Character* c = nullptr;
+    int id = req["hostCharId"].i();
+    if(id) c = world::Find(id);
+    if(!c)
+    {
+        // персонаж с телефона друга: создаём у себя без педа
+        world::Character nc;
+        nc.id = W.nextId++; nc.pedType = req["pedType"].i(4); nc.model = req["model"].i(); nc.female = game::IsFemaleType(nc.pedType);
+        nc.faction = world::FactionOfPedType(nc.pedType); nc.age = world::Rand(18, 60);
+        nc.name = Fmt("%s №%d", game::PedTypeName(nc.pedType), nc.id); nc.dialog = json::Value::Array();
+        nc.pitch = nc.female ? 1.15f : 0.85f; nc.rate = 1.0f;
+        W.chars.push_back(nc);
+        c = &W.chars.back();
+        life::RequestProfile(*c);
+    }
+    std::string text = req["situation"].str() + "\n" + req["text"].str();
+    int cid = c->id;
+    int localId = req["localId"].i();
+    SendTurn(*c, world::WHO_FRIEND, text, false, true, [cid, localId](json::Value rep) {
+        rep["t"] = "reply"; rep["charId"] = cid; rep["localId"] = localId;
+        coopnet::Send(rep);
+    });
+}
+
+void HandleHostReply(const json::Value& rep)
+{
+    Character* c = world::Find(rep["localId"].i());
+    if(g_c.active && c && g_c.charId == c->id) g_c.reqId = 0;
+    if(rep.has("error")) { Notify("ИИ (через хоста): " + rep["error"].str()); return; }
+    if(!c) return;
+    c->hostId = rep["charId"].i();
+    std::string name = rep["name"].str();
+    if(!name.empty()) c->nick = name;
+    c->pitch = (float)rep["pitch"].num(c->pitch); c->rate = (float)rep["rate"].num(c->rate);
+    std::string text = rep["text"].str();
+    if(!text.empty()) Say(name.empty() ? c->name : name, text, false, c->id, c->pitch, c->rate, true);
+    uintptr_t ped = world::PedOf(*c);
+    for(auto& a : rep["actions"].arr()) ExecutePhysical(c, ped, world::WHO_CJ, a["name"].str(), a["input"]);
+    if(g_c.active && g_c.charId == c->id) g_c.lastAt = Now();
+}
+
+// ---------- кадр ----------
+void Frame()
+{
+    // распознавание
+    bridge::SttEvent se;
+    while(bridge::PollStt(se))
+    {
+        if(se.kind == bridge::STT_PARTIAL) g_partial = se.text;
+        else if(se.kind == bridge::STT_FINAL) { g_partial = se.text; if(g_waitFinal || g_listening) { g_waitFinal = false; g_listening = false; OnPlayerSaid(se.text); } }
+        else if(se.kind == bridge::STT_ERROR)
+        {
+            g_listening = false; g_waitFinal = false;
+            int code = atoi(se.text.c_str());
+            if(code == 7 || code == 6) Notify("Не расслышал — скажи ещё раз");
+            else if(code == 9) Notify("Нет разрешения на микрофон");
+            else Notify("Распознавание речи: ошибка " + se.text);
+        }
+    }
+    if(g_waitFinal && Now() > g_sttUntil) { g_waitFinal = false; if(!g_partial.empty()) OnPlayerSaid(g_partial); }
+
+    // голос: конец речи → можно завершить разговор
+    bridge::TtsEvent te;
+    while(bridge::PollTts(te)) {}
+
+    // отложенные действия
+    double now = Now();
+    for(size_t i = 0; i < g_later.size();)
+    {
+        if(now >= g_later[i].at) { auto fn = std::move(g_later[i].fn); g_later.erase(g_later.begin() + i); fn(); }
+        else ++i;
+    }
+
+    // разговор: собеседник ушёл далеко / умер — конец
+    if(g_c.active && !g_c.phone)
+    {
+        Character* c = Current();
+        uintptr_t ped = c ? world::PedOf(*c) : 0;
+        uintptr_t pl = game::Player();
+        bool far = !ped || !pl || game::Dist(game::Pos(ped), game::Pos(pl)) > 25;
+        if(far && !g_c.reqId) EndConversation();
+        else if(!g_c.reqId && !g_listening && now - g_c.lastAt > 45) EndConversation();
+    }
+    if(g_c.active && g_c.endAfterSpeech && !g_c.reqId) { g_c.endAfterSpeech = false; if(g_c.phone) Notify("Разговор окончен"); EndConversation(); }
+
+    while(!g_subs.empty() && g_subs.front().until < now) g_subs.pop_front();
+}
+
+} // namespace talk

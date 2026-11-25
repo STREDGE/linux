@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 7;
+    constexpr uint8_t  kProtocolVersion = 8;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -19,6 +19,7 @@ namespace net
         PKT_ACCEPT       = 5, // хост -> клиент: принят
         PKT_DENY         = 6, // хост -> клиент: отклонён / занято
         PKT_VOICE        = 7, // голос: один кадр Opus (20 мс), пока зажата кнопка
+        PKT_MOD          = 8, // данные другого мода (SA Living): канал + байты
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -90,6 +91,17 @@ namespace net
         uint8_t  data[kVoiceMaxBytes];
     };
     constexpr int kVoiceHeaderSize = (int)sizeof(Header) + 4;
+
+    constexpr int kModMaxBytes = 1100;
+    struct ModPacket              // шлётся заголовок + len байт
+    {
+        Header   hdr;
+        uint8_t  channel;
+        uint8_t  pad;
+        uint16_t len;
+        uint8_t  data[kModMaxBytes];
+    };
+    constexpr int kModHeaderSize = (int)sizeof(Header) + 4;
     #pragma pack(pop)
 
     inline Header MakeHeader(PacketType t) { return Header{ kMagic, kProtocolVersion, (uint8_t)t, 0 }; }

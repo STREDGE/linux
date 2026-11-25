@@ -149,9 +149,11 @@ namespace net
         }
         FLogger* log = m_log;
         VoiceSink sink = m_voiceSink;
+        ModSink msink = m_modSink;
         *this = Session();
         m_log = log;
         m_voiceSink = sink;
+        m_modSink = msink;
     }
 
     bool Session::Connected() const
@@ -373,6 +375,14 @@ namespace net
                 }
                 break;
 
+            case PKT_MOD:
+                if(len >= kModHeaderSize)
+                {
+                    const ModPacket* mp = (const ModPacket*)data;
+                    if(mp->len <= kModMaxBytes && kModHeaderSize + mp->len == len && m_modSink) m_modSink(mp->channel, mp->data, mp->len);
+                }
+                break;
+
             case PKT_DENY: // хост/клиент ушёл
                 if(len == sizeof(DenyPacket)) DropPeer("друг вышел из коопа");
                 break;
@@ -396,5 +406,15 @@ namespace net
         memcpy(v.data, data, len);
         SendTo(&v, kVoiceHeaderSize + len);
         if(!m_voiceOut++) Log(false, "Пошёл голос другу");
+    }
+
+    bool Session::SendMod(uint8_t channel, const void* data, int len)
+    {
+        if(m_link != Link::Connected || len < 0 || len > kModMaxBytes) return false;
+        ModPacket p;
+        p.hdr = MakeHeader(PKT_MOD); p.channel = channel; p.pad = 0; p.len = (uint16_t)len;
+        memcpy(p.data, data, len);
+        SendTo(&p, kModHeaderSize + len);
+        return true;
     }
 }

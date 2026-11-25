@@ -1,0 +1,66 @@
+#pragma once
+// Разговор с педами: кнопка «Говорить» → распознавание речи → Claude → голос и действия.
+
+#include <stdint.h>
+#include <deque>
+#include <functional>
+#include <string>
+
+#include "ai/claude.h"
+#include "util/json.h"
+#include "world/world.h"
+
+namespace talk
+{
+    const char* WorldRules();
+    const json::Value& Tools();
+
+    void Init();
+    void Frame();                         // раз в кадр (игровой поток)
+
+    // Кнопка «Говорить»
+    void PttDown();
+    void PttUp();
+    bool Listening();
+    const std::string& Partial();
+
+    // Состояние разговора
+    bool InConversation();
+    bool Thinking();                      // ждём ответ ИИ
+    bool PhoneMode();
+    world::Character* Current();
+    uintptr_t CurrentPed();
+    void EndConversation();
+    void StartPhoneCall(int charId);
+
+    // Деньги: игрок протягивает собеседнику (взятка/плата)
+    void OfferMoney(int amount);
+    int  PendingDemand();                 // собеседник требует $ (0 — нет)
+    void PayDemand();
+
+    // Реакция персонажа на событие без слов игрока (инициатива). Возвращает false, если не отправлено.
+    bool React(world::Character& c, int who, const std::string& eventText, bool important);
+
+    // Субтитры
+    struct Sub { std::string who, text; double until; bool player; int charId; };
+    const std::deque<Sub>& Subs();
+    void Say(const std::string& who, const std::string& text, bool player, int charId, float pitch, float rate, bool voice);
+
+    // Уведомления для HUD
+    void Notify(const std::string& s);
+    bool PopNotify(std::string& out);
+
+    // ---- кооп ----
+    // Хост: обработать разговор друга (без его педа). Ответ — через link.
+    void HandleFriendTalk(const json::Value& req);
+    // Друг: получить ответ хоста и исполнить физические действия у себя
+    void HandleHostReply(const json::Value& rep);
+
+    // Исполнение действий, требующих педа и денег игрока (локально у того, кто говорил)
+    std::string ExecutePhysical(world::Character* c, uintptr_t ped, int who, const std::string& name, const json::Value& in);
+
+    double Now();                         // секунды (монотонные)
+
+    // Куда отдавать распознанную речь вместо собеседника (суд и т.п.); nullptr — обычный разговор
+    void SetSpeechSink(std::function<void(const std::string&)> fn);
+}

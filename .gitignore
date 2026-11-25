@@ -6,3 +6,6 @@ echo-test/
 /tools/preview/preview_menu
 *.ppm
 !release/*.so
+sa-living/obj/
+sa-living/libs/
+!sa-living/release/*.so

@@ -12,6 +12,8 @@
 
 #include "game/gta.h"
 #include "voice/voice.h"
+#include "net/sacoop_api.h"
+#include <mod/interface.h>
 
 using namespace gta;
 
@@ -540,6 +542,23 @@ DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote(
 
 const char* Where() { return g_where; }
 
+// ---------- канал данных для других модов (SA Living) ----------
+namespace
+{
+    void (*g_modRecv[256])(const void*, int) = {};
+    void ModSinkDispatch(uint8_t ch, const uint8_t* data, int len) { if(g_modRecv[ch]) g_modRecv[ch](data, len); }
+    int  Api_GetRole()
+    {
+        switch(g_cfg.role) { case net::Role::Echo: return 1; case net::Role::Host: return 2; case net::Role::Client: return 3; default: return 0; }
+    }
+    bool Api_Connected() { return g_session.Connected(); }
+    bool Api_Send(uint8_t ch, const void* d, int len) { return g_session.SendMod(ch, d, len); }
+    void Api_SetReceiver(uint8_t ch, void (*fn)(const void*, int)) { g_modRecv[ch] = fn; }
+    const char* Api_PeerNick() { return g_session.PeerNick(); }
+    const char* Api_MyNick() { return g_cfg.nick; }
+    SACoopNetApi g_netApi = { 1, Api_GetRole, Api_Connected, Api_Send, Api_SetReceiver, Api_PeerNick, Api_MyNick };
+}
+
 bool Install(void* h, FLogger* log)
 {
     g_log = log;
@@ -548,6 +567,9 @@ bool Install(void* h, FLogger* log)
     g_cutsceneRunning = (uint8_t*)aml->GetSym(h, "_ZN12CCutsceneMgr10ms_runningE");
     voice::Init(log);
     g_session.SetVoiceSink(voice::PushReceivedFrame);
+    g_session.SetModSink(ModSinkDispatch);
+    RegisterInterface(SACOOP_NET_INTERFACE, &g_netApi);
+    Log(false, "Канал данных для других модов (SACoopNet) зарегистрирован");
     if(!gta::Init(h, 0))
     {
         Log(true, "Не все функции игры найдены — кооп выключен");

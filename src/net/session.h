@@ -68,6 +68,9 @@ namespace net
         void  SendVoice(uint16_t seq, uint8_t spurt, const uint8_t* data, int len);
         typedef void (*VoiceSink)(uint16_t seq, uint8_t spurt, const uint8_t* data, int len);
         void  SetVoiceSink(VoiceSink fn) { m_voiceSink = fn; }
+        bool  SendMod(uint8_t channel, const void* data, int len);
+        typedef void (*ModSink)(uint8_t channel, const uint8_t* data, int len);
+        void  SetModSink(ModSink fn) { m_modSink = fn; }
 
     private:
         void HandlePacket(const uint8_t* data, int len, const sockaddr_in& from);
@@ -107,6 +110,7 @@ namespace net
         RemoteState m_remote;
         std::vector<Event> m_events;
         VoiceSink   m_voiceSink = nullptr;
+        ModSink     m_modSink = nullptr;
         uint32_t    m_voiceIn = 0, m_voiceOut = 0;
     };
 
