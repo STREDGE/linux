@@ -20,7 +20,7 @@
 #include "ui/overlay.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 1.0.0, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 1.0.1, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");

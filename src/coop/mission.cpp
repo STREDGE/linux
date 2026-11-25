@@ -44,6 +44,7 @@ namespace
     void      (*Fade)(uintptr_t cam, float seconds, int16_t direction) = nullptr;
     void      (*MakePlayerSafe)(uintptr_t playerInfo, bool on, float radius) = nullptr;
     void      (*CameraRestore)(uintptr_t cam) = nullptr;
+    void      (*WideScreenOff)(uintptr_t cam) = nullptr;
     int32_t*  g_scriptParams = nullptr;
 
     void Log(bool error, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -288,14 +289,14 @@ namespace
     int       TraceHandle(int i) { return i | ((int)TraceCounter(i) << 16); }
 
     // Значки тех, кто даёт миссии (у друга прячем на время коопа)
-    bool ContactSprite(int s)
+    // Маркер миссии = метка «контакт» (тип 5; ADD_SPRITE_BLIP_FOR_CONTACT_POINT 02A7/0570 в mainV1.scm).
+    // Кроме таких же меток домов: 31/32 — недвижимость, 35 — дом-сохранение, 54 — спортзал.
+    // Значки из сценария игры: 5, 8, 11, 12, 13, 15, 16, 23, 24, 25, 28, 33, 34, 36, 37, 38, 40, 42–44, 46, 47, 51–53.
+    bool MissionContact(int i)
     {
-        switch(s)
-        {
-            case 8: case 12: case 13: case 16: case 18: case 23: case 24: case 25: case 26: case 28:
-            case 34: case 38: case 40: case 42: case 43: case 44: case 46: case 47: return true;
-            default: return false;
-        }
+        if(TraceType(i) != 5) return false;
+        uint8_t s = Field<uint8_t>(Trace(i), 0x28);
+        return s != 31 && s != 32 && s != 35 && s != 54;
     }
 
     // друг: спрятанные значки миссий
@@ -312,7 +313,7 @@ namespace
         {
             if(!TraceInUse(i)) continue;
             uint8_t sprite = Field<uint8_t>(Trace(i), 0x28);
-            if(!ContactSprite(sprite)) continue;
+            if(!MissionContact(i)) continue;
             int disp = TraceDisplay(i);
             bool known = false;
             for(auto& h : g_hiddenContacts) if(h.index == i && h.counter == TraceCounter(i)) { known = true; break; }
@@ -672,8 +673,14 @@ namespace
         if(!g_blockRecover || net::Since(g_now, g_blockedUs) < 600000) return;
         g_blockRecover = false;
         if(g_cut != Cut::None) return;
+        // Скрипт маркера перед запуском: $ONMISSION = 1, управление выкл., широкий экран, своя камера, затемнение.
+        // Миссию не запустили — вернуть всё; $ONMISSION оставить 1, пока стоишь у маркера (иначе маркер сработает снова).
+        if(CameraRestore && TheCamera) CameraRestore(TheCamera);
+        if(WideScreenOff && TheCamera) WideScreenOff(TheCamera);
         if(Fade && TheCamera) Fade(TheCamera, 0.3f, 1);
         if(MakePlayerSafe) MakePlayerSafe(Players, false, 10.0f);
+        g_forcedOnMission = true;
+        Log(false, "[МИССИЯ] Вернул тебе управление и экран после маркера миссии");
     }
 
     // Второго CJ не видно в катсценах (у хоста и у друга)
@@ -732,6 +739,7 @@ bool Install(void* h, FLogger* log)
     Fade = (void(*)(uintptr_t, float, int16_t))sym("_ZN7CCamera4FadeEfs");
     MakePlayerSafe = (void(*)(uintptr_t, bool, float))sym("_ZN11CPlayerInfo14MakePlayerSafeEbf");
     CameraRestore = (void(*)(uintptr_t))sym("_ZN7CCamera7RestoreEv");
+    WideScreenOff = (void(*)(uintptr_t))sym("_ZN7CCamera16SetWideScreenOffEv");
     g_scriptParams = (int32_t*)sym("ScriptParams");
 
     g_ok = g_cutLoadStatus && g_cutRunning && CutLoad && CutStart && CutFinished && CutSkip && CutDelete &&
