@@ -9,6 +9,7 @@
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Памятка для любого ИИ (Claude, GPT/Codex…): правила, как собирать, как выпускать версию, что дальше |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Как всё устроено внутри: модули, перехваты, сеть, голос, интерфейс |
+| [`docs/PLAN.md`](docs/PLAN.md) | **План**: починка, экран загрузки, один мир, общие педы и машины, миссии, сохранения |
 | [`docs/HISTORY.md`](docs/HISTORY.md) | Версии и найденные баги — почему код сделан именно так |
 | [`docs/libgtasa-2.10-arm64.md`](docs/libgtasa-2.10-arm64.md) | Символы, смещения полей, ловушки libGTASA 2.10 arm64 |
 | [`sa-living/`](sa-living/) | **Отдельный второй мод** SA Living: живые педы с ИИ (Claude, свой ключ) и реализм — 0.1.0, речь 0.2.0 на паузе ([`STATUS.md`](sa-living/STATUS.md)) |
