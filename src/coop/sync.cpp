@@ -40,6 +40,7 @@ namespace
 
     FLogger*      g_log = nullptr;
     uintptr_t     g_libBase = 0;
+    uintptr_t     g_pedTypesSym = 0;    // CPedType::ms_apPedTypes: 32 типа × 5 масок отношений
     net::Session* g_session = nullptr;
     bool          g_installed = false;
 
@@ -889,6 +890,31 @@ namespace
     }
 }
 
+// ---------- отношения педов ко второму CJ ----------
+namespace
+{
+    // Банды, копы и прохожие относятся ко второму игроку (тип PLAYER2) так же, как к тебе (PLAYER1):
+    // Grove уважают, враждебные банды ненавидят — как сейчас выставили скрипты игры.
+    // Скрипты меняют отношения по ходу сюжета, поэтому повторяем раз в секунду.
+    uint64_t g_nextRelUs = 0;
+    void MirrorPlayer2Relations()
+    {
+        if(!g_pedTypesSym || g_ctx.now < g_nextRelUs) return;
+        g_nextRelUs = g_ctx.now + 1000000;
+        uintptr_t base = *(uintptr_t*)g_pedTypesSym;
+        if(!base) return;
+        int changed = 0;
+        for(int t = 0; t < 32; ++t)
+            for(int a = 0; a < 5; ++a)
+            {
+                uint32_t& m = *(uint32_t*)(base + (uintptr_t)t * 20 + (uintptr_t)a * 4);
+                uint32_t want = (m & 1u) ? (m | 2u) : (m & ~2u);
+                if(want != m) { m = want; ++changed; }
+            }
+        if(changed) Log(false, "[ОТНОШЕНИЯ] педы теперь относятся ко второму CJ как к тебе (изменено %d)", changed);
+    }
+}
+
 // ---------- подробный лог ----------
 namespace
 {
@@ -1228,6 +1254,7 @@ bool Install(void* h, FLogger* log)
     g_log = log;
     g_vehPoolSym = aml->GetSym(h, "_ZN6CPools15ms_pVehiclePoolE");
     g_libBase = aml->GetLib("libGTASA.so");
+    g_pedTypesSym = aml->GetSym(h, "_ZN8CPedType13ms_apPedTypesE");
     if(!VehiclesReady() || !CombatReady())
     {
         Log(true, "Машины/оружие: не все функции игры найдены — кооп только пешком");
@@ -1364,6 +1391,7 @@ void Frame(const Ctx& c)
     UpdateCarInput();
     UpdateCombat();
     UpdateWanted();
+    if(c.remote) MirrorPlayer2Relations();
     TraceTransitions();
     DebugTick();
 }
