@@ -43,6 +43,17 @@ namespace coop {
     void SetFriendlyFire(bool) {}
     void SetSharedWanted(bool) {}
     void GiveWeapon(bool, int, int) {}
+    void MenuTick() {}
+    bool g_joinDemo = false;
+    JoinProgress GetJoinProgress()
+    {
+        JoinProgress j;
+        if(g_joinDemo) { j.active = true; j.percent = 47; snprintf(j.title, sizeof(j.title), "Подключение к миру хоста");
+                         snprintf(j.detail, sizeof(j.detail), "Получаю мир хоста: 84 из 190 КБ"); }
+        return j;
+    }
+    void CancelJoin() {}
+    bool MenuUpdateTick() { return false; }
     bool CanGiveToFriend() { return true; }
     bool PopNotice(char*, size_t) { return false; }
     bool GameLoaded() { return true; }
@@ -188,6 +199,8 @@ int main(int argc, char** argv)
     Tap(cx, card(2)); Frames(0.9); Save("host.ppm");
     Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.6); Save("weapons.ppm");   // «Оружие» у хоста
     Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.4);
+    coop::g_joinDemo = true; Frames(0.6); Save("joining.ppm"); coop::g_joinDemo = false;
+    overlay::Open(); Frames(0.6);
 
     // слой поверх игры: закрываем меню крестиком, затем запрос, подключение, разговор
     overlay::Render2dStuff = NoR2d;

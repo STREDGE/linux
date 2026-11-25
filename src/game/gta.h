@@ -148,6 +148,7 @@ namespace gta
     extern uintptr_t (*FindPlayerWanted)(int player);
     extern void      (*WantedSetLevel)(uintptr_t wanted, int level);
     extern void      (*WantedCheatLevel)(uintptr_t wanted, int level);
+    extern void      (*PedTeleport)(uintptr_t ped, CVector to, bool clearOrientation);
     extern uintptr_t StreamingInfo; // CStreaming::ms_aInfoForModel
     extern uint8_t*  CurrArea;      // CGame::currArea
 

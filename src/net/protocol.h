@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 12;
+    constexpr uint8_t  kProtocolVersion = 13;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -25,6 +25,9 @@ namespace net
         PKT_SHOT         = 11,// выстрел: повторить у друга (звук, вспышка, след пули)
         PKT_RELIABLE     = 12,// событие с подтверждением (урон и т.п.), повтор до ACK
         PKT_ACK          = 13,// подтверждение PKT_RELIABLE
+        PKT_WORLD_REQ    = 14,// клиент -> хост: пришли свой мир (сохранение), я загружусь в него
+        PKT_WORLD_CHUNK  = 15,// хост -> клиент: кусок сохранения
+        PKT_WORLD_ACK    = 16,// клиент -> хост: кусок получен
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -182,6 +185,22 @@ namespace net
         Header   hdr;
         uint32_t seq;
     };
+
+    // Передача мира хоста (файл сохранения) — куски с подтверждением
+    struct WorldReqPacket   { Header hdr; uint32_t nonce; };
+    constexpr int kWorldChunkMax = 1024;   // с заголовками < 1280 (MTU Tailscale)
+    struct WorldChunkPacket
+    {
+        Header   hdr;
+        uint32_t nonce;           // номер передачи (новая просьба — новая передача)
+        uint32_t total;           // размер файла
+        uint32_t offset;
+        uint16_t len;
+        uint16_t pad;
+        uint8_t  data[kWorldChunkMax];
+    };
+    constexpr int kWorldChunkHeaderSize = (int)sizeof(Header) + 16;
+    struct WorldAckPacket   { Header hdr; uint32_t nonce; uint32_t offset; };
 
     constexpr int kVoiceMaxBytes = 255;
     struct VoicePacket            // шлётся только заголовок + len байт данных

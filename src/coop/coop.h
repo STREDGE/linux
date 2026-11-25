@@ -72,6 +72,14 @@ namespace coop
     bool CanGiveToFriend();                                          // хост и друг на связи
     bool PopNotice(char* out, size_t len);                           // «Хост выдал тебе …» и т.п.
 
+    // Сеть, пока игра не загружена (главное меню): вызывать каждый кадр меню
+    void MenuTick();
+    // Экран «Подключение к миру хоста NN %» (у друга)
+    struct JoinProgress { bool active = false; int percent = 0; char title[96] = ""; char detail[160] = ""; };
+    JoinProgress GetJoinProgress();
+    void CancelJoin();                                               // «Отмена» на экране подключения
+    bool MenuUpdateTick();                                           // из MobileMenu::Update; true — меню закрыто, идёт загрузка мира хоста
+
     // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
     // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).
     bool      GameLoaded();                 // игрок на карте (сейв загружен)

@@ -52,6 +52,7 @@ namespace gta
     uintptr_t (*FindPlayerWanted)(int)                                 = nullptr;
     void      (*WantedSetLevel)(uintptr_t, int)                        = nullptr;
     void      (*WantedCheatLevel)(uintptr_t, int)                      = nullptr;
+    void      (*PedTeleport)(uintptr_t, CVector, bool)                 = nullptr;
     uintptr_t StreamingInfo = 0;
     uint8_t*  CurrArea = nullptr;
 
@@ -124,6 +125,7 @@ namespace gta
         c &= Resolve(h, (void**)&WantedSetLevel,        "_ZN7CWanted14SetWantedLevelEi");
         c &= Resolve(h, (void**)&WantedCheatLevel,      "_ZN7CWanted16CheatWantedLevelEi");
         Resolve(h, (void**)&CurrArea, "_ZN5CGame8currAreaE");
+        Resolve(h, (void**)&PedTeleport, "_ZN4CPed8TeleportE7CVectorh");
         g_vehOk = v; g_combatOk = c && v;   // урону нужны и машины (TaskNew, модели)
         return ok;
     }

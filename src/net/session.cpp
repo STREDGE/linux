@@ -439,6 +439,15 @@ namespace net
             case PKT_SHOT:
                 if(len == sizeof(ShotPacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
+            case PKT_WORLD_REQ:
+                if(len == sizeof(WorldReqPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_WORLD_ACK:
+                if(len == sizeof(WorldAckPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_WORLD_CHUNK:
+                if(len >= kWorldChunkHeaderSize && m_gameSink) m_gameSink(h->type, data, len);
+                break;
 
             case PKT_RELIABLE:
                 if(len >= kReliableHeaderSize)

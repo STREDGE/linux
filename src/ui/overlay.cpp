@@ -602,6 +602,38 @@ namespace
 
     void Close() { if(!g_closing) { g_closing = true; g_closeAt = g_now; } }
 
+    // ---------- экран «Подключение к миру хоста» (у друга) ----------
+    void DrawJoin()
+    {
+        coop::JoinProgress jp = coop::GetJoinProgress();
+        if(!jp.active) return;
+        if(g_open && !g_closing && jp.percent >= 15) Close();   // своё меню CO-OP закрываем — дальше экран загрузки
+        const float Wd = W(), Hd = H();
+        DL()->AddRectFilled(ImVec2(0, 0), ImVec2(Wd, Hd), C(Rgb{ 4, 6, 10 }, 0.78f));
+        float w = CW(56), h = U(34);
+        ImVec2 a(Wd * 0.5f - w * 0.5f, Hd * 0.5f - h * 0.5f), b(a.x + w, a.y + h);
+        Panel(a, b, U(2), kPanel);
+        DL()->AddRectFilled(ImVec2(a.x, a.y), ImVec2(b.x, a.y + U(0.6f)), C(kGold));
+        float px = a.x + CW(2.4f), pw = w - CW(4.8f), y = a.y + U(3);
+        Text(F_SMALL, ImVec2(px, y), C(kGold), "CO-OP"); y += U(4);
+        Text(F_HEAD, ImVec2(px, y), C(kInk), jp.title); y += U(7.5f);
+        Text(F_BODY, ImVec2(px, y), C(kDim), jp.detail, pw); y += U(7);
+        // полоса
+        ImVec2 ba(px, y), bb(px + pw, y + U(3));
+        DL()->AddRectFilled(ba, bb, C(kPanel2), U(1.5f));
+        float k = Clamp01(jp.percent / 100.0f);
+        if(k > 0) DL()->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * k, bb.y), C(kGrove), U(1.5f));
+        char pct[16]; snprintf(pct, sizeof(pct), "%d %%", jp.percent);
+        ImVec2 ps = TextSize(F_KEY, pct);
+        y = bb.y + U(1.6f);
+        Text(F_KEY, ImVec2(px, y), C(kGrove), pct);
+        const char* cl = "Отмена";
+        float cw = ChipWidth(cl) + U(2);
+        bool cancel = false;
+        Chip(ImVec2(px + pw - cw, y - U(0.4f)), ImVec2(px + pw, y + ps.y + U(0.4f)), cl, &cancel);
+        if(cancel) { coop::CancelJoin(); Toast("Подключение отменено"); }
+    }
+
     // ---------- выдача оружия (только хост) ----------
     struct WeapItem { int id; const char* name; bool melee; };
     const WeapItem kWeaps[] = {
@@ -1450,6 +1482,7 @@ namespace
             g_s = 1.0f;
         }
         if(!g_edit) DrawRequest();
+        DrawJoin();
         imgui_rw::Render();
     }
 }
@@ -1459,6 +1492,7 @@ namespace
 DECL_HOOKv(MobileMenuRender, uintptr_t self)
 {
     MobileMenuRender(self);
+    coop::MenuTick();                 // сеть в главном меню (подключение к хосту до загрузки игры)
     coop::KeepWorldRunningInMenu();   // в коопе меню не ставит игру на паузу
     Frame(true);                      // меню CO-OP (если открыто) + запросы и уведомления
 }
@@ -1532,6 +1566,7 @@ DECL_HOOKv(Render2dStuff)
 static double g_blockGameMenuUntil = 0;
 DECL_HOOKv(MobileMenuUpdate, uintptr_t self)
 {
+    if(coop::MenuUpdateTick()) return; // мир хоста получен в главном меню — загрузка (как «Продолжить»), меню уже закрыто
     double now = NowSec();
     if(g_resumeGame && !g_open && Menu_SwitchOffToGame)
     {   // «Экран»: сразу в игру, там откроется редактор

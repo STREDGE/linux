@@ -14,6 +14,7 @@
 #include "voice/voice.h"
 #include "net/sacoop_api.h"
 #include "coop/sync.h"
+#include "coop/world.h"
 #include <mod/interface.h>
 
 using namespace gta;
@@ -60,6 +61,7 @@ namespace
     bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
     bool      g_friendlyFire = false;  // свой тумблер «огонь по своим»
     bool      g_sharedWanted = true;   // свой тумблер «общий розыск»
+    uint64_t  g_lastGameFrameUs = 0;   // когда последний раз шёл игровой кадр (иначе — меню, сеть из MenuTick)
     struct GiveReq { bool toFriend; int weapon, ammo; };
     std::vector<GiveReq> g_giveQueue;   // выдача оружия из меню (под g_cfgMutex)
     std::vector<net::Event> g_echoEvents;
@@ -432,6 +434,7 @@ namespace
 
         DespawnRemote("смена режима");
         sync::Reset("смена режима");
+        world::OnSessionReset();
         g_session.Stop();
         voice::Stop();
         memset(g_echo, 0, sizeof(g_echo));
@@ -561,6 +564,9 @@ namespace
         }
 
         g_session.Poll();
+        g_lastGameFrameUs = now;
+        world::Tick(g_cfg.role, g_session.Connected(), true, now);
+        world::RunDeferredLoad(false);
         if(now >= g_nextSendUs)
         {
             g_session.SendPlayerState(me);
@@ -574,6 +580,22 @@ namespace
         sc.rs = (rs.valid && net::Since(now, rs.receivedUs) < kStaleUs) ? &rs.pkt : nullptr;
         g_where = "синхронизация машин/оружия";
         sync::Frame(sc);
+
+        // Загрузились в мир хоста — встать рядом с ним (один раз)
+        if(world::TeleportPending() && sc.rs && !InVehicle(local) && PedTeleport)
+        {
+            const net::PlayerStatePacket& h = *sc.rs;
+            uint8_t myArea = CurrArea ? *CurrArea : 0;
+            if(h.area == myArea)
+            {
+                float hh = h.heading;
+                float side = (h.flags & net::PSF_IN_VEHICLE) ? 3.5f : 1.8f;
+                CVector to{ h.pos[0] + cosf(hh) * side, h.pos[1] + sinf(hh) * side, h.pos[2] + 0.5f };
+                PedTeleport(local, to, false);
+                Log(false, "[МИР] Перенесён к хосту: %.1f, %.1f, %.1f", to.x, to.y, to.z);
+                world::TeleportDone();
+            }
+        }
     }
 
     // Временно прячет второго CJ из слота игрока 2, чтобы игра
@@ -658,7 +680,13 @@ DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот �
 
 // Перед сохранением/загрузкой/рестартом второго CJ убираем,
 // чтобы он не попал в сохранение и не остался висящим указателем.
-DECL_HOOK(bool, GenericLoad, bool& ok)      { g_localSinceUs = 0; DespawnRemote("загрузка игры"); sync::Reset("загрузка игры"); return GenericLoad(ok); }
+DECL_HOOK(bool, GenericLoad, bool& ok)
+{
+    g_localSinceUs = 0; DespawnRemote("загрузка игры"); sync::Reset("загрузка игры");
+    bool r = GenericLoad(ok);
+    world::AfterGameLoaded();
+    return r;
+}
 DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote("рестарт игры");  sync::Reset("рестарт игры");  ShutDownForRestart(); }
 
 const char* Where() { return g_where; }
@@ -680,6 +708,12 @@ namespace
     SACoopNetApi g_netApi = { 1, Api_GetRole, Api_Connected, Api_Send, Api_SetReceiver, Api_PeerNick, Api_MyNick };
 }
 
+static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
+{
+    if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK) world::OnPacket(type, data, len);
+    else sync::OnPacket(type, data, len);
+}
+
 bool Install(void* h, FLogger* log)
 {
     g_log = log;
@@ -689,8 +723,9 @@ bool Install(void* h, FLogger* log)
     voice::Init(log);
     g_session.SetVoiceSink(voice::PushReceivedFrame);
     g_session.SetModSink(ModSinkDispatch);
-    g_session.SetGameSink(sync::OnPacket);
+    g_session.SetGameSink(GameSinkDispatch);
     sync::SetSession(&g_session);
+    world::SetSession(&g_session);
     RegisterInterface(SACOOP_NET_INTERFACE, &g_netApi);
     Log(false, "Канал данных для других модов (SACoopNet) зарегистрирован");
     if(!gta::Init(h, 0))
@@ -732,6 +767,7 @@ bool Install(void* h, FLogger* log)
         aml->Hook((void*)aml->GetSym(h, d.sym), d.fn, d.orig);
     g_origGetSprint = PadGetSprint;
     sync::Install(h, g_log);   // машины, оружие, урон (если чего-то нет — кооп пешком, как раньше)
+    world::Install(h, g_log);  // зайти сразу в мир хоста
 
     Log(false, "Кооп установлен: перехватов %d", (int)(sizeof(hooks) / sizeof(hooks[0])));
     return true;
@@ -847,7 +883,41 @@ void GiveWeapon(bool toFriend, int weapon, int ammo)
     g_giveQueue.push_back(GiveReq{ toFriend, weapon, ammo });
 }
 bool CanGiveToFriend() { return g_cfg.role == net::Role::Host && g_session.Connected(); }
-bool PopNotice(char* out, size_t len) { return sync::PopNotice(out, (int)len); }
+bool PopNotice(char* out, size_t len) { return world::PopNotice(out, len) || sync::PopNotice(out, (int)len); }
+
+void MenuTick()
+{
+    uint64_t now = net::NowUs();
+    if(g_lastGameFrameUs && net::Since(now, g_lastGameFrameUs) < 300000) return;   // игра идёт — всё в OnFrame
+    if(SlotPed(0)) return;                                                          // игра загружена (пауза)
+    ApplyPendingConfig();
+    if(g_cfg.role != net::Role::Host && g_cfg.role != net::Role::Client) return;
+    g_session.Poll();
+    world::Tick(g_cfg.role, g_session.Connected(), false, now);
+}
+
+bool MenuUpdateTick() { return world::RunDeferredLoad(true); }
+
+JoinProgress GetJoinProgress()
+{
+    JoinProgress jp;
+    bool pending;
+    { std::lock_guard<std::mutex> lock(g_cfgMutex); pending = g_hasPending; }
+    if(pending || g_cfg.role != net::Role::Client || !g_session.Running()) return jp;
+    world::Progress p = world::GetProgress(g_session.GetLink());
+    jp.active = p.active; jp.percent = p.percent;
+    snprintf(jp.title, sizeof(jp.title), "%s", p.title);
+    snprintf(jp.detail, sizeof(jp.detail), "%s", p.detail);
+    return jp;
+}
+
+void CancelJoin()
+{
+    net::Config c = GetConfig();
+    c.role = net::Role::Off;
+    SetConfig(c);
+    Log(false, "[МИР] Подключение отменено игроком");
+}
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }
