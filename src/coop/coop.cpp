@@ -17,6 +17,8 @@
 #include "coop/world.h"
 #include "coop/crowd.h"
 #include "coop/mission.h"
+#include "net/tailscale.h"
+#include <stdarg.h>
 #include <mod/interface.h>
 
 using namespace gta;
@@ -427,6 +429,90 @@ namespace
         return g_echoRemote;
     }
 
+    // ---------- встроенный Tailscale (точка хоста, поиск по ID) ----------
+    constexpr int kTsPort = 7777;          // порт точки в сети Tailscale
+    bool     g_tsHost = false;             // хост: точку держим открытой
+    int      g_tsHostBridge = 0;
+    bool     g_tsClientWait = false;       // друг: ищем точку хоста по ID
+    char     g_tsClientId[8] = "";
+    uint64_t g_tsNextTryUs = 0;
+    char     g_tsInfo[192] = "";           // что сейчас происходит (для меню)
+    int      g_tsLastFind = -9;
+    ts::State g_tsLastState = ts::State::Off;
+
+    bool IsPointId(const char* s)
+    {
+        if(!s || strlen(s) != 6) return false;
+        for(int i = 0; i < 6; ++i) if(s[i] < '0' || s[i] > '9') return false;
+        return true;
+    }
+    void TsInfo(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+    void TsInfo(const char* fmt, ...)
+    {
+        va_list a; va_start(a, fmt); vsnprintf(g_tsInfo, sizeof(g_tsInfo), fmt, a); va_end(a);
+    }
+
+    void TsTick(uint64_t now)
+    {
+        if(!g_tsHost && !g_tsClientWait) return;
+        if(now < g_tsNextTryUs) return;
+        g_tsNextTryUs = now + 500000;
+        ts::Status st = ts::GetStatus();
+        if(st.state != g_tsLastState)
+        {
+            g_tsLastState = st.state;
+            Log(st.state == ts::State::Error, "[TAILSCALE] %s%s%s", ts::StateText(st.state), st.error[0] ? ": " : "", st.error);
+            if(st.state == ts::State::Running) Log(false, "[TAILSCALE] Мой адрес в сети: %s", st.ip);
+        }
+        if(st.state != ts::State::Running)
+        {
+            if(st.state == ts::State::NeedsLogin) TsInfo("Войди в Tailscale (один раз) — кнопка «Войти»");
+            else if(st.state == ts::State::NeedsApproval) TsInfo("Телефон ждёт одобрения в аккаунте Tailscale (сайт → Machines)");
+            else if(st.state == ts::State::Error) TsInfo("Tailscale: %s", st.error);
+            else TsInfo("Tailscale %s", ts::StateText(st.state));
+            return;
+        }
+        if(g_tsHost && !g_tsHostBridge)
+        {
+            int p = ts::OpenBridge(kTsPort, g_cfg.port);
+            if(p > 0)
+            {
+                g_tsHostBridge = p;
+                Log(false, "[TAILSCALE] Точка открыта: ID %s (%s:%d) → игра 127.0.0.1:%u", g_cfg.myId, st.ip, kTsPort, (unsigned)g_cfg.port);
+                TsInfo("Точка открыта — жду друга");
+            }
+            else if(p < 0) TsInfo("Не удалось открыть точку: %s", st.error);
+        }
+        else if(g_tsHost) TsInfo(g_session.Connected() ? "Друг в лобби" : "Точка открыта — жду друга");
+        if(g_tsClientWait)
+        {
+            char ip[64] = "";
+            int r = ts::FindHost(g_tsClientId, ip, sizeof(ip));
+            if(r != g_tsLastFind)
+            {
+                g_tsLastFind = r;
+                Log(false, "[TAILSCALE] Точка %s: %s%s", g_tsClientId,
+                    r == 1 ? "в сети, адрес " : r == 2 ? "есть, но выключена" : r == 0 ? "нет в аккаунте" : "сеть не готова", r == 1 ? ip : "");
+            }
+            if(r == 1)
+            {
+                int p = ts::OpenBridge(kTsPort, 0);
+                if(p > 0)
+                {
+                    ts::SetPeer(ip, kTsPort);
+                    net::Config c = g_cfg;
+                    snprintf(c.hostAddress, sizeof(c.hostAddress), "127.0.0.1");
+                    c.port = (uint16_t)p; c.relay[0] = 0;
+                    if(g_session.Start(c, g_log)) TsInfo("Нашёл точку %s — стучусь к хосту", g_tsClientId);
+                    else TsInfo("Сеть не запустилась");
+                    g_tsClientWait = false;
+                }
+            }
+            else if(r == 2) { TsInfo("Точка %s выключена — пусть хост нажмёт «Открыть точку»", g_tsClientId); g_tsNextTryUs = now + 2000000; }
+            else if(r == 0) { TsInfo("Точки %s нет. Вы оба должны войти в один аккаунт Tailscale", g_tsClientId); g_tsNextTryUs = now + 2000000; }
+        }
+    }
+
     void ApplyPendingConfig()
     {
         net::Config c;
@@ -448,6 +534,8 @@ namespace
         g_echoRemote = net::RemoteState();
         g_echoAnnounced = false;
         g_cfg = c;
+        g_tsHost = false; g_tsHostBridge = 0; g_tsClientWait = false; g_tsLastFind = -9; g_tsInfo[0] = 0;
+        ts::CloseBridge();
 
         switch(c.role)
         {
@@ -460,7 +548,22 @@ namespace
             case net::Role::Host:
             case net::Role::Client:
                 Log(false, "Режим: %s", c.role == net::Role::Host ? "хост" : "подключение к хосту");
+                if(c.role == net::Role::Client && !c.relay[0] && IsPointId(c.hostAddress))
+                {   // друг ввёл ID точки: сначала встроенный Tailscale находит хоста
+                    snprintf(g_tsClientId, sizeof(g_tsClientId), "%s", c.hostAddress);
+                    g_tsClientWait = true; g_tsNextTryUs = 0;
+                    ts::Start(c.myId);
+                    TsInfo("Включаю Tailscale…");
+                    Log(false, "[TAILSCALE] Ищу точку хоста %s (мой ID %s)", g_tsClientId, c.myId);
+                    break;
+                }
                 if(!g_session.Start(c, g_log)) Log(true, "Сеть не запустилась — второй CJ не появится");
+                if(c.role == net::Role::Host && !c.relay[0])
+                {   // хост: открыть точку во встроенном Tailscale (обычный адрес тоже работает)
+                    g_tsHost = true; g_tsNextTryUs = 0;
+                    ts::Start(c.myId);
+                    TsInfo("Включаю Tailscale…");
+                }
                 break;
         }
     }
@@ -488,6 +591,7 @@ namespace
         g_where = "кадр мода: начало";
         ++g_frameNo;
         ApplyPendingConfig();
+        TsTick(net::NowUs());
         uint64_t now = net::NowUs();
         float dt = g_lastFrameUs ? (float)(now - g_lastFrameUs) / 1e6f : 0.0f;
         if(dt > 0.25f) dt = 0.25f;
@@ -720,7 +824,7 @@ namespace
 
 static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
 {
-    if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK) world::OnPacket(type, data, len);
+    if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK || type == net::PKT_LOBBY) world::OnPacket(type, data, len);
     else if(type == net::PKT_PEDS || type == net::PKT_WORLD_TIME) crowd::OnPacket(type, data, len);
     else if(type == net::PKT_BLIPS || (type == net::PKT_RELIABLE && len >= 1 && mission::HandlesReliable(data[0]))) mission::OnPacket(type, data, len);
     else sync::OnPacket(type, data, len);
@@ -907,6 +1011,7 @@ void MenuTick()
     if(g_lastGameFrameUs && net::Since(now, g_lastGameFrameUs) < 300000) return;   // игра идёт — всё в OnFrame
     if(SlotPed(0)) return;                                                          // игра загружена (пауза)
     ApplyPendingConfig();
+    TsTick(now);
     if(g_cfg.role != net::Role::Host && g_cfg.role != net::Role::Client) return;
     g_session.Poll();
     world::Tick(g_cfg.role, g_session.Connected(), false, now);
@@ -921,6 +1026,13 @@ JoinProgress GetJoinProgress()
     JoinProgress jp;
     bool pending;
     { std::lock_guard<std::mutex> lock(g_cfgMutex); pending = g_hasPending; }
+    if(!pending && g_cfg.role == net::Role::Client && g_tsClientWait)
+    {
+        jp.active = true; jp.percent = 3;
+        snprintf(jp.title, sizeof(jp.title), "Поиск точки хоста %s", g_tsClientId);
+        snprintf(jp.detail, sizeof(jp.detail), "%s", g_tsInfo[0] ? g_tsInfo : "Включаю Tailscale…");
+        return jp;
+    }
     if(pending || g_cfg.role != net::Role::Client || !g_session.Running()) return jp;
     world::Progress p = world::GetProgress(g_session.GetLink());
     jp.active = p.active; jp.percent = p.percent;
@@ -936,6 +1048,38 @@ void CancelJoin()
     SetConfig(c);
     Log(false, "[МИР] Подключение отменено игроком");
 }
+
+NetInfo GetNetInfo()
+{
+    NetInfo n;
+    ts::Status st = ts::GetStatus();
+    n.tsState = st.state;
+    snprintf(n.loginUrl, sizeof(n.loginUrl), "%s", st.loginUrl);
+    snprintf(n.tsIp, sizeof(n.tsIp), "%s", st.ip);
+    snprintf(n.info, sizeof(n.info), "%s", g_tsInfo);
+    net::Config c = GetConfig();
+    snprintf(n.myId, sizeof(n.myId), "%s", c.myId);
+    n.pointOpen = g_tsHostBridge > 0 && g_cfg.role == net::Role::Host;
+    n.searching = g_tsClientWait;
+    return n;
+}
+LobbyInfo GetLobbyInfo()
+{
+    LobbyInfo l;
+    l.active = (g_cfg.role == net::Role::Host || g_cfg.role == net::Role::Client) && g_session.Connected();
+    l.isHost = g_cfg.role == net::Role::Host;
+    snprintf(l.peerNick, sizeof(l.peerNick), "%s", g_session.PeerNick());
+    l.pingMs = g_session.LastRttMs();
+    l.inGame = SlotPed(0) != 0;
+    l.lobby = world::GetLobby();
+    return l;
+}
+std::vector<world::SaveEntry> ListSaves() { return world::ListSaves(); }
+const char* SavesFolder() { return world::SavesFolder(); }
+bool Launch(const char* path, const char* name, char* why, size_t whyLen) { return world::HostLaunch(path, name, why, whyLen); }
+
+void StartTailscale() { ts::Start(GetConfig().myId); }
+bool TailscaleLogout() { return ts::Logout(); }
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }

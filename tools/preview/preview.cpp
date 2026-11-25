@@ -62,7 +62,24 @@ namespace coop {
     void LockLocalControls(bool) {}
     uintptr_t HideRemoteBegin() { return 0; }
     void HideRemoteEnd(uintptr_t) {}
+    bool g_lobbyDemo = false;
+    NetInfo GetNetInfo() { NetInfo n; n.tsState = ts::State::Running; strcpy(n.tsIp, "100.101.24.7"); strcpy(n.myId, "482913");
+                           strcpy(n.info, g_role == net::Role::Host ? "Точка открыта — жду друга" : "Нашёл точку 482913 — стучусь к хосту"); n.pointOpen = true; return n; }
+    void StartTailscale() {}
+    bool TailscaleLogout() { return true; }
+    LobbyInfo GetLobbyInfo() { LobbyInfo l; l.active = g_lobbyDemo; l.isHost = g_role == net::Role::Host; strcpy(l.peerNick, "HOMIE_BE"); l.pingMs = 84; l.inGame = true;
+                               if(!l.isHost) { l.lobby.launchId = 0; l.lobby.hostInGame = true; } return l; }
+    std::vector<world::SaveEntry> ListSaves()
+    {
+        std::vector<world::SaveEntry> v;
+        const char* n[] = { "Кооп ячейка 1", "Кооп ячейка 2", "Мир хоста 2026-11-24 22-10", "GTASAsf3 из телефона", "100 процентов" };
+        for(int i = 0; i < 5; ++i) { world::SaveEntry e{}; strcpy(e.name, n[i]); strcpy(e.path, n[i]); e.size = 202000 + i * 1000; e.mtime = 1795000000 - i * 86400; v.push_back(e); }
+        return v;
+    }
+    const char* SavesFolder() { return "/storage/emulated/0/SA/SACoop/Сохранения"; }
+    bool Launch(const char*, const char*, char*, size_t) { return true; }
 }
+namespace ts { const char* StateText(State) { return "в сети"; } }
 namespace settings {
     Data Load() { Data d; d.net.role = g_role; strcpy(d.net.hostAddress, "100.87.12.40"); strcpy(d.net.nick, "SM-X710"); return d; }
     void Save(const Data&) {}
@@ -87,6 +104,10 @@ namespace platform {
     int HasPermission(const char*) { return 1; }
     bool RequestPermission(const char*) { return true; }
     bool OpenAppSettings() { return true; }
+    bool OpenUrl(const char*) { return true; }
+    bool PickFile(const char*) { return true; }
+    int  PickState(char*, size_t) { return 0; }
+    void PickReset() {}
 }
 
 // ---- программный растеризатор вместо RenderWare ----
@@ -199,6 +220,11 @@ int main(int argc, char** argv)
     Tap(cx, card(0)); Frames(0.9); Save("off.ppm");
     Tap(cx, card(1)); Frames(0.9); Save("solo.ppm");
     Tap(cx, card(2)); Frames(0.9); Save("host.ppm");
+    coop::g_lobbyDemo = true; g_connected = true; Frames(0.5);
+    Tap(W * 0.55f, H * 0.52f); Frames(0.3); Save("lobby_host.ppm");
+    g_role = net::Role::Client; Tap(cx, card(3)); Frames(0.6); Save("lobby_client.ppm");
+    coop::g_lobbyDemo = false; g_connected = false; g_role = net::Role::Host;
+    Tap(cx, card(2)); Frames(0.6);
     Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.6); Save("weapons.ppm");   // «Оружие» у хоста
     Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.4);
     coop::g_joinDemo = true; Frames(0.6); Save("joining.ppm"); coop::g_joinDemo = false;

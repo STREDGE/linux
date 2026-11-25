@@ -21,6 +21,15 @@ namespace platform
     // Открыть страницу этого приложения в настройках Android (там — «Разрешения»).
     bool OpenAppSettings();
 
+    // Открыть ссылку в браузере (вход в Tailscale). false — не удалось.
+    bool OpenUrl(const char* url);
+
+    // Выбор файла на телефоне (системное окно «Файлы»). Выбранный файл копируется в destDir.
+    bool PickFile(const char* destDir);
+    // 0 — ничего, 1 — выбирают, 2 — готово (out — путь к копии), -1 — отменили, -2 — ошибка (out — текст)
+    int  PickState(char* out, size_t len);
+    void PickReset();
+
     // Модель телефона (android.os.Build.MODEL) — ник по умолчанию. false — не удалось.
     bool DeviceModel(char* out, size_t len);
 

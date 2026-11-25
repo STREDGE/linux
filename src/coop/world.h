@@ -1,11 +1,19 @@
 #pragma once
-// «Зайти сразу в мир хоста»: друг жмёт «Подключиться» (хоть в главном меню) → хост сохраняет
-// свой текущий мир в отдельный файл (его ячейки не трогаются) → файл уходит другу кусками
-// → игра друга загружает этот файл вместо своего сохранения → друга ставит рядом с хостом.
-// Пока идёт подключение, у друга экран «Подключение к миру хоста NN %».
+// Мир для двоих и лобби.
+//  * Лобби: друг подключился → оба в лобби. Хост выбирает, во что играть: текущая игра,
+//    кооп-сохранение из папки SA/SACoop/Сохранения или файл с телефона — и жмёт «Запуск».
+//    Хост загружает выбранное у себя, тот же файл уходит другу кусками, друг загружается,
+//    его ставит рядом с хостом. У друга экран «Подключение к миру хоста NN %».
+//  * Кооп-сохранения отдельно от одиночных: пока идёт кооп-мир, все ячейки сохранения игры
+//    ведут в файлы SACoop_N.b (одиночные GTASAsfN.b не трогаются), а копия каждого
+//    сохранения кладётся в папку SA/SACoop/Сохранения — её видно в файлах телефона.
+//  * Без коопа ничего не меняется: обычная одиночная игра и её ячейки.
 
 #include <stdint.h>
 #include <stddef.h>
+#include <time.h>
+
+#include <vector>
 
 #include "net/session.h"
 
@@ -16,15 +24,15 @@ namespace coop { namespace world {
     bool Install(void* libHandle, FLogger* log);
     void SetSession(net::Session* s);
 
-    // Приём пакетов PKT_WORLD_* (вызывает coop из приёмника сессии)
+    // Приём пакетов PKT_WORLD_* и PKT_LOBBY (вызывает coop из приёмника сессии)
     void OnPacket(uint8_t type, const uint8_t* data, int len);
 
     // Каждый кадр (в игре — из coop::OnFrame, в меню — из coop::MenuTick)
     void Tick(net::Role role, bool connected, bool inGame, uint64_t now);
 
     void OnSessionReset();              // смена режима / разрыв
-    // Мир хоста получен: запустить загрузку. Из главного меню — в MobileMenu::Update (fromMenuUpdate),
-    // из игры — в игровом кадре.
+    // Загрузка (мир хоста у друга / выбранное сохранение у хоста). Из главного меню —
+    // в MobileMenu::Update (fromMenuUpdate), из игры — в игровом кадре.
     bool RunDeferredLoad(bool fromMenuUpdate);   // true — загрузка запущена
     void AfterGameLoaded();             // CGenericGameStorage::GenericLoad закончил
 
@@ -32,7 +40,23 @@ namespace coop { namespace world {
     bool TeleportPending();
     void TeleportDone();
 
-    void RequestSaveCopy();             // друг: «Сохранить мир хоста себе» (ячейка 8)
+    void RequestSaveCopy();             // друг: «Сохранить мир хоста себе» (ячейка 8 + папка)
+
+    // ---- лобби ----
+    struct SaveEntry { char name[96]; char path[320]; long size; time_t mtime; };
+    std::vector<SaveEntry> ListSaves();          // папка SA/SACoop/Сохранения, новые сверху
+    const char* SavesFolder();                   // полный путь папки (для подсказки)
+    // Хост: «Запуск». path == nullptr — текущая игра (хост уже играет). false — не вышло (why).
+    bool HostLaunch(const char* path, const char* name, char* why, size_t whyLen);
+    struct Lobby
+    {
+        uint32_t launchId = 0;
+        int      source = 0;            // net::LobbySource
+        bool     hostInGame = false, hostLoading = false;
+        char     saveName[64] = "";
+    };
+    Lobby GetLobby();                   // у хоста — своё, у друга — что прислал хост
+    bool CoopWorld();                   // идёт кооп-мир: сохранения — в кооп-ячейки
 
     struct Progress
     {

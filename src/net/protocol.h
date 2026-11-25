@@ -31,6 +31,7 @@ namespace net
         PKT_PEDS         = 17,// хост -> клиент: педы вокруг друга (10 раз/с)
         PKT_WORLD_TIME   = 18,// хост -> клиент: время и погода
         PKT_BLIPS        = 19,// хост -> клиент: метки миссии на карте (4 раза/с)
+        PKT_LOBBY        = 20,// хост -> клиент: лобби (что выбрано, «Запуск»), раз в секунду
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -317,6 +318,19 @@ namespace net
     };
     constexpr int kWorldChunkHeaderSize = (int)sizeof(Header) + 16;
     struct WorldAckPacket   { Header hdr; uint32_t nonce; uint32_t offset; };
+
+    // Лобби: хост выбирает сохранение и жмёт «Запуск» — launchId меняется, друг загружается
+    enum LobbySource : uint8_t { LOBBY_NONE = 0, LOBBY_CURRENT = 1, LOBBY_FILE = 2 };
+    struct LobbyPacket
+    {
+        Header   hdr;
+        uint32_t launchId;        // 0 — ещё не запускали
+        uint8_t  source;          // LobbySource
+        uint8_t  hostInGame;      // хост уже в игре
+        uint8_t  hostLoading;     // хост сам загружается
+        uint8_t  pad;
+        char     saveName[64];    // что выбрано / запущено (UTF-8)
+    };
 
     constexpr int kVoiceMaxBytes = 255;
     struct VoicePacket            // шлётся только заголовок + len байт данных

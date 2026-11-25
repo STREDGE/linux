@@ -113,6 +113,7 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char) C.int {
 		return -1
 	}
 	logFile, _ = os.OpenFile(filepath.Join(dir, "tailscale_log.txt"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true") // не отправлять журналы Tailscale в интернет
 	srv = &tsnet.Server{
 		Dir:      dir,
 		Hostname: name,

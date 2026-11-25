@@ -521,6 +521,9 @@ namespace net
             case PKT_WORLD_TIME:
                 if(len == sizeof(WorldTimePacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
+            case PKT_LOBBY:
+                if(len == sizeof(LobbyPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
             case PKT_BLIPS:
                 if(len >= kBlipsHeaderSize && m_gameSink) m_gameSink(h->type, data, len);
                 break;

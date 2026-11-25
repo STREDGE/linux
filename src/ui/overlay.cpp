@@ -188,9 +188,6 @@ namespace
     char      g_toast[192] = "";
     double    g_toastAt = -10;
 
-    char      g_myIp[32] = "";
-    bool      g_myIpOk = false;
-    double    g_myIpAt = -10;
 
     struct Ripple { ImVec2 c; double t; ImVec2 a, b; };
     std::vector<Ripple> g_ripples;
@@ -320,8 +317,8 @@ namespace
     const ModeInfo kModes[] = {
         { net::Role::Off,    "Выключено",       "Обычная игра" },
         { net::Role::Echo,   "Тест в одиночку", "Двойник повторяет тебя" },
-        { net::Role::Host,   "Хост",            "Друг подключается к тебе" },
-        { net::Role::Client, "Подключиться",    "К игре друга" },
+        { net::Role::Host,   "Создать игру",    "Твоя точка: друг входит по ID" },
+        { net::Role::Client, "Подключиться",    "По ID точки друга" },
     };
 
     float StatusPill(ImVec2 rightTop, float h)
@@ -534,14 +531,15 @@ namespace
                 else if(i == 9)
                 {
                     int dots = 0; for(char ch : g_ip) dots += ch == '.';
-                    if(!g_ip.empty() && g_ip.back() != '.' && dots < 3) g_ip += '.';
+                    if(!g_ip.empty() && g_ip.back() != '.' && dots < 3 && (dots > 0 || g_ip.size() <= 3)) g_ip += '.';
                     else g_ipShakeAt = g_now;
                 }
                 else
                 {
                     size_t dot = g_ip.rfind('.');
                     std::string last = dot == std::string::npos ? g_ip : g_ip.substr(dot + 1);
-                    if(last.size() < 3 && atoi((last + k).c_str()) <= 255) g_ip += k;
+                    if(dot == std::string::npos) { if(g_ip.size() < 6) g_ip += k; else g_ipShakeAt = g_now; }   // ID точки (6 цифр)
+                    else if(last.size() < 3 && atoi((last + k).c_str()) <= 255) g_ip += k;
                     else g_ipShakeAt = g_now;
                 }
             }
@@ -732,6 +730,300 @@ namespace
         if(fr) { coop::GiveWeapon(true, w.id, ammo); char t[128]; snprintf(t, sizeof(t), "Другу: %s%s", w.name, w.melee ? "" : " + патроны"); Toast(t); }
     }
 
+    // ---------- точка (встроенный Tailscale) и лобби ----------
+    std::vector<coop::world::SaveEntry> g_saves;
+    double g_savesAt = -100;
+    int    g_lobbySel = -2;             // -2 — ничего, -1 — текущая игра, 0.. — файл из списка
+    char   g_lobbySelPath[320] = "";
+    int    g_lobbyPage = 0;
+    bool   g_picking = false;
+    bool   g_loginAutoOpened = false;
+
+    bool LobbyShown()
+    {
+        coop::LobbyInfo l = coop::GetLobbyInfo();
+        return l.active && (g_sel == net::Role::Host || g_sel == net::Role::Client) &&
+               ((g_sel == net::Role::Host) == l.isHost);
+    }
+
+    void RefreshSaves(bool force)
+    {
+        if(!force && g_now - g_savesAt < 3.0) return;
+        g_savesAt = g_now;
+        g_saves = coop::ListSaves();
+        // выбор держим по пути (список мог сдвинуться)
+        if(g_lobbySel >= 0)
+        {
+            g_lobbySel = -2;
+            for(int i = 0; i < (int)g_saves.size(); ++i) if(!strcmp(g_saves[i].path, g_lobbySelPath)) g_lobbySel = i;
+        }
+    }
+
+    bool LaunchReady()
+    {
+        coop::LobbyInfo l = coop::GetLobbyInfo();
+        if(l.lobby.hostLoading) return false;
+        if(g_lobbySel == -1) return l.inGame;
+        return g_lobbySel >= 0 && g_lobbySel < (int)g_saves.size();
+    }
+
+    void DoLaunch()
+    {
+        char why[160] = "";
+        bool ok;
+        if(g_lobbySel == -1) ok = coop::Launch(nullptr, "Текущая игра хоста", why, sizeof(why));
+        else ok = g_lobbySel >= 0 && g_lobbySel < (int)g_saves.size() &&
+                  coop::Launch(g_saves[g_lobbySel].path, g_saves[g_lobbySel].name, why, sizeof(why));
+        if(ok) { Toast("Запуск! Друг загружается"); Close(); }
+        else { char t[200]; snprintf(t, sizeof(t), "Не запустилось: %s", why); Toast(t); }
+    }
+
+    // Строка состояния Tailscale + кнопка «Войти» / «Сменить аккаунт». Возвращает нижний край.
+    float TsStatusRow(ImVec2 a, float width, bool active)
+    {
+        coop::NetInfo ni = coop::GetNetInfo();
+        float h = U(8.5f);
+        ImVec2 b(a.x + width, a.y + h);
+        DL()->AddRectFilled(a, b, C(kPanel2), U(1.6f));
+        DL()->AddRect(a, b, C(kLine), U(1.6f), 0, U(0.3f));
+        Rgb dot = ni.tsState == ts::State::Running ? kGrove : ni.tsState == ts::State::Error ? kRed : kGold;
+        if(ni.tsState == ts::State::Off) dot = kDim;
+        ImVec2 dc(a.x + U(3), (a.y + b.y) * 0.5f);
+        DL()->AddCircleFilled(dc, U(1.0f), C(dot), 16);
+        const char* chip = nullptr;
+        if(ni.tsState == ts::State::NeedsLogin) chip = "Войти";
+        else if(ni.tsState == ts::State::Off && !active) chip = "Войти заранее";
+        else if(ni.tsState == ts::State::Running && !active) chip = "Сменить аккаунт";
+        float cw = chip ? ChipWidth(chip) : 0;
+        char text[256];
+        if(active && ni.info[0]) snprintf(text, sizeof(text), "%s", ni.info);
+        else if(ni.tsState == ts::State::Running) snprintf(text, sizeof(text), "Tailscale в сети · %s", ni.tsIp);
+        else snprintf(text, sizeof(text), "Tailscale: %s", ts::StateText(ni.tsState));
+        Text(F_SMALL, ImVec2(dc.x + U(2.2f), (a.y + b.y - TextSize(F_SMALL, "Ag").y) * 0.5f), C(kInk), text, width - U(8) - cw);
+        if(chip)
+        {
+            bool c = false;
+            Chip(ImVec2(b.x - U(1.2f) - cw, a.y + U(1.2f)), ImVec2(b.x - U(1.2f), b.y - U(1.2f)), chip, &c);
+            if(c)
+            {
+                if(ni.tsState == ts::State::NeedsLogin)
+                {
+                    if(ni.loginUrl[0] && platform::OpenUrl(ni.loginUrl)) Toast("Войди в Tailscale в браузере и вернись в игру");
+                    else Toast("Ссылка для входа ещё готовится — нажми через пару секунд");
+                }
+                else if(ni.tsState == ts::State::Off) { coop::StartTailscale(); Toast("Включаю Tailscale…"); }
+                else if(coop::TailscaleLogout()) Toast("Вышел из аккаунта — войди в нужный");
+            }
+        }
+        // вход нужен: один раз открываем браузер сами (как окно разрешения)
+        if(ni.tsState == ts::State::NeedsLogin && ni.loginUrl[0] && !g_loginAutoOpened && (active || g_open))
+        {
+            g_loginAutoOpened = true;
+            if(platform::OpenUrl(ni.loginUrl)) Toast("Войди в Tailscale (один раз) и вернись в игру");
+        }
+        return b.y;
+    }
+
+    void DrawHostConnect(float px, float y, float pw)
+    {
+        coop::Status st = coop::GetStatus();
+        coop::NetInfo ni = coop::GetNetInfo();
+        bool active = st.role == net::Role::Host && !st.pending;
+        Text(F_SMALL, ImVec2(px, y), C(kGold), "ТВОЙ ID · ПО НЕМУ ДРУГ НАЙДЁТ ТВОЮ ТОЧКУ"); y += U(3.8f);
+        const char* copyLbl = "Копировать";
+        float cw = ChipWidth(copyLbl);
+        ImVec2 ra(px, y), rb(px + pw, y + U(11));
+        char idText[16]; snprintf(idText, sizeof(idText), "%.3s %.3s", ni.myId, ni.myId[0] ? ni.myId + 3 : "");
+        IpReadout(ra, ImVec2(rb.x - cw - U(2.4f), rb.y), idText, false, false);
+        bool copy = false;
+        Chip(ImVec2(rb.x - cw, y + U(2.2f)), ImVec2(rb.x, rb.y - U(2.2f)), copyLbl, &copy);
+        if(copy)
+        {
+            if(platform::ClipboardSetText(ni.myId)) { char t[96]; snprintf(t, sizeof(t), "ID %s скопирован — отправь другу", ni.myId); Toast(t); }
+            else Toast("Не удалось скопировать");
+        }
+        y = rb.y + U(1.6f);
+        y = TsStatusRow(ImVec2(px, y), pw, active) + U(1.6f);
+        y = NickRow(ImVec2(px, y), pw) + U(1.6f);
+        if(!active)
+        {
+            const char* p = "Нажми «Открыть точку». Друг выбирает «Подключиться» и вводит этот ID. Вы оба входите в один аккаунт Tailscale (один раз).";
+            Text(F_SMALL, ImVec2(px, y), C(kDim), p, pw); y += TextSize(F_SMALL, p, pw).y + U(1.6f);
+        }
+        FriendlyFireRow(ImVec2(px, y), pw);
+    }
+
+    void DrawClientConnect(float px, float y, float pw)
+    {
+        coop::Status st = coop::GetStatus();
+        bool active = st.role == net::Role::Client && !st.pending;
+        float keysW = U(34);
+        float lw = pw - keysW - U(3);
+        Text(F_SMALL, ImVec2(px, y), C(kGold), "ID ТОЧКИ ДРУГА (6 ЦИФР)"); float ly = y + U(3.8f);
+        IpReadout(ImVec2(px, ly), ImVec2(px + lw, ly + U(11)), g_ip.c_str(), true, false);
+        ly += U(11) + U(2.0f);
+        bool paste = false, clear = false;
+        const char* l1 = "Вставить"; const char* l2 = "Стереть";
+        float w1 = ChipWidth(l1), w2 = ChipWidth(l2);
+        Chip(ImVec2(px, ly), ImVec2(px + w1, ly + U(6.4f)), l1, &paste);
+        Chip(ImVec2(px + w1 + U(1.6f), ly), ImVec2(px + w1 + U(1.6f) + w2, ly + U(6.4f)), l2, &clear);
+        ly += U(6.4f) + U(1.6f);
+        ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
+        ly = TsStatusRow(ImVec2(px, ly), lw, active) + U(1.4f);
+        if(!active)
+            Text(F_SMALL, ImVec2(px, ly), C(kDim), "ID пришлёт друг (кнопка «Копировать» у него). Можно и адрес Tailscale вида 100.x.x.x.", lw);
+        Keypad(ImVec2(px + pw - keysW, y), keysW);
+        if(paste)
+        {
+            char text[256], ip[32];
+            if(platform::ClipboardGetText(text, sizeof(text)))
+            {
+                std::string digits;
+                for(const char* c = text; *c; ++c) if(*c >= '0' && *c <= '9') digits += *c; else if(*c != ' ' && !digits.empty()) break;
+                if(platform::ExtractIPv4(text, ip, sizeof(ip))) { g_ip = ip; char t[96]; snprintf(t, sizeof(t), "Вставлено: %s", ip); Toast(t); }
+                else if(digits.size() == 6) { g_ip = digits; char t[96]; snprintf(t, sizeof(t), "Вставлен ID %s", digits.c_str()); Toast(t); }
+                else Toast("В буфере нет ID");
+            }
+            else Toast("В буфере пусто");
+        }
+        if(clear) g_ip.clear();
+    }
+
+    void FmtDate(time_t t, char* out, size_t len)
+    {
+        struct tm tmv; localtime_r(&t, &tmv);
+        strftime(out, len, "%d.%m %H:%M", &tmv);
+    }
+
+    void DrawLobby(float px, float y, float pw, float bottom)
+    {
+        coop::LobbyInfo l = coop::GetLobbyInfo();
+        coop::Status st = coop::GetStatus();
+        Text(F_SMALL, ImVec2(px, y), C(kGold), "ЛОББИ"); y += U(3.8f);
+        // игроки
+        {
+            char me[96], mate[128];
+            snprintf(me, sizeof(me), "%s%s", g_settings.net.nick, l.isHost ? " (хост)" : "");
+            if(l.pingMs >= 0) snprintf(mate, sizeof(mate), "%s%s · %d мс", l.peerNick, l.isHost ? "" : " (хост)", l.pingMs);
+            else snprintf(mate, sizeof(mate), "%s%s", l.peerNick, l.isHost ? "" : " (хост)");
+            float half = (pw - U(1.6f)) * 0.5f, h = U(8);
+            const char* names[2] = { me, mate };
+            for(int i = 0; i < 2; ++i)
+            {
+                ImVec2 a(px + i * (half + U(1.6f)), y), b(a.x + half, y + h);
+                DL()->AddRectFilled(a, b, C(kPanel2), U(1.6f));
+                DL()->AddRect(a, b, C(kGrove, 0.6f), U(1.6f), 0, U(0.3f));
+                ImVec2 dc(a.x + U(3), (a.y + b.y) * 0.5f);
+                DL()->AddCircleFilled(dc, U(1.0f), C(kGrove), 16);
+                Text(F_BODY, ImVec2(dc.x + U(2.2f), (a.y + b.y - TextSize(F_BODY, "Ag").y) * 0.5f), C(kInk), names[i], half - U(7));
+            }
+            y += h + U(2);
+        }
+        if(!l.isHost)
+        {
+            const char* t1; char t2[200];
+            if(l.lobby.launchId) { t1 = "Хост запустил игру"; snprintf(t2, sizeof(t2), "«%s» — загружаешься следом. Экран загрузки появится сам.", l.lobby.saveName); }
+            else { t1 = "Хост выбирает, во что играем"; snprintf(t2, sizeof(t2), "%s", l.lobby.hostInGame ? "Хост уже в игре. Когда он нажмёт «Запуск», ты загрузишься к нему."
+                                                                                                         : "Когда хост выберет сохранение и нажмёт «Запуск», у тебя начнётся загрузка."); }
+            Text(F_HEAD, ImVec2(px, y), C(kInk), t1); y += U(7);
+            Text(F_BODY, ImVec2(px, y), C(kDim), t2, pw); y += TextSize(F_BODY, t2, pw).y + U(2.4f);
+            const char* t3 = "Огонь по своим и общий розыск выбирает хост. Твои одиночные сохранения кооп не трогает: в кооп-игре сохранения идут в папку SA/SACoop/Сохранения.";
+            Text(F_SMALL, ImVec2(px, y), C(kDim), t3, pw);
+            (void)bottom;
+            return;
+        }
+
+        // ---- хост: во что играем ----
+        RefreshSaves(false);
+        Text(F_SMALL, ImVec2(px, y + U(1.6f)), C(kGold), "ВО ЧТО ИГРАЕМ");
+        float cx = px + TextSize(F_SMALL, "ВО ЧТО ИГРАЕМ").x + U(3);
+        float ch = U(6.4f);
+        auto chip = [&](const char* label) { float w = ChipWidth(label); bool c = false; Chip(ImVec2(cx, y), ImVec2(cx + w, y + ch), label, &c); cx += w + U(1.4f); return c; };
+        if(chip(g_picking ? "Выбор файла…" : "Из файла телефона"))
+        {
+            if(!g_picking && platform::PickFile(coop::SavesFolder())) { g_picking = true; Toast("Выбери файл сохранения GTA SA (.b)"); }
+            else if(!g_picking) Toast("Окно выбора файла не открылось");
+        }
+        if(chip("Обновить")) { RefreshSaves(true); Toast("Список обновлён"); }
+        y += ch + U(1.6f);
+
+        // выбор файла: результат
+        if(g_picking)
+        {
+            char res[400];
+            int ps = platform::PickState(res, sizeof(res));
+            if(ps == 2)
+            {
+                g_picking = false; platform::PickReset();
+                RefreshSaves(true);
+                for(int i = 0; i < (int)g_saves.size(); ++i) if(!strcmp(g_saves[i].path, res)) { g_lobbySel = i; snprintf(g_lobbySelPath, sizeof(g_lobbySelPath), "%s", res); g_lobbyPage = i / 4; }
+                Toast("Файл добавлен в кооп-сохранения");
+            }
+            else if(ps < 0) { g_picking = false; platform::PickReset(); if(ps == -2) { char t[200]; snprintf(t, sizeof(t), "Файл не взят: %.150s", res); Toast(t); } }
+        }
+
+        // строки: «Текущая игра» + файлы
+        float rowH = U(7.2f), gap = U(1.1f);
+        float listBottom = bottom - U(5);
+        int rowsFit = (int)((listBottom - y + gap) / (rowH + gap));
+        if(rowsFit < 2) rowsFit = 2;
+        struct Row { int sel; const char* title; char sub[96]; };
+        std::vector<Row> rows;
+        if(l.inGame) { Row r{ -1, "Текущая игра", "" }; snprintf(r.sub, sizeof(r.sub), "продолжить с того места, где ты сейчас"); rows.push_back(r); }
+        for(int i = 0; i < (int)g_saves.size(); ++i)
+        {
+            Row r{ i, g_saves[i].name, "" };
+            char d[32]; FmtDate(g_saves[i].mtime, d, sizeof(d));
+            snprintf(r.sub, sizeof(r.sub), "%s · %ld КБ", d, g_saves[i].size / 1024);
+            rows.push_back(r);
+        }
+        int pages = rows.empty() ? 1 : (int)((rows.size() + rowsFit - 1) / rowsFit);
+        if(g_lobbyPage >= pages) g_lobbyPage = pages - 1;
+        if(g_lobbyPage < 0) g_lobbyPage = 0;
+        if(rows.empty())
+        {
+            const char* e = "Сохранений пока нет. Нажми «Из файла телефона» или положи файлы .b в папку SA/SACoop/Сохранения.";
+            Text(F_BODY, ImVec2(px, y), C(kDim), e, pw); y += TextSize(F_BODY, e, pw).y;
+        }
+        for(int k = g_lobbyPage * rowsFit; k < (int)rows.size() && k < (g_lobbyPage + 1) * rowsFit; ++k)
+        {
+            const Row& r = rows[k];
+            ImVec2 a(px, y), b(px + pw, y + rowH);
+            bool sel = g_lobbySel == r.sel, held = Held(a, b);
+            DL()->AddRectFilled(a, b, C(sel ? Rgb{ 20, 48, 28 } : held ? kLine : kPanel2), U(1.4f));
+            DL()->AddRect(a, b, C(sel ? kGrove : kLine), U(1.4f), 0, U(sel ? 0.5f : 0.3f));
+            ImVec2 ts = TextSize(F_BODY, r.title);
+            Text(F_BODY, ImVec2(a.x + U(2.4f), (a.y + b.y - ts.y) * 0.5f), C(sel ? kGrove : kInk), r.title, pw * 0.6f);
+            ImVec2 ss = TextSize(F_SMALL, r.sub);
+            Text(F_SMALL, ImVec2(b.x - U(2.4f) - ss.x, (a.y + b.y - ss.y) * 0.5f), C(kDim), r.sub);
+            if(Clicked(a, b))
+            {
+                g_lobbySel = r.sel;
+                if(r.sel >= 0) snprintf(g_lobbySelPath, sizeof(g_lobbySelPath), "%s", g_saves[r.sel].path);
+            }
+            y += rowH + gap;
+        }
+        // страницы и папка
+        float fy = bottom - U(4.6f);
+        char folder[200]; snprintf(folder, sizeof(folder), "Папка: SA/SACoop/Сохранения");
+        Text(F_SMALL, ImVec2(px, fy + U(1)), C(kDim), folder);
+        if(pages > 1)
+        {
+            char pg[32]; snprintf(pg, sizeof(pg), "%d / %d", g_lobbyPage + 1, pages);
+            const char* nx = "Дальше"; const char* pv = "Назад";
+            float wn = ChipWidth(nx), wp = ChipWidth(pv), wt = TextSize(F_SMALL, pg).x;
+            float x = px + pw - wn;
+            bool n = false, p = false;
+            Chip(ImVec2(x, fy), ImVec2(x + wn, fy + U(4.6f)), nx, &n);
+            x -= U(1.4f) + wt; Text(F_SMALL, ImVec2(x, fy + U(1)), C(kInk), pg);
+            x -= U(1.4f) + wp;
+            Chip(ImVec2(x, fy), ImVec2(x + wp, fy + U(4.6f)), pv, &p);
+            if(n && g_lobbyPage + 1 < pages) ++g_lobbyPage;
+            if(p && g_lobbyPage > 0) --g_lobbyPage;
+        }
+        (void)st;
+    }
+
     // ---------- кадр меню ----------
     void DrawMenu()
     {
@@ -862,60 +1154,9 @@ namespace
                     y = rb.y + U(1.6f);
                 }
             }
-            else if(g_sel == net::Role::Host)
-            {
-                if(g_now - g_myIpAt > 1.0) { g_myIpOk = platform::FindTailscaleIPv4(g_myIp, sizeof(g_myIp)); g_myIpAt = g_now; }
-                bool relay = g_settings.net.relay[0] != 0;
-                coop::Status cst = coop::GetStatus();
-                bool roomOk = relay && cst.relay && cst.room[0] && cst.role == net::Role::Host;
-                Text(F_SMALL, ImVec2(px, y), C(kGold), relay ? "КОД КОМНАТЫ (СЕРВЕР)" : "ТВОЙ АДРЕС В TAILSCALE"); y += U(3.8f);
-                const char* copyLbl = "Копировать";
-                float cw = ChipWidth(copyLbl);
-                ImVec2 ra(px, y), rb(px + pw, y + U(11));
-                const char* shown = relay ? (roomOk ? cst.room : "нажми «Открыть мир»") : (g_myIpOk ? g_myIp : "Tailscale выкл.");
-                bool okShown = relay ? roomOk : g_myIpOk;
-                IpReadout(ra, ImVec2(rb.x - cw - U(2.4f), rb.y), shown, false, !okShown);
-                bool copy = false;
-                Chip(ImVec2(rb.x - cw, y + U(2.2f)), ImVec2(rb.x, rb.y - U(2.2f)), copyLbl, &copy);
-                if(copy)
-                {
-                    if(!okShown) Toast(relay ? "Сначала нажми «Открыть мир» — появится код" : "Включи Tailscale — адреса пока нет");
-                    else if(platform::ClipboardSetText(shown)) { char t[192]; snprintf(t, sizeof(t), "%s %s скопирован", relay ? "Код" : "Адрес", shown); Toast(t); }
-                    else Toast("Не удалось скопировать");
-                }
-                y = rb.y + U(1.6f);
-                y = NickRow(ImVec2(px, y), pw) + U(2);
-                const char* p = relay ? "Отправь другу код комнаты. Он введёт его в «Подключиться», ты нажмёшь «Принять»."
-                              : g_myIpOk ? "Отправь этот адрес другу. Когда он постучится, ты увидишь запрос и нажмёшь «Принять»."
-                                         : "Включи Tailscale на телефоне — здесь появится твой адрес для друга.";
-                Text(F_BODY, ImVec2(px, y), C(kDim), p, pw); y += TextSize(F_BODY, p, pw).y + U(2.4f);
-                FriendlyFireRow(ImVec2(px, y), pw);
-            }
-            else // Client
-            {
-                float keysW = U(34);
-                float lw = pw - keysW - U(3);
-                Text(F_SMALL, ImVec2(px, y), C(kGold), g_settings.net.relay[0] ? "АДРЕС ХОСТА ИЛИ КОД КОМНАТЫ" : "АДРЕС ХОСТА"); float ly = y + U(3.8f);
-                IpReadout(ImVec2(px, ly), ImVec2(px + lw, ly + U(11)), g_ip.c_str(), true, false);
-                ly += U(11) + U(2.4f);
-                bool paste = false, clear = false;
-                const char* l1 = "Вставить"; const char* l2 = "Стереть";
-                float w1 = ChipWidth(l1), w2 = ChipWidth(l2);
-                Chip(ImVec2(px, ly), ImVec2(px + w1, ly + U(6.4f)), l1, &paste);
-                Chip(ImVec2(px + w1 + U(1.6f), ly), ImVec2(px + w1 + U(1.6f) + w2, ly + U(6.4f)), l2, &clear);
-                ly += U(6.4f) + U(1.6f);
-                ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
-                Text(F_SMALL, ImVec2(px, ly), C(kDim), g_settings.net.relay[0] ? "Код комнаты (6 цифр) или адрес Tailscale пришлёт друг." : "Адрес пришлёт друг: «Копировать» в его меню. Он начинается на 100.", lw);
-                Keypad(ImVec2(px + pw - keysW, y), keysW);
-                if(paste)
-                {
-                    char text[256], ip[32];
-                    if(platform::ClipboardGetText(text, sizeof(text)) && platform::ExtractIPv4(text, ip, sizeof(ip)))
-                    { g_ip = ip; char t[192]; snprintf(t, sizeof(t), "Вставлено: %s", ip); Toast(t); }
-                    else Toast("В буфере нет адреса");
-                }
-                if(clear) g_ip.clear();
-            }
+            else if(LobbyShown()) DrawLobby(px, y, pw, b.y - U(2));
+            else if(g_sel == net::Role::Host) DrawHostConnect(px, y, pw);
+            else DrawClientConnect(px, y, pw);
         }
 
         } // режимы и панель
@@ -924,12 +1165,19 @@ namespace
         {
             float k = anim(0.2f);
             float dy = (1 - k) * barH;
+            coop::Status bst = coop::GetStatus();
+            bool hostOn = bst.role == net::Role::Host && !bst.pending;
+            bool clientOn = bst.role == net::Role::Client && !bst.pending;
+            bool lobby = LobbyShown();
             const char* label = g_sel == net::Role::Off ? "Применить" : g_sel == net::Role::Echo ? "Запустить"
-                              : g_sel == net::Role::Host ? "Открыть мир" : "Подключиться";
-            bool enabled = g_sel != net::Role::Client || ValidIp(g_ip) || (g_settings.net.relay[0] && RoomCode(g_ip));
+                              : g_sel == net::Role::Host ? (lobby ? "Запуск" : hostOn ? "Закрыть точку" : "Открыть точку")
+                              : (lobby ? "Отключиться" : clientOn ? "Отменить" : "Подключиться");
+            bool enabled = g_sel != net::Role::Client || clientOn || ValidIp(g_ip) || RoomCode(g_ip);
+            if(g_sel == net::Role::Host && lobby) enabled = LaunchReady();
             float bw = TextSize(F_HEAD, label).x + U(12);
             ImVec2 ba(x1 - bw, y1 - barH + U(1) + dy), bb(x1, y1 + dy);
-            const char* hint = enabled ? "Выбери режим и нажми кнопку справа" : "Введи адрес хоста полностью, например 100.87.12.40";
+            const char* hint = lobby ? (g_sel == net::Role::Host ? "Выбери, во что играем, и нажми «Запуск»" : "Хост выбирает сохранение")
+                             : enabled ? "Выбери режим и нажми кнопку справа" : "Введи ID точки друга: 6 цифр";
             ImVec2 hs = TextSize(F_SMALL, hint);
             float hx = x0;
             if(g_sel == net::Role::Client && coop::CanSaveHostWorld())
@@ -955,9 +1203,19 @@ namespace
             BigButton(ba, bb, label, enabled, &go);
             if(go)
             {
-                Apply();
-                Toast(g_sel == net::Role::Off ? "Кооп выключен" : g_sel == net::Role::Echo ? "Двойник появится в игре"
-                    : g_sel == net::Role::Host ? "Мир открыт — жду друга" : "Подключаюсь…");
+                if(g_sel == net::Role::Host && lobby) DoLaunch();
+                else if((g_sel == net::Role::Host && hostOn) || (g_sel == net::Role::Client && clientOn))
+                {   // закрыть точку / отменить / отключиться
+                    g_sel = net::Role::Off; g_selAt = g_now;
+                    Apply();
+                    Toast("Кооп выключен");
+                }
+                else
+                {
+                    Apply();
+                    Toast(g_sel == net::Role::Off ? "Кооп выключен" : g_sel == net::Role::Echo ? "Двойник появится в игре"
+                        : g_sel == net::Role::Host ? "Открываю точку…" : "Ищу точку друга…");
+                }
             }
         }
 

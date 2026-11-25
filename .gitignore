@@ -9,3 +9,4 @@ echo-test/
 sa-living/obj/
 sa-living/libs/
 !sa-living/release/*.so
+/third_party/tsbridge/

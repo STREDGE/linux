@@ -4,10 +4,15 @@
 #include <mod/logger.h>
 #include <mod/flogger.h>
 
+#include <dirent.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -52,9 +57,27 @@ namespace
 
     // --- подмена имени файла сохранения ---
     bool g_hostSaving = false;              // хост сохраняет мир для друга
-    bool g_loadRedirect = false;            // друг грузит мир хоста
-    bool g_protect = false;                 // друг в мире хоста: автосохранение не трогает его ячейки
+    bool g_loadRedirect = false;            // грузим мир коопа (ячейка kLoadSlot → g_loadName)
+    const char* g_loadName = kClientFile;
+    bool g_coopWorld = false;               // идёт кооп-мир: все ячейки — кооп-файлы SACoop_N.b
     int  g_origResume = -1;
+    net::Role g_role = net::Role::Off;
+
+    // --- видимая папка: SA/SACoop/Сохранения ---
+    char g_folder[256] = "";
+    char g_savesDir[320] = "";
+
+    // --- лобби ---
+    uint32_t g_launchId = 0;                // хост: номер «Запуска»; друг: что прислал хост
+    int      g_launchSource = 0;
+    char     g_launchName[64] = "";
+    std::vector<uint8_t> g_launchFile;      // хост: файл, который получит друг (вместо свежего сохранения)
+    bool     g_hostWantLoad = false;        // хост: загрузить выбранный файл
+    bool     g_hostLoading = false;
+    uint64_t g_nextLobbyUs = 0;
+    uint32_t g_seenLaunch = 0;              // друг: на какой «Запуск» уже загрузились
+    bool     g_lobbyHostInGame = false, g_lobbyHostLoading = false;
+    bool     g_inGame = false;
 
     std::vector<std::string> g_notices;
     void Notice(const char* t) { if(g_notices.size() < 8) g_notices.push_back(t); }
@@ -113,11 +136,74 @@ namespace
 
     void SendGame(const void* p, int len) { if(g_session) g_session->SendGame(p, len); }
 
+    bool MakeFolders()
+    {
+        if(g_savesDir[0]) return true;
+        const char* root = aml->GetInternalPath();
+        if(!root || !root[0]) return false;
+        snprintf(g_folder, sizeof(g_folder), "%s/SA/SACoop", root);
+        char sa[300]; snprintf(sa, sizeof(sa), "%s/SA", root); mkdir(sa, 0777);
+        mkdir(g_folder, 0777);
+        snprintf(g_savesDir, sizeof(g_savesDir), "%s/Сохранения", g_folder);
+        if(mkdir(g_savesDir, 0777) != 0 && errno != EEXIST)
+        {
+            Log(true, "[ЛОББИ] Не удалось создать %s: %s", g_savesDir, strerror(errno));
+            g_savesDir[0] = 0;
+            return false;
+        }
+        char readme[400]; snprintf(readme, sizeof(readme), "%s/ПРОЧТИ.txt", g_folder);
+        if(FILE* f = fopen(readme, "wb"))
+        {
+            fputs("SA Coop — папка мини-сервера (кооп)\n\n"
+                  "Сохранения/ — кооп-сохранения. Сюда попадает каждое сохранение, сделанное в кооп-игре\n"
+                  "  (у точки сохранения), и «Мир хоста …» — мир хоста, сохранённый другом себе.\n"
+                  "  Можно класть свои файлы сохранений GTA SA (.b) — хост увидит их в лобби.\n"
+                  "Одиночные сохранения игры (GTASAsf1…10.b) кооп не трогает.\n", f);
+            fclose(f);
+        }
+        return true;
+    }
+
+    bool ExportBytes(const char* name, const std::vector<uint8_t>& data)
+    {
+        if(!MakeFolders()) return false;
+        char path[512]; snprintf(path, sizeof(path), "%s/%s", g_savesDir, name);
+        FILE* f = fopen(path, "wb");
+        if(!f) { Log(true, "[ЛОББИ] Не могу записать %s: %s", path, strerror(errno)); return false; }
+        bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+        fclose(f);
+        Log(ok ? false : true, "[ЛОББИ] %s %s (%u КБ)", ok ? "Сохранено в папку:" : "Не удалось записать", path, (unsigned)(data.size() / 1024));
+        return ok;
+    }
+
+    bool ReadPath(const char* path, std::vector<uint8_t>& out)
+    {
+        FILE* f = fopen(path, "rb");
+        if(!f) return false;
+        fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+        if(n <= 0 || n > kMaxFile) { fclose(f); return false; }
+        out.resize(n);
+        bool ok = fread(out.data(), 1, n, f) == (size_t)n;
+        fclose(f);
+        return ok;
+    }
+
+    void CoopSlotName(int slot, char* out, size_t len) { snprintf(out, len, "SACoop_%d.b", slot + 1); }
+
     // ===== хост =====
     void HostTick(bool connected, bool inGame, uint64_t now)
     {
         if(!connected) return;
-        if(g_needSave && inGame)
+        if(g_needSave && !g_launchFile.empty())
+        {   // «Запуск» файла: друг получает выбранный файл как есть
+            g_needSave = false;
+            g_out = g_launchFile;
+            int n = Chunks((uint32_t)g_out.size());
+            g_outAcked.assign(n, 0); g_outSentUs.assign(n, 0);
+            g_outAckedCount = 0; g_outDoneLogged = false; g_lastPctNotice = -1;
+            Log(false, "[ЛОББИ] Отправляю другу «%s»: %u байт, %d кусков", g_launchName, (unsigned)g_out.size(), n);
+        }
+        if(g_needSave && inGame && !g_hostLoading)
         {
             g_needSave = false;
             uint64_t t0 = net::NowUs();
@@ -160,23 +246,34 @@ namespace
     }
 
     // ===== друг =====
-    void StartLoad()
+    // Загрузить файл коопа (у друга — мир хоста, у хоста — выбранное в лобби) через ячейку kLoadSlot
+    bool StartLoadFile(const char* file, const char* what)
     {
         g_origResume = g_lastResume ? *g_lastResume : -1;
+        g_loadName = file;
         g_loadRedirect = true;
         if(!CheckSlotDataValid(kLoadSlot, true))
         {
             g_loadRedirect = false;
-            g_cs = CState::Failed;
-            snprintf(g_failText, sizeof(g_failText), "Мир хоста не прошёл проверку игры");
-            Log(true, "[МИР] Игра не приняла файл мира хоста (CheckSlotDataValid) — загрузка отменена");
-            return;
+            Log(true, "[МИР] Игра не приняла файл «%s» (%s) — загрузка отменена", what, file);
+            return false;
         }
         if(g_lastResume) *g_lastResume = kLoadSlot;
         bool playing = MenuIsPlayingGame(true);
-        Log(false, "[МИР] Загружаю мир хоста (%s)", playing ? "из игры" : "из главного меню");
+        Log(false, "[МИР] Загружаю %s (%s)", what, playing ? "из игры" : "из главного меню");
         if(playing) MenuLoadSlot(kLoadSlot);
         MainMenuOnResume(nullptr);   // из меню: проверить, загрузить, закрыть меню; из игры: закрыть меню
+        return true;
+    }
+
+    void StartLoad()
+    {
+        if(!StartLoadFile(kClientFile, "мир хоста"))
+        {
+            g_cs = CState::Failed;
+            snprintf(g_failText, sizeof(g_failText), "Мир хоста не прошёл проверку игры");
+            return;
+        }
         g_cs = CState::LoadRequested;
     }
 
@@ -187,8 +284,16 @@ namespace
             g_copyReq = false; g_copyMode = true;
             g_cs = CState::Requesting; g_myNonce = (uint32_t)(now ^ (now >> 32)) | 1; g_nextReqUs = 0; g_startUs = now;
         }
-        if(!connected || (g_usedHostWorld && !g_copyMode)) return;
-        if(g_cs == CState::Idle) { g_cs = CState::Requesting; g_myNonce = (uint32_t)(now ^ (now >> 32)) | 1; g_nextReqUs = 0; g_startUs = now; }
+        if(!connected) return;
+        // хост нажал «Запуск» (новый) — загружаемся в его мир
+        if(g_launchId && g_launchId != g_seenLaunch && !g_copyMode &&
+           (g_cs == CState::Idle || g_cs == CState::Done || g_cs == CState::Failed))
+        {
+            g_seenLaunch = g_launchId;
+            g_usedHostWorld = false;
+            g_cs = CState::Requesting; g_myNonce = (uint32_t)(now ^ (now >> 32)) | 1; g_nextReqUs = 0; g_startUs = now;
+            Log(false, "[ЛОББИ] Хост запустил «%s» — загружаюсь в его мир", g_launchName);
+        }
         if(g_cs == CState::Requesting && now >= g_nextReqUs)
         {
             net::WorldReqPacket r{ net::MakeHeader(net::PKT_WORLD_REQ), g_myNonce };
@@ -202,6 +307,11 @@ namespace
             std::vector<uint8_t> old;
             if(ReadGameFile(kCopySlotFile, old)) WriteGameFile("GTASAsf8.b.bak", old);
             bool ok = WriteGameFile(kCopySlotFile, g_in);
+            {
+                time_t t = time(nullptr); struct tm tmv; localtime_r(&t, &tmv);
+                char name[96]; strftime(name, sizeof(name), "Мир хоста %Y-%m-%d %H-%M.b", &tmv);
+                ExportBytes(name, g_in);
+            }
             g_copyMode = false;
             g_cs = CState::Done;
             Log(ok ? false : true, ok ? "[МИР] Мир хоста сохранён тебе в ячейку 8 (прежнее — GTASAsf8.b.bak)" : "[МИР] Не удалось записать мир хоста в ячейку 8");
@@ -230,13 +340,30 @@ DECL_HOOKv(MakeValidSaveName, int slot)
     MakeValidSaveName(slot);
     if(!g_validName) return;
     if(g_hostSaving)        strcpy(g_validName, kHostFile);
-    else if(g_loadRedirect) strcpy(g_validName, kClientFile);
-    else if(g_protect && (slot == kLoadSlot || slot == g_origResume))
-    {
-        static bool logged = false;
-        if(!logged) { logged = true; Log(false, "[МИР] Ты в мире хоста: сохранение в ячейку %d идёт в отдельный файл — твои сохранения целы", slot + 1); }
-        strcpy(g_validName, kClientFile);
+    else if(g_loadRedirect && slot == kLoadSlot) strcpy(g_validName, g_loadName);
+    else if(g_coopWorld && slot >= 0 && slot < 16)
+    {   // кооп-мир: свои кооп-ячейки, одиночные сохранения не трогаем
+        static int logged = -1;
+        if(logged != slot) { logged = slot; Log(false, "[ЛОББИ] Кооп-мир: ячейка %d → кооп-файл (одиночные сохранения целы)", slot + 1); }
+        CoopSlotName(slot, g_validName, 32);
     }
+}
+
+// Сохранение в кооп-мире: копия — в папку SA/SACoop/Сохранения
+DECL_HOOK(int, SaveSlotHook, void* self, int8_t slot, bool noExtras)
+{
+    int r = SaveSlotHook(self, slot, noExtras);
+    if(r == 0 && g_coopWorld && !g_hostSaving && slot >= 0)
+    {
+        char file[32]; CoopSlotName(slot, file, sizeof(file));
+        std::vector<uint8_t> data;
+        if(ReadGameFile(file, data))
+        {
+            char name[96]; snprintf(name, sizeof(name), "Кооп ячейка %d.b", slot + 1);
+            ExportBytes(name, data);
+        }
+    }
+    return r;
 }
 
 bool Install(void* h, FLogger* log)
@@ -261,6 +388,10 @@ bool Install(void* h, FLogger* log)
            OSFileOpen && OSFileRead && OSFileWrite && OSFileSize && OSFileClose && mk;
     if(!g_ok) { Log(true, "[МИР] Не все функции сохранения найдены — друг будет загружать свою игру"); return false; }
     aml->Hook(mk, (void*)HookOf_MakeValidSaveName, (void**)&MakeValidSaveName);
+    aml->Hook((void*)SaveSlot, (void*)HookOf_SaveSlotHook, (void**)&SaveSlotHook);
+    SaveSlot = SaveSlotHook;   // свои сохранения мира для друга — без копии в папку (g_hostSaving)
+    MakeFolders();
+    Log(false, "[ЛОББИ] Папка кооп-сохранений: %s", g_savesDir[0] ? g_savesDir : "(не создалась)");
     Log(false, "[МИР] Готово: друг сможет заходить сразу в мир хоста");
     return true;
 }
@@ -269,7 +400,18 @@ void SetSession(net::Session* s) { g_session = s; }
 
 bool RunDeferredLoad(bool fromMenuUpdate)
 {
-    if(!g_ok || !g_wantLoad) return false;
+    if(!g_ok) return false;
+    if(g_hostWantLoad)
+    {
+        bool playing = MenuIsPlayingGame(true);
+        if(playing == fromMenuUpdate) return false;
+        g_hostWantLoad = false;
+        if(StartLoadFile(kHostFile, "выбранное сохранение")) { g_hostLoading = true; return true; }
+        Notice("Игра не приняла это сохранение — выбери другое");
+        g_launchFile.clear();
+        return false;
+    }
+    if(!g_wantLoad) return false;
     bool playing = MenuIsPlayingGame(true);
     // Из главного меню грузим так же, как кнопка «Продолжить» (в обновлении меню);
     // из игры — в игровом кадре, как «Загрузить игру» из паузы.
@@ -284,6 +426,17 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
 {
     if(!g_ok) return;
     uint64_t now = net::NowUs();
+    if(type == net::PKT_LOBBY && len == sizeof(net::LobbyPacket))
+    {
+        if(g_role != net::Role::Client) return;
+        const auto* l = (const net::LobbyPacket*)data;
+        if(l->launchId != g_launchId || strncmp(l->saveName, g_launchName, sizeof(g_launchName)))
+            Log(false, "[ЛОББИ] Хост: %s «%.63s»", l->launchId ? "запуск" : "выбирает", l->saveName);
+        g_launchId = l->launchId; g_launchSource = l->source;
+        memcpy(g_launchName, l->saveName, sizeof(g_launchName)); g_launchName[sizeof(g_launchName) - 1] = 0;
+        g_lobbyHostInGame = l->hostInGame; g_lobbyHostLoading = l->hostLoading;
+        return;
+    }
     if(type == net::PKT_WORLD_REQ && len == sizeof(net::WorldReqPacket))
     {
         uint32_t nonce = ((const net::WorldReqPacket*)data)->nonce;
@@ -304,6 +457,7 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
         if(pct >= 100 && !g_outDoneLogged)
         {
             g_outDoneLogged = true;
+            g_launchFile.clear();   // дальше друг (при переподключении) получит свежее сохранение
             Log(false, "[МИР] Мир отправлен другу целиком");
             Notice("Мир отправлен другу — он загружается");
         }
@@ -335,7 +489,22 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
 void Tick(net::Role role, bool connected, bool inGame, uint64_t now)
 {
     if(!g_ok) return;
-    if(role != net::Role::Client && g_protect) { g_protect = false; Log(false, "[МИР] Кооп выключен — сохранения снова в твои ячейки"); }
+    g_role = role; g_inGame = inGame;
+    if(role == net::Role::Off && !inGame && g_coopWorld && !g_loadRedirect)
+    {
+        g_coopWorld = false;
+        Log(false, "[ЛОББИ] Кооп выключен — сохранения снова одиночные (твои ячейки)");
+    }
+    if(role == net::Role::Host && connected && now >= g_nextLobbyUs)
+    {
+        g_nextLobbyUs = now + 1000000;
+        net::LobbyPacket l{};
+        l.hdr = net::MakeHeader(net::PKT_LOBBY);
+        l.launchId = g_launchId; l.source = (uint8_t)g_launchSource;
+        l.hostInGame = inGame ? 1 : 0; l.hostLoading = (g_hostLoading || g_hostWantLoad) ? 1 : 0;
+        snprintf(l.saveName, sizeof(l.saveName), "%s", g_launchName);
+        SendGame(&l, sizeof(l));
+    }
     if(role == net::Role::Host) HostTick(connected, inGame, now);
     else if(role == net::Role::Client) ClientTick(connected, now);
 }
@@ -345,14 +514,29 @@ void OnSessionReset()
     g_sendNonce = 0; g_needSave = false; g_out.clear(); g_outAcked.clear(); g_outSentUs.clear(); g_outAckedCount = 0;
     if(g_cs != CState::LoadRequested) { g_cs = CState::Idle; g_in.clear(); g_inGot.clear(); g_inGotCount = g_inChunks = 0; }
     g_usedHostWorld = false; g_teleport = false;
+    g_seenLaunch = 0;
+    if(g_role == net::Role::Client) { g_launchId = 0; g_launchName[0] = 0; g_launchSource = 0; }
 }
 
 void AfterGameLoaded()
 {
-    if(g_cs != CState::LoadRequested) return;
+    if(g_hostLoading)
+    {
+        g_hostLoading = false;
+        g_loadRedirect = false;
+        if(g_lastResume && g_origResume >= 0) *g_lastResume = g_origResume;
+        g_coopWorld = true;
+        Log(false, "[ЛОББИ] Хост загрузил «%s» — кооп-мир, сохранения в кооп-ячейки", g_launchName);
+        Notice("Мир загружен — друг загружается следом");
+        return;
+    }
+    if(g_cs != CState::LoadRequested)
+    {   // загрузка не от коопа: из меню игры. В кооп-мире ячейки и так кооп-файлы — мир остаётся кооп.
+        return;
+    }
     g_loadRedirect = false;
-    if(g_lastResume && g_origResume >= 0) *g_lastResume = g_origResume;   // «Продолжить» у друга — снова его игра
-    g_protect = true;
+    if(g_lastResume && g_origResume >= 0) *g_lastResume = g_origResume;
+    g_coopWorld = true;
     g_usedHostWorld = true;
     g_teleport = true;
     g_cs = CState::Loaded;
@@ -413,6 +597,75 @@ Progress GetProgress(net::Link link)
     }
     return p;
 }
+
+std::vector<SaveEntry> ListSaves()
+{
+    std::vector<SaveEntry> v;
+    if(!MakeFolders()) return v;
+    DIR* d = opendir(g_savesDir);
+    if(!d) return v;
+    while(dirent* e = readdir(d))
+    {
+        size_t n = strlen(e->d_name);
+        if(e->d_name[0] == '.' || n < 3 || strcasecmp(e->d_name + n - 2, ".b")) continue;
+        SaveEntry s{};
+        snprintf(s.path, sizeof(s.path), "%s/%s", g_savesDir, e->d_name);
+        struct stat st;
+        if(stat(s.path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        snprintf(s.name, sizeof(s.name), "%.*s", (int)(n - 2), e->d_name);
+        s.size = (long)st.st_size; s.mtime = st.st_mtime;
+        v.push_back(s);
+    }
+    closedir(d);
+    std::sort(v.begin(), v.end(), [](const SaveEntry& a, const SaveEntry& b) { return a.mtime > b.mtime; });
+    return v;
+}
+
+const char* SavesFolder() { MakeFolders(); return g_savesDir; }
+
+bool HostLaunch(const char* path, const char* name, char* why, size_t whyLen)
+{
+    auto fail = [&](const char* t) { snprintf(why, whyLen, "%s", t); Log(true, "[ЛОББИ] Запуск не удался: %s", t); return false; };
+    if(!g_ok) return fail("сохранения игры недоступны моду");
+    if(g_role != net::Role::Host) return fail("запускает только хост");
+    if(g_hostLoading || g_hostWantLoad) return fail("уже загружается");
+    if(!path)
+    {
+        if(!g_inGame) return fail("ты ещё не в игре — выбери сохранение");
+        g_launchFile.clear();
+        g_launchSource = net::LOBBY_CURRENT;
+        snprintf(g_launchName, sizeof(g_launchName), "%s", name && name[0] ? name : "Текущая игра хоста");
+        g_coopWorld = true;
+    }
+    else
+    {
+        std::vector<uint8_t> data;
+        if(!ReadPath(path, data)) return fail("файл не читается (или больше 2 МБ)");
+        if(data.size() < 50 * 1024) return fail("это не сохранение GTA SA (слишком маленький файл)");
+        if(!WriteGameFile(kHostFile, data)) return fail("не удалось записать в память игры");
+        g_launchFile.swap(data);
+        g_launchSource = net::LOBBY_FILE;
+        snprintf(g_launchName, sizeof(g_launchName), "%s", name ? name : "сохранение");
+        g_hostWantLoad = true;
+    }
+    g_launchId = (uint32_t)(net::NowUs() & 0x7FFFFFFF) | 1;
+    g_sendNonce = 0; g_out.clear();             // новая передача
+    g_nextLobbyUs = 0;
+    Log(false, "[ЛОББИ] Запуск: «%s» (%s)", g_launchName, path ? path : "текущая игра");
+    return true;
+}
+
+Lobby GetLobby()
+{
+    Lobby l;
+    l.launchId = g_launchId; l.source = g_launchSource;
+    snprintf(l.saveName, sizeof(l.saveName), "%s", g_launchName);
+    if(g_role == net::Role::Host) { l.hostInGame = g_inGame; l.hostLoading = g_hostLoading || g_hostWantLoad; }
+    else { l.hostInGame = g_lobbyHostInGame; l.hostLoading = g_lobbyHostLoading; }
+    return l;
+}
+
+bool CoopWorld() { return g_coopWorld; }
 
 bool PopNotice(char* out, size_t len)
 {

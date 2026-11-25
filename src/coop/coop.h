@@ -6,6 +6,10 @@
 #include <stddef.h>
 
 #include "net/session.h"
+#include "net/tailscale.h"
+#include "coop/world.h"
+
+#include <vector>
 
 class FLogger;
 
@@ -83,6 +87,36 @@ namespace coop
     bool MenuUpdateTick();
     bool CanSaveHostWorld();                                         // друг на связи с хостом
     void SaveHostWorld();                                            // «Сохранить мир хоста себе» (ячейка 8)                                           // из MobileMenu::Update; true — меню закрыто, идёт загрузка мира хоста
+
+    // Встроенный Tailscale: точка хоста и поиск по ID
+    struct NetInfo
+    {
+        ts::State tsState = ts::State::Off;
+        char loginUrl[512] = "";     // нужен вход — открыть в браузере
+        char tsIp[48] = "";
+        char info[192] = "";         // что сейчас происходит
+        char myId[8] = "";           // свой ID точки
+        bool pointOpen = false;      // хост: точка открыта
+        bool searching = false;      // друг: ищем точку хоста
+    };
+    NetInfo GetNetInfo();
+    void StartTailscale();                                           // включить заранее (войти в аккаунт)
+    bool TailscaleLogout();                                          // сменить аккаунт
+
+    // Лобби (оба на связи): хост выбирает сохранение и жмёт «Запуск»
+    struct LobbyInfo
+    {
+        bool  active = false;        // друг на связи — показываем лобби
+        bool  isHost = false;
+        char  peerNick[net::kNickLen] = "";
+        int   pingMs = -1;
+        bool  inGame = false;        // сам уже в игре
+        world::Lobby lobby;
+    };
+    LobbyInfo GetLobbyInfo();
+    std::vector<world::SaveEntry> ListSaves();
+    const char* SavesFolder();
+    bool Launch(const char* path, const char* name, char* why, size_t whyLen);   // path == nullptr — текущая игра
 
     // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
     // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).

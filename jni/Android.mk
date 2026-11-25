@@ -5,7 +5,7 @@ include $(LOCAL_PATH)/jni/opus.mk
 include $(CLEAR_VARS)
 LOCAL_MODULE := SACoop
 LOCAL_CPP_EXTENSION := .cpp
-LOCAL_SRC_FILES := src/main.cpp src/settings.cpp src/net/session.cpp src/game/gta.cpp src/coop/coop.cpp src/coop/sync.cpp src/coop/world.cpp src/coop/crowd.cpp src/coop/mission.cpp \
+LOCAL_SRC_FILES := src/main.cpp src/settings.cpp src/net/session.cpp src/net/tailscale.cpp src/net/ts_blob.S src/game/gta.cpp src/coop/coop.cpp src/coop/sync.cpp src/coop/world.cpp src/coop/crowd.cpp src/coop/mission.cpp \
                    src/ui/menu.cpp src/ui/overlay.cpp src/ui/imgui_rw.cpp src/platform/android.cpp src/voice/voice.cpp \
                    third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp \
                    third_party/imgui/imgui_widgets.cpp third_party/imgui/imgui_tables.cpp \
@@ -15,5 +15,6 @@ LOCAL_SRC_FILES := src/main.cpp src/settings.cpp src/net/session.cpp src/game/gt
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/third_party $(LOCAL_PATH)/src $(LOCAL_PATH)/third_party/opus/include
 LOCAL_CFLAGS += -O2 -DNDEBUG -std=c++17 -Wall -DIMGUI_DISABLE_DEMO_WINDOWS -DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS
 LOCAL_STATIC_LIBRARIES += opus
-LOCAL_LDLIBS += -llog
+LOCAL_ASFLAGS += -Wa,-I$(LOCAL_PATH)/third_party/tsbridge
+LOCAL_LDLIBS += -llog -lz
 include $(BUILD_SHARED_LIBRARY)

@@ -10,6 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build built-in Tailscale (tsbridge)
+        run: NDK="$ANDROID_NDK_LATEST_HOME" GOTOOLCHAIN=auto bash tools/tsbridge/build.sh
+
       - name: Build with Android NDK
         run: |
           echo "NDK: $ANDROID_NDK_LATEST_HOME"

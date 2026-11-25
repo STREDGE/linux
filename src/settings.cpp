@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <stdlib.h>
 
 #include "platform/android.h"
 
@@ -47,6 +48,16 @@ Data Load()
     platform::DeviceModel(model, sizeof(model));
     cfg->GetString(d.net.nick, sizeof(d.net.nick), "Nick", model, "Network");
     cfg->GetString(d.net.relay, sizeof(d.net.relay), "Relay", "", "Network");   // сервер-посредник (адрес:порт), пусто — Tailscale
+    // Свой ID точки: 6 цифр, создаётся один раз (друг вводит его, чтобы подключиться)
+    cfg->GetString(d.net.myId, sizeof(d.net.myId), "MyId", "", "Network");
+    bool idOk = strlen(d.net.myId) == 6;
+    for(int i = 0; idOk && i < 6; ++i) if(d.net.myId[i] < '0' || d.net.myId[i] > '9') idOk = false;
+    if(!idOk)
+    {
+        uint32_t r = arc4random_uniform(900000) + 100000;
+        snprintf(d.net.myId, sizeof(d.net.myId), "%06u", r);
+        ConfigEntry* e = cfg->Bind("MyId", "", "Network"); e->SetString(d.net.myId); delete e;
+    }
     cfg->Save();
     return d;
 }
@@ -62,6 +73,7 @@ void Save(const Data& d)
     e = cfg->Bind("Port", 7777, "Network");             e->SetInt(d.net.port);                 delete e;
     e = cfg->Bind("Nick", "Player", "Network");         e->SetString(d.net.nick);              delete e;
     e = cfg->Bind("Relay", "", "Network");              e->SetString(d.net.relay);             delete e;
+    if(d.net.myId[0]) { e = cfg->Bind("MyId", "", "Network"); e->SetString(d.net.myId); delete e; }
     cfg->Save();
 }
 

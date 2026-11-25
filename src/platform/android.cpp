@@ -334,3 +334,140 @@ bool ClipboardSetText(const char* text)
 }
 
 } // namespace platform
+
+// ---------- ссылка в браузере ----------
+namespace platform
+{
+bool OpenUrl(const char* url)
+{
+    JniScope j;
+    if(!j.env || !url || !url[0]) return false;
+    JNIEnv* env = j.env;
+    jobject ctx = aml->GetAppContextObject();
+    if(!ctx) return false;
+    bool ok = false;
+    jclass uriCls = env->FindClass("android/net/Uri");
+    jmethodID parse = uriCls ? env->GetStaticMethodID(uriCls, "parse", "(Ljava/lang/String;)Landroid/net/Uri;") : nullptr;
+    jstring us = env->NewStringUTF(url);
+    jobject uri = parse ? env->CallStaticObjectMethod(uriCls, parse, us) : nullptr;
+    jclass intentCls = env->FindClass("android/content/Intent");
+    jmethodID ctor = intentCls ? env->GetMethodID(intentCls, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V") : nullptr;
+    jmethodID addFlags = intentCls ? env->GetMethodID(intentCls, "addFlags", "(I)Landroid/content/Intent;") : nullptr;
+    jstring action = env->NewStringUTF("android.intent.action.VIEW");
+    if(!j.Failed() && uri && ctor && addFlags)
+    {
+        jobject intent = env->NewObject(intentCls, ctor, action, uri);
+        if(!j.Failed() && intent)
+        {
+            jobject r = env->CallObjectMethod(intent, addFlags, (jint)0x10000000);
+            if(r) env->DeleteLocalRef(r);
+            jclass ctxCls = env->GetObjectClass(ctx);
+            jmethodID start = env->GetMethodID(ctxCls, "startActivity", "(Landroid/content/Intent;)V");
+            if(start) { env->CallVoidMethod(ctx, start, intent); ok = !j.Failed(); }
+            env->DeleteLocalRef(ctxCls);
+            env->DeleteLocalRef(intent);
+        }
+    }
+    j.Failed();
+    env->DeleteLocalRef(action); env->DeleteLocalRef(us);
+    if(uri) env->DeleteLocalRef(uri);
+    if(intentCls) env->DeleteLocalRef(intentCls);
+    if(uriCls) env->DeleteLocalRef(uriCls);
+    return ok;
+}
+}
+
+// ---------- выбор файла (java/net/sacoop/Picker.java, вшит как dex) ----------
+#include "platform/picker_dex.h"
+namespace platform {
+namespace
+{
+    jclass g_pickerCls = nullptr;
+
+    jobject CurrentActivity()
+    {
+        typedef jobject (*GetActivityFn)(void* self);
+        static GetActivityFn getActivity = nullptr;
+        if(!getActivity)
+        {
+            void* h = dlopen("libAML.so", RTLD_NOW | RTLD_NOLOAD);
+            if(h) getActivity = (GetActivityFn)dlsym(h, "_ZN3AML18GetCurrentActivityEv");
+            if(!getActivity) getActivity = (GetActivityFn)dlsym(RTLD_DEFAULT, "_ZN3AML18GetCurrentActivityEv");
+        }
+        return getActivity ? getActivity(aml) : nullptr;
+    }
+
+    bool LoadPicker(JniScope& j)
+    {
+        if(g_pickerCls) return true;
+        JNIEnv* env = j.env;
+        jobject ctx = aml->GetAppContextObject();
+        if(!ctx) return false;
+        jobject buf = env->NewDirectByteBuffer((void*)kPickerDex, (jlong)kPickerDexSize);
+        jclass ctxCls = env->GetObjectClass(ctx);
+        jmethodID getCl = env->GetMethodID(ctxCls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+        jobject parent = env->CallObjectMethod(ctx, getCl);
+        jclass imcl = env->FindClass("dalvik/system/InMemoryDexClassLoader");
+        if(j.Failed() || !imcl) { logger->Error("Выбор файла: нет InMemoryDexClassLoader (Android < 8)"); return false; }
+        jmethodID ctor = env->GetMethodID(imcl, "<init>", "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+        jobject loader = env->NewObject(imcl, ctor, buf, parent);
+        if(j.Failed() || !loader) { logger->Error("Выбор файла: dex не загрузился"); return false; }
+        jclass clCls = env->FindClass("java/lang/ClassLoader");
+        jmethodID loadClass = env->GetMethodID(clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        jstring name = env->NewStringUTF("net.sacoop.Picker");
+        jclass cls = (jclass)env->CallObjectMethod(loader, loadClass, name);
+        if(j.Failed() || !cls) { logger->Error("Выбор файла: класс не найден"); return false; }
+        g_pickerCls = (jclass)env->NewGlobalRef(cls);
+        env->NewGlobalRef(loader);
+        return true;
+    }
+}
+
+bool PickFile(const char* destDir)
+{
+    JniScope j;
+    if(!j.env || !LoadPicker(j)) return false;
+    JNIEnv* env = j.env;
+    jobject act = CurrentActivity();
+    if(!act) { logger->Error("Выбор файла: AML не отдал Activity"); return false; }
+    jmethodID pick = env->GetStaticMethodID(g_pickerCls, "pick", "(Landroid/app/Activity;Ljava/lang/String;)V");
+    if(j.Failed() || !pick) return false;
+    jstring d = env->NewStringUTF(destDir ? destDir : "");
+    env->CallStaticVoidMethod(g_pickerCls, pick, act, d);
+    env->DeleteLocalRef(d);
+    return !j.Failed();
+}
+
+int PickState(char* out, size_t len)
+{
+    if(!g_pickerCls) return 0;
+    JniScope j;
+    if(!j.env) return 0;
+    JNIEnv* env = j.env;
+    jfieldID fs = env->GetStaticFieldID(g_pickerCls, "state", "I");
+    jfieldID fr = env->GetStaticFieldID(g_pickerCls, "result", "Ljava/lang/String;");
+    if(j.Failed() || !fs || !fr) return 0;
+    int st = env->GetStaticIntField(g_pickerCls, fs);
+    if(out && len)
+    {
+        out[0] = 0;
+        jstring r = (jstring)env->GetStaticObjectField(g_pickerCls, fr);
+        if(r)
+        {
+            const char* c = env->GetStringUTFChars(r, nullptr);
+            if(c) { snprintf(out, len, "%s", c); env->ReleaseStringUTFChars(r, c); }
+            env->DeleteLocalRef(r);
+        }
+    }
+    return st;
+}
+
+void PickReset()
+{
+    if(!g_pickerCls) return;
+    JniScope j;
+    if(!j.env) return;
+    jfieldID fs = j.env->GetStaticFieldID(g_pickerCls, "state", "I");
+    if(!j.Failed() && fs) j.env->SetStaticIntField(g_pickerCls, fs, 0);
+}
+}
