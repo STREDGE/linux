@@ -11,7 +11,7 @@
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Как всё устроено внутри: модули, перехваты, сеть, голос, интерфейс |
 | [`docs/HISTORY.md`](docs/HISTORY.md) | Версии и найденные баги — почему код сделан именно так |
 | [`docs/libgtasa-2.10-arm64.md`](docs/libgtasa-2.10-arm64.md) | Символы, смещения полей, ловушки libGTASA 2.10 arm64 |
-| [`sa-living/`](sa-living/) | **Отдельный второй мод** SA Living: живые педы с ИИ (Claude, свой ключ) и реализм — пока план |
+| [`sa-living/`](sa-living/) | **Отдельный второй мод** SA Living: живые педы с ИИ (Claude, свой ключ) и реализм — 0.1.0, речь 0.2.0 на паузе ([`STATUS.md`](sa-living/STATUS.md)) |
 | [`docs/design/`](docs/design/) | Макет меню CO-OP и картинки превью |
 | [`docs/handoff/apk-microphone.md`](docs/handoff/apk-microphone.md) | Задание для сессии на компьютере: разрешение микрофона в APK, OBB, папка SA/cleo |
 
