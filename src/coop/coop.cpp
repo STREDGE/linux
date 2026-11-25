@@ -15,6 +15,7 @@
 #include "net/sacoop_api.h"
 #include "coop/sync.h"
 #include "coop/world.h"
+#include "coop/crowd.h"
 #include <mod/interface.h>
 
 using namespace gta;
@@ -434,6 +435,7 @@ namespace
 
         DespawnRemote("смена режима");
         sync::Reset("смена режима");
+        crowd::Reset("смена режима");
         world::OnSessionReset();
         g_session.Stop();
         voice::Stop();
@@ -580,6 +582,8 @@ namespace
         sc.rs = (rs.valid && net::Since(now, rs.receivedUs) < kStaleUs) ? &rs.pkt : nullptr;
         g_where = "синхронизация машин/оружия";
         sync::Frame(sc);
+        g_where = "общий мир людей";
+        crowd::Frame(g_cfg.role, sc.connected, local, sc.remote, sc.rs, now);
 
         // Загрузились в мир хоста — встать рядом с ним (один раз)
         if(world::TeleportPending() && sc.rs && !InVehicle(local) && PedTeleport)
@@ -682,12 +686,12 @@ DECL_HOOKv(DarkelUpdate)                { g_where = "CDarkel::Update (слот �
 // чтобы он не попал в сохранение и не остался висящим указателем.
 DECL_HOOK(bool, GenericLoad, bool& ok)
 {
-    g_localSinceUs = 0; DespawnRemote("загрузка игры"); sync::Reset("загрузка игры");
+    g_localSinceUs = 0; DespawnRemote("загрузка игры"); crowd::Reset("загрузка игры"); sync::Reset("загрузка игры");
     bool r = GenericLoad(ok);
     world::AfterGameLoaded();
     return r;
 }
-DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote("рестарт игры");  sync::Reset("рестарт игры");  ShutDownForRestart(); }
+DECL_HOOKv(ShutDownForRestart)              { g_localSinceUs = 0; DespawnRemote("рестарт игры"); crowd::Reset("рестарт игры"); sync::Reset("рестарт игры"); ShutDownForRestart(); }
 
 const char* Where() { return g_where; }
 
@@ -711,6 +715,7 @@ namespace
 static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
 {
     if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK) world::OnPacket(type, data, len);
+    else if(type == net::PKT_PEDS || type == net::PKT_WORLD_TIME) crowd::OnPacket(type, data, len);
     else sync::OnPacket(type, data, len);
 }
 
@@ -768,6 +773,8 @@ bool Install(void* h, FLogger* log)
     g_origGetSprint = PadGetSprint;
     sync::Install(h, g_log);   // машины, оружие, урон (если чего-то нет — кооп пешком, как раньше)
     world::Install(h, g_log);  // зайти сразу в мир хоста
+    crowd::Install(h, g_log);  // одинаковые люди и машины вокруг друга
+    crowd::SetSession(&g_session);
 
     Log(false, "Кооп установлен: перехватов %d", (int)(sizeof(hooks) / sizeof(hooks[0])));
     return true;

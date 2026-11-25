@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 13;
+    constexpr uint8_t  kProtocolVersion = 14;
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -28,6 +28,8 @@ namespace net
         PKT_WORLD_REQ    = 14,// клиент -> хост: пришли свой мир (сохранение), я загружусь в него
         PKT_WORLD_CHUNK  = 15,// хост -> клиент: кусок сохранения
         PKT_WORLD_ACK    = 16,// клиент -> хост: кусок получен
+        PKT_PEDS         = 17,// хост -> клиент: педы вокруг друга (10 раз/с)
+        PKT_WORLD_TIME   = 18,// хост -> клиент: время и погода
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -151,17 +153,70 @@ namespace net
         float    shooter[3];  // где стоял стрелок
         float    start[3];
         float    end[3];
+        uint16_t npc;         // стрелял пед хоста (номер в общем мире), 0 — игрок
+        uint16_t pad;
     };
 
     // Надёжные события: повторяем, пока не придёт ACK
-    enum ReliableType : uint8_t { REL_DAMAGE = 1, REL_GIVE_WEAPON = 2 };
+    enum ReliableType : uint8_t { REL_DAMAGE = 1, REL_GIVE_WEAPON = 2, REL_NPC_DAMAGE = 3, REL_BUSTED = 4 };
     struct DamageEvent
     {
-        uint8_t type;         // REL_DAMAGE
-        uint8_t weapon;
-        uint8_t piece;        // ePedPieceTypes
-        uint8_t viaVehicle;   // удар машиной
-        float   amount;
+        uint8_t  type;        // REL_DAMAGE
+        uint8_t  weapon;
+        uint8_t  piece;       // ePedPieceTypes
+        uint8_t  viaVehicle;  // удар машиной
+        float    amount;
+        uint16_t npc;         // урон от педа хоста (номер), 0 — от второго игрока
+        uint16_t pad;
+    };
+    struct NpcDamageEvent     // друг ранил педа хоста
+    {
+        uint8_t  type;        // REL_NPC_DAMAGE
+        uint8_t  weapon;
+        uint8_t  piece;
+        uint8_t  viaVehicle;
+        uint16_t npc;
+        uint16_t pad;
+        float    amount;
+    };
+    struct BustedEvent { uint8_t type; uint8_t pad[3]; };   // REL_BUSTED: копы хоста скрутили второго CJ
+
+    // Педы вокруг друга
+    enum PedFlags : uint8_t { PDF_DEAD = 1, PDF_IN_VEHICLE = 2, PDF_DUCK = 4, PDF_AIM = 8 };
+    struct PedEntry
+    {
+        uint16_t id;
+        uint16_t model;
+        uint8_t  pedType;
+        uint8_t  flags;       // PedFlags
+        uint8_t  moveState;   // 1 стоит, 4 шаг, 6 бег, 7 спринт
+        uint8_t  weapon;
+        uint8_t  health;
+        uint8_t  seat;        // kNoSeat — не в машине
+        uint16_t vehId;       // сетевой номер машины (общие машины)
+        float    pos[3];
+        float    heading;
+        int16_t  vel[2];      // см/с
+    };
+    constexpr int kPedsPerPacket = 30;
+    struct PedsPacket
+    {
+        Header   hdr;
+        uint32_t seq;
+        uint8_t  count;
+        uint8_t  last;        // последний пакет этого кадра (список полный)
+        uint16_t pad;
+        PedEntry peds[kPedsPerPacket];
+    };
+    constexpr int kPedsHeaderSize = (int)sizeof(Header) + 8;
+
+    struct WorldTimePacket
+    {
+        Header   hdr;
+        uint8_t  hours, minutes;
+        int16_t  oldWeather, newWeather;
+        uint16_t pad;
+        float    interp;
     };
     struct GiveWeaponEvent        // хост выдаёт оружие другу
     {

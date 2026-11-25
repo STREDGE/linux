@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "game/gta.h"
+#include "coop/crowd.h"
 
 using namespace gta;
 
@@ -25,7 +26,8 @@ namespace
     constexpr float    kCopyCreateDist = 300.0f;    // копию создаём ближе этого
     constexpr float    kCopyDropDist   = 360.0f;    // и убираем дальше этого
     constexpr float    kVehSnapDist    = 6.0f;      // расхождение больше — переносим сразу
-    constexpr int      kMaxVehicles    = 16;
+    constexpr int      kMaxVehicles    = 64;     // свои, копии и машины вокруг друга (общий мир)
+    constexpr float    kCrowdVehKeep   = 160.0f; // машина вокруг друга: дальше от него — не общая
     constexpr int      kDriverDoor     = 10;        // дверь водителя (CCarEnterExit)
     constexpr uint64_t kEnterTimeoutUs = 7000000;   // не сел с анимацией за 7 с — сажаем сразу
     constexpr uint64_t kLeaveTimeoutUs = 2500000;
@@ -77,6 +79,7 @@ namespace
         uint64_t  requestUs = 0;       // копия: когда попросили модель
         bool      blownDone = false;
         bool      dead = false;        // удалить из списка
+        bool      crowd = false;       // машина вокруг друга (общий мир): игра её убирает как обычно
         // для подробного лога
         float     lastErr = 0;         // расхождение с присланным, м
         int       mode = -1;           // 0 перенос, 1 стоит, 2 едет
@@ -230,9 +233,9 @@ namespace
         SendGame(&g, sizeof(g));
     }
 
-    NetVeh* Register(uintptr_t veh)
+    NetVeh* Register(uintptr_t veh, bool crowd = false)
     {
-        if(NetVeh* v = FindVeh(veh)) return v;
+        if(NetVeh* v = FindVeh(veh)) { if(!crowd) v->crowd = false; return v; }
         if((int)g_vehs.size() >= kMaxVehicles) return nullptr;
         if(Field<int>(veh, off::VehBaseType) == 6) return nullptr;      // поезда не трогаем
         NetVeh v;
@@ -240,9 +243,10 @@ namespace
         if(!(g_nextId = (uint16_t)((g_nextId + 1) & 0x7FFF))) g_nextId = 1;
         v.veh = veh; v.ref = GetVehicleRef(veh); v.copy = false; v.model = ModelOf(veh);
         v.origCreatedBy = (int8_t)Field<uint8_t>(veh, off::VehCreatedBy);
-        if(v.origCreatedBy == 1) Field<uint8_t>(veh, off::VehCreatedBy) = 2;   // пока общая — игра не удаляет
+        v.crowd = crowd;
+        if(!crowd && v.origCreatedBy == 1) Field<uint8_t>(veh, off::VehCreatedBy) = 2;   // пока общая — игра не удаляет
         g_vehs.push_back(v);
-        Log(false, "[МАШИНЫ] Машина %d стала общей (номер %04X)", v.model, v.id);
+        if(!crowd) Log(false, "[МАШИНЫ] Машина %d стала общей (номер %04X)", v.model, v.id);
         return &g_vehs.back();
     }
 
@@ -671,6 +675,11 @@ namespace
             {
                 if(!valid) { SendGone(v.id); v.dead = true; Log(false, "[МАШИНЫ] Своя машина %04X исчезла у тебя", v.id); continue; }
                 CVector vp = GetPosition(v.veh);
+                if(v.crowd && !localUses && !remoteUses && (!haveRemote || Dist(vp, rp) > kCrowdVehKeep))
+                {   // машина вокруг друга уехала от него — не общая (игра уберёт её сама, как обычно)
+                    SendGone(v.id); v.dead = true;
+                    continue;
+                }
                 if(!localUses && !remoteUses && Dist(vp, lp) > kVehKeepDist && (!haveRemote || Dist(vp, rp) > kVehKeepDist))
                 {
                     ReleaseOwn(v); SendGone(v.id); v.dead = true;
@@ -733,6 +742,8 @@ namespace
     int      g_pendingRemoteMelee = 0;
     uint16_t g_shotSeq = 0;
     uint32_t g_lastShotFrame = 0;
+    bool     g_npcFire = false;            // хост: внутри выстрела педа, которого видит друг
+    uintptr_t g_npcFireOwner = 0;
     int      g_shotsOut = 0, g_shotsIn = 0, g_shotsReplayed = 0;
     bool     g_inLocalFire = false;
     bool     g_shotCaptured = false;
@@ -751,8 +762,8 @@ namespace
 
     void EnsureWeapon(uintptr_t ped, int w)
     {
-        if(CurrentWeaponType(ped) == w || g_ctx.now < g_nextWeaponTryUs) return;
-        g_nextWeaponTryUs = g_ctx.now + 500000;
+        if(CurrentWeaponType(ped) == w) return;
+        if(ped == g_ctx.remote) { if(g_ctx.now < g_nextWeaponTryUs) return; g_nextWeaponTryUs = g_ctx.now + 500000; }
         if(w > 0)
         {
             int model = WeaponModel(w);
@@ -766,7 +777,7 @@ namespace
 
     void ReplayShot(const net::ShotPacket& p)
     {
-        uintptr_t r = g_ctx.remote;
+        uintptr_t r = p.npc ? crowd::CopyById(p.npc) : g_ctx.remote;
         if(!r || !PedIsAlive(r) || !CombatReady()) return;
         int w = p.weapon;
         if(w <= 0 || w > 46) return;
@@ -1124,7 +1135,7 @@ DECL_HOOK(int16_t, PadHandBrake, uintptr_t pad)  { return RemoteCarPad(pad) ? g_
 // (у себя он завис бы в наручниках — игра «сажает» только первого игрока)
 DECL_HOOK(bool, PedCanBeArrested, uintptr_t ped)
 {
-    if(g_active && ped && ped == g_ctx.remote) return false;
+    if(g_active && ped && ped == g_ctx.remote && !crowd::RemoteArrestable()) return false;   // копы хоста — могут, если у друга розыск
     return PedCanBeArrested(ped);
 }
 
@@ -1144,6 +1155,10 @@ DECL_HOOK(bool, MeleeJustDown, uintptr_t pad)
 // Попадание пули: запоминаем линию выстрела своего CJ
 DECL_HOOKv(DoBulletImpact, uintptr_t weapon, uintptr_t owner, uintptr_t hit, CVector* start, CVector* end, void* colPoint, int inc)
 {
+    if(g_active && g_npcFire && owner == g_npcFireOwner && start && end && !g_shotCaptured)
+    {   // выстрел педа хоста: линия пули и попадание во второго CJ
+        g_shotCaptured = true; g_shotStart = *start; g_shotEnd = *end; g_shotHitMate = hit && hit == g_ctx.remote;
+    }
     if(g_active && owner && owner == g_ctx.local && start && end)
     {
         if(g_inLocalFire)
@@ -1171,6 +1186,30 @@ DECL_HOOKv(DoBulletImpact, uintptr_t weapon, uintptr_t owner, uintptr_t hit, CVe
 DECL_HOOK(bool, WeaponFireHook, uintptr_t weapon, uintptr_t owner, CVector* start, CVector* barrel, uintptr_t targetEnt, CVector* target, CVector* alt)
 {
     bool local = g_active && owner && owner == g_ctx.local && !g_replaying;
+    uint16_t npc = (!local && g_active && owner && !g_replaying) ? crowd::TrackedId(owner) : 0;
+    if(npc)
+    {   // хост: стреляет пед, которого видит друг — друг повторит выстрел у себя
+        static uint64_t winUs = 0; static int inWin = 0;
+        if(net::Since(g_ctx.now, winUs) > 1000000) { winUs = g_ctx.now; inWin = 0; }
+        g_npcFire = true; g_npcFireOwner = owner; g_shotCaptured = false; g_shotHitMate = false;
+        bool r = WeaponFireHook(weapon, owner, start, barrel, targetEnt, target, alt);
+        g_npcFire = false; g_npcFireOwner = 0;
+        if(r && ++inWin <= 25)
+        {
+            net::ShotPacket p{};
+            p.hdr = net::MakeHeader(net::PKT_SHOT);
+            p.seq = ++g_shotSeq; p.npc = npc;
+            p.weapon = (uint8_t)Field<int>(weapon, off::WeapType);
+            CVector op = GetPosition(owner);
+            Put(p.shooter, op);
+            CVector s0 = g_shotCaptured ? g_shotStart : (start ? *start : CVector{ op.x, op.y, op.z + 0.5f });
+            CVector e0 = g_shotCaptured ? g_shotEnd : (target ? *target : CVector{ op.x - sinf(Field<float>(owner, off::PedRotCurrent)) * 40.0f, op.y + cosf(Field<float>(owner, off::PedRotCurrent)) * 40.0f, op.z });
+            Put(p.start, s0); Put(p.end, e0);
+            if(g_shotCaptured && g_shotHitMate) p.flags |= net::SHOT_HIT_MATE;
+            SendGame(&p, sizeof(p));
+        }
+        return r;
+    }
     if(!local) return WeaponFireHook(weapon, owner, start, barrel, targetEnt, target, alt);
 
     g_inLocalFire = true; g_shotCaptured = false; g_shotHitMate = false;
@@ -1219,6 +1258,46 @@ DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool
         Log(false, "[УРОН] по %s: %.1f от «%s», оружие %d, часть тела %d%s", victim == g_ctx.local ? "тебе" : "второму CJ",
             Field<float>(calc, off::CalcDamage), who, Field<int>(calc, off::CalcWeapon), Field<int>(calc, off::CalcPiece),
             blocked ? " — НЕ применён (урон считает телефон друга)" : "");
+    }
+    if(g_active && victim && crowd::ClientMode())
+    {   // друг: копии педов хоста раним только через хоста; их удары по тебе — тоже только от хоста
+        uintptr_t inf = Field<uintptr_t>(calc, off::CalcInflictor);
+        uint16_t cid = crowd::CopyId(victim);
+        if(cid && !crowd::AllowCopyDamage())
+        {
+            if(IsLocalSide(inf))
+            {
+                net::NpcDamageEvent e{};
+                e.type = net::REL_NPC_DAMAGE; e.npc = cid;
+                e.weapon = (uint8_t)Field<int>(calc, off::CalcWeapon);
+                e.piece = (uint8_t)Field<int>(calc, off::CalcPiece);
+                e.viaVehicle = inf != g_ctx.local;
+                e.amount = Field<float>(calc, off::CalcDamage);
+                SendReliable(&e, sizeof(e));
+            }
+            ZeroResponse(resp);
+            return;
+        }
+        bool fromCopy = inf && (crowd::IsCopy(inf) || (EntType(inf) == 2 && crowd::IsCopy(Field<uintptr_t>(inf, off::VehDriver))));
+        if(victim == g_ctx.local && fromCopy && !g_applyingDamage) { ZeroResponse(resp); return; }
+    }
+    if(g_active && victim && victim == g_ctx.remote && !g_allowRemoteDamage && crowd::Active() && g_ctx.role == net::Role::Host)
+    {   // хост: пед хоста ранил второго CJ — урон уходит другу (как от этого педа)
+        uintptr_t inf = Field<uintptr_t>(calc, off::CalcInflictor);
+        uintptr_t src = (inf && EntType(inf) == 2) ? Field<uintptr_t>(inf, off::VehDriver) : inf;
+        uint16_t npc = crowd::TrackedId(src);
+        if(npc && !IsLocalSide(inf))
+        {
+            net::DamageEvent e{};
+            e.type = net::REL_DAMAGE; e.npc = npc;
+            e.weapon = (uint8_t)Field<int>(calc, off::CalcWeapon);
+            e.piece = (uint8_t)Field<int>(calc, off::CalcPiece);
+            e.viaVehicle = inf != src;
+            e.amount = Field<float>(calc, off::CalcDamage);
+            SendReliable(&e, sizeof(e));
+            ZeroResponse(resp);
+            return;
+        }
     }
     if(g_active && victim)
     {
@@ -1435,15 +1514,34 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
                 if(g_ctx.role == net::Role::Client) GiveWeaponLocal(e->weapon, (int)e->ammo, "Хост выдал тебе");
                 return;
             }
+            if(len >= 1 && data[0] == net::REL_NPC_DAMAGE && len == sizeof(net::NpcDamageEvent))
+            {   // хост: друг ранил моего педа — наношу урон по-настоящему (атакующий — второй CJ)
+                const auto* e = (const net::NpcDamageEvent*)data;
+                uintptr_t ped = crowd::TrackedPed(e->npc);
+                if(ped && PedIsAlive(ped))
+                {
+                    GenerateDamageEvent(ped, g_ctx.remote, e->weapon, (int)(e->amount + 0.5f), e->piece, 0);
+                    Log(false, "[УРОН] Друг ранил педа %u: %.0f (оружие %d)%s", e->npc, e->amount, e->weapon, PedIsAlive(ped) ? "" : " — убит");
+                }
+                return;
+            }
+            if(len >= 1 && data[0] == net::REL_BUSTED && len == sizeof(net::BustedEvent))
+            {
+                if(g_ctx.role == net::Role::Client) crowd::OnBusted(g_ctx.local);
+                return;
+            }
             if(len >= 1 && data[0] == net::REL_DAMAGE && len == sizeof(net::DamageEvent))
             {
                 const auto* e = (const net::DamageEvent*)data;
                 uintptr_t l = g_ctx.local;
-                if(!l || !PedIsAlive(l) || !g_ff) return;
+                if(!l || !PedIsAlive(l)) return;
+                if(!e->npc && !g_ff) return;                         // от друга — только если огонь по своим
+                uintptr_t attacker = e->npc ? crowd::CopyById(e->npc) : g_ctx.remote;
                 g_applyingDamage = true;
-                GenerateDamageEvent(l, g_ctx.remote, e->weapon, (int)(e->amount + 0.5f), e->piece, 0);
+                GenerateDamageEvent(l, attacker, e->weapon, (int)(e->amount + 0.5f), e->piece, 0);
                 g_applyingDamage = false;
-                Log(false, "[УРОН] Друг попал в тебя: %.0f (оружие %d)", e->amount, e->weapon);
+                if(e->npc) Log(false, "[УРОН] Пед хоста (%u) ранил тебя: %.0f (оружие %d)", e->npc, e->amount, e->weapon);
+                else       Log(false, "[УРОН] Друг попал в тебя: %.0f (оружие %d)", e->amount, e->weapon);
             }
             break;
     }
@@ -1501,6 +1599,50 @@ bool PopNotice(char* out, int len)
     snprintf(out, len, "%s", g_notices.front().c_str());
     g_notices.erase(g_notices.begin());
     return true;
+}
+
+uint16_t CrowdVehicleId(uintptr_t veh)
+{
+    if(!g_installed || !g_active || !veh) return 0;
+    if(NetVeh* v = FindVeh(veh)) return v->id;
+    NetVeh* v = Register(veh, true);
+    return v ? v->id : 0;
+}
+uintptr_t VehicleById(uint16_t id)
+{
+    NetVeh* v = FindId(id);
+    return (v && Valid(*v)) ? v->veh : 0;
+}
+void WarpPedInto(uintptr_t ped, uintptr_t veh, int seat)
+{
+    if(!ped || !veh) return;
+    if(!SeatFree(veh, seat, ped))
+    {
+        int p = FreePassengerSeat(veh, seat > 0 ? seat - 1 : 0);
+        if(p < 0) return;
+        seat = p + 1;
+    }
+    WarpIn(ped, veh, seat);
+}
+void WarpPedOut(uintptr_t ped) { if(ped && PedVehicle(ped)) WarpOut(ped); }
+void EnsurePedWeapon(uintptr_t ped, int w) { if(ped && w >= 0 && w <= 46) EnsureWeapon(ped, w); }
+int ClearRandomVehicles()
+{
+    if(!g_vehPoolSym) return 0;
+    uintptr_t pool = *(uintptr_t*)g_vehPoolSym;
+    if(!pool) return 0;
+    uintptr_t objs = Field<uintptr_t>(pool, 0), flags = Field<uintptr_t>(pool, 8);
+    int size = Field<int>(pool, 0x10), n = 0;
+    if(!objs || !flags || size <= 0 || size > 4096) return 0;
+    for(int i = 0; i < size; ++i)
+    {
+        if(Field<uint8_t>(flags, i) & 0x80) continue;
+        uintptr_t veh = objs + (uintptr_t)i * kVehPoolEntry;
+        if(FindVeh(veh) || Field<uint8_t>(veh, off::VehCreatedBy) != 1) continue;
+        if(veh == PedVehicle(g_ctx.local) || veh == PedVehicle(g_ctx.remote)) continue;
+        DeleteVehicle(veh); ++n;
+    }
+    return n;
 }
 
 bool RemoteBusy() { return g_active && g_remoteBusy; }

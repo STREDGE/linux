@@ -58,6 +58,14 @@ namespace coop { namespace sync {
     // Сообщения для ленты уведомлений («Хост выдал тебе …»)
     bool PopNotice(char* out, int len);
 
+    // Для общего мира людей (crowd)
+    uint16_t  CrowdVehicleId(uintptr_t veh);          // хост: машина вокруг друга → общий номер
+    uintptr_t VehicleById(uint16_t id);               // машина по общему номеру (0 — нет)
+    void      WarpPedInto(uintptr_t ped, uintptr_t veh, int seat);
+    void      WarpPedOut(uintptr_t ped);
+    void      EnsurePedWeapon(uintptr_t ped, int weapon);
+    int       ClearRandomVehicles();                  // друг: убрать свои случайные машины
+
     // Для строки состояния в логе
     int  TrackedVehicles();
 }}

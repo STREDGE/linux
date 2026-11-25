@@ -439,6 +439,12 @@ namespace net
             case PKT_SHOT:
                 if(len == sizeof(ShotPacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
+            case PKT_PEDS:
+                if(len >= kPedsHeaderSize && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_WORLD_TIME:
+                if(len == sizeof(WorldTimePacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
             case PKT_WORLD_REQ:
                 if(len == sizeof(WorldReqPacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
