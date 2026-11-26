@@ -420,6 +420,13 @@ uintptr_t NearestPed(const Vec& at, float radius, const std::function<bool(uintp
 }
 
 uintptr_t VehDriver(uintptr_t veh) { return veh ? F<uintptr_t>(veh, 0x5A0) : 0; }            // CVehicle::pDriver
+int FreePassengerSeat(uintptr_t veh, int skip)
+{
+    if(!veh) return -1;
+    int max = F<uint8_t>(veh, 0x5EC); if(max > 8) max = 8;
+    for(int i = 0; i < max; ++i) if(i != skip && !F<uintptr_t>(veh, 0x5A8 + i * 8)) return i;   // CVehicle::pPassengers[8]
+    return -1;
+}
 int VehFreeSeats(uintptr_t veh) { return veh ? (int)F<uint8_t>(veh, 0x5EC) - (int)F<uint8_t>(veh, 0x5E8) : 0; }   // m_nMaxPassengers - m_nNumPassengers
 bool IsPoliceCar(int m) { return m == 596 || m == 597 || m == 598 || m == 599 || m == 427 || m == 490 || m == 528 || m == 601; }   // не мотоцикл (523) и не вертолёт
 

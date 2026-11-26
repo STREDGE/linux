@@ -41,6 +41,8 @@ const char* WorldRules()
 - Тело — сразу, в этом же ответе: испугался — короткая фраза и тут же отходишь/бежишь инструментом, а не только говоришь «мне страшно». Разозлился — слово, жест, драка.
 - Если разговор тебе неинтересен — коротко отшей и уходи. Не задавай встречных вопросов без нужды.
 - Сидишь в машине и тебя зовут выйти — решай: выходишь (move get_out) или уезжаешь (move go_away).
+- Он в машине и зовёт «садись» — согласен: move get_in (сядешь сам). «Пошли со мной» — move follow_player: дальше ты сам идёшь следом и садишься в его машину.
+- По телефону ты не рядом и не можешь двигаться инструментами move. Обещал прийти — set_goal meet_player: ты правда придёшь к нему (мод приведёт тебя). Не говори «уже подхожу», «вижу тебя», если ты не рядом.
 
 КАК ДУМАТЬ
 - Решай как реальный человек с твоим характером, страхами, жадностью и преданностью. Учитывай, кто рядом: при своих не показывай дружбу с врагом; при свидетелях коп не берёт взятку открыто.
@@ -81,7 +83,7 @@ const char* ToolsJson()
 {"name":"gesture","description":"Жест или поза телом, пока говоришь или реагируешь.","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["kind"],"properties":{
   "kind":{"type":"string","enum":["talk","agree","disagree","angry","threaten","scared","laugh","wave","shrug","point","cross_arms","fuck_you","hands_up","cower","think","celebrate","smoke","sit","dance"]}}}},
-{"name":"move","description":"Куда идти. follow_player — пойти за собеседником (из машины выйдешь сам); come_closer; get_out — выйти из машины; go_away — уйти/уехать по делам; flee — убежать в страхе; wait_here — стоять тут; go_home — пойти домой/на свою точку; wander — гулять дальше.","strict":true,
+{"name":"move","description":"Куда идти. follow_player — пойти с собеседником: идёшь следом, сел он в машину — садишься к нему, вышел — выходишь (из своей машины выйдешь сам); get_in — сесть к нему в машину пассажиром; come_closer; get_out — выйти из машины; go_away — уйти/уехать по делам; flee — убежать в страхе; wait_here — стоять тут; go_home — пойти домой/на свою точку; wander — гулять дальше.","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["mode","run"],"properties":{
   "mode":{"type":"string","enum":["follow_player","come_closer","get_out","go_away","flee","wait_here","go_home","wander"]},
   "run":{"type":"boolean"}}}},
@@ -141,7 +143,7 @@ const char* ToolsJson()
 {"name":"group_act","description":"Только если в обстановке указано, кто рядом слышит разговор. Действие одного из них (who — номер): жест или поступок. Для attack / aim_weapon: target him — на собеседника, his_attacker — на того, кто на собеседника напал; weapon — чем.","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["who","action","target","weapon"],"properties":{
   "who":{"type":"integer"},
-  "action":{"type":"string","enum":["laugh","agree","disagree","angry","threaten","scared","cross_arms","fuck_you","point","smoke","come_closer","go_away","flee","wait_here","follow_player","aim_weapon","attack","holster","call_police"]},
+  "action":{"type":"string","enum":["laugh","agree","disagree","angry","threaten","scared","cross_arms","fuck_you","point","smoke","come_closer","go_away","flee","wait_here","follow_player","get_in","aim_weapon","attack","holster","call_police"]},
   "target":{"type":"string","enum":["him","his_attacker"]},
   "weapon":{"type":"string","enum":["fists","knife","bat","pistol","uzi","shotgun","ak47"]}}}},
 {"name":"end_conversation","description":"Закончить разговор (уйти, отвернуться, бросить трубку).",

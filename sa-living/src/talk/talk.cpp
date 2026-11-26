@@ -54,6 +54,19 @@ namespace
     // его разговора — всё как у разговора хоста. Ответы ИИ идут другу сообщением «reply».
     Conv g_fc;
     Conv& ConvFor(int who) { return who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST ? g_fc : g_c; }
+    // Когда мы поставили человеку позу: в первые кадры игра ещё показывает его прежнюю ходьбу — это не «ушёл»
+    // (тест 0.4.1: поза снималась в том же кадре, и собеседник шёл дальше, как обычный прохожий)
+    std::map<int, double> g_poseAt;
+    void MarkPose(uintptr_t ped) { if(ped) g_poseAt[game::Ref(ped)] = Now(); }
+    bool FreshPose(uintptr_t ped) { auto it = g_poseAt.find(game::Ref(ped)); return it != g_poseAt.end() && Now() - it->second < 1.5; }
+
+    // Спутники: кто согласился идти с CJ. Как в жизни: CJ сел в машину — садятся рядом, вышел — выходят и идут
+    // следом. Без вступления в группу игрока. Отпускаем: отпустили словами, отстал на 100 м, полчаса, гибель.
+    struct Follower { int who; double since; uintptr_t car = 0; double nextAct = 0; };
+    std::map<int, Follower> g_followers;          // charId → …
+    void AddFollower(Character* c, int who) { if(c) { Follower f; f.who = who; f.since = Now(); g_followers[c->id] = f; TRACE("СПУТНИК", "#%d %s идёт с %s", c->id, c->name.c_str(), who == world::WHO_CJ ? "CJ" : "другом"); } }
+    void DropFollower(Character* c, const char* why) { if(c && g_followers.erase(c->id)) TRACE("СПУТНИК", "#%d %s больше не идёт с ним: %s", c->id, c->name.c_str(), why); }
+
     // действие «со стороны» (слушатель, разговор друга у хоста) — не обрывает разговор хоста
     struct MemberGuard { bool prev; MemberGuard() : prev(g_memberAct) { g_memberAct = true; } ~MemberGuard() { g_memberAct = prev; } };
 
@@ -336,6 +349,7 @@ namespace
     void ListenPose(Character* c, uintptr_t ped, int ms, uintptr_t to, int wanted)
     {
         if(!CanPose(ped)) return;
+        MarkPose(ped);
         if(!to) to = game::Player();
         FaceCJ(ped, to);
         int t = game::PedType(ped);
@@ -353,6 +367,7 @@ namespace
     void TalkPose(Character* c, uintptr_t ped, const std::string& text, uintptr_t to)
     {
         if(!CanPose(ped) || game::ActiveTaskType(ped) == 933) return;
+        MarkPose(ped);
         int ms = 1200 + (int)text.size() * 45;                         // примерно по длине фразы (байты UTF-8 ≈ 2 на букву)
         if(ms > 9000) ms = 9000;
         FaceCJ(ped, to);
@@ -441,7 +456,7 @@ namespace
             const std::string& a = in["action"].str();
             json::Value arg = json::Value::Object();
             if(a == "call_police") { json::Value cp = json::Value::Object(); cp["who"] = "police"; cp["message"] = ""; return ExecutePhysical(m, mped, who, "call", cp); }
-            static const char* moves[] = { "follow_player", "come_closer", "go_away", "flee", "wait_here" };
+            static const char* moves[] = { "follow_player", "get_in", "come_closer", "go_away", "flee", "wait_here" };
             for(const char* mv : moves) if(a == mv) { arg["mode"] = a; arg["run"] = a == "flee"; return ExecutePhysical(m, mped, who, "move", arg); }
             if(a == "attack" || a == "aim_weapon") { arg["weapon"] = in["weapon"].s(a == "attack" ? "fists" : "pistol"); arg["target"] = in["target"].s("him"); return ExecutePhysical(m, mped, who, a, arg); }
             if(a == "holster") return ExecutePhysical(m, mped, who, "holster", arg);
@@ -457,10 +472,13 @@ namespace
         if(n == "set_goal")
         {
             int h = world::Clamp(in["hours"].i(24), 1, 24 * 14);
+            // игровой час — минута по-настоящему: «приду через час» истекал за минуту, и человек не приходил (тест 0.4.1)
+            if(in["kind"].str() == "meet_player" && h < 12) h = 12;
             c.goal = in["kind"].str() + ": " + in["text"].str();
             c.goalUntilMin = world::NowMin() + h * 60;
             c.goalTarget = who;
             world::Remember(c, "Моя цель: " + in["text"].str());
+            if(in["kind"].str() == "meet_player") return "ты идёшь к нему — мод приведёт тебя (появишься рядом и подойдёшь)";
             return Fmt("цель поставлена на %d ч", h);
         }
         if(n == "share_contact")
@@ -1206,6 +1224,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         for(auto& g : kG)
             if(k == g.k)
             {
+                MarkPose(ped);
                 if(game::TaskAnim(ped, g.anim, g.block, g.loop, g.ms, k == "hands_up")) return "ок";
                 if(g.fbAnim && game::TaskAnim(ped, g.fbAnim, g.fbBlock, g.loop, g.ms)) return "ок";
                 return "не вышло";
@@ -1215,8 +1234,10 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
     if(n == "move" && ped && !phone && game::Alive(ped) && game::Vehicle(ped) && !game::IsScriptPed(ped))
     {   // пед в машине: выйти (и, если звали, потом пойти за CJ); уйти/убежать — просто уехать (машина продолжит ехать)
         const std::string& m = in["mode"].str();
-        if(m == "get_out" || m == "follow_player" || m == "come_closer")
+        if(m == "get_out" || m == "follow_player" || m == "come_closer" || m == "get_in")
         {
+            if((m == "follow_player" || m == "get_in") && game::Vehicle(pl) == game::Vehicle(ped)) { AddFollower(c, who); return "ты уже сидишь с ним в машине"; }
+            if(m == "follow_player" || m == "get_in") AddFollower(c, who);    // выйдет и пойдёт/сядет к нему (спутник)
             game::TaskLeaveCar(ped);
             if(m != "get_out")
             {
@@ -1235,8 +1256,20 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         const std::string& m = in["mode"].str(); bool run = in["run"].b();
         int ms = run ? 6 : 4;
         if(m == "get_out") return "ты и так не в машине";
-        if(m == "follow_player") return game::TaskFollow(ped, pl) ? "идёшь за ним" : "не вышло";
+        if(m == "follow_player" || m == "get_in")
+        {
+            AddFollower(c, who);
+            if(uintptr_t v = game::Vehicle(pl))
+            {   // он в машине — «пошли» значит «садись»
+                int seat = game::FreePassengerSeat(v);
+                if(seat < 0) return "в его машине нет свободного места";
+                return game::TaskEnterCar(ped, v, false, seat) ? "садишься к нему в машину" : "не вышло";
+            }
+            if(m == "get_in") return "он не в машине — идёшь за ним";
+            return game::TaskFollow(ped, pl) ? "идёшь за ним (сядет в машину — сядешь рядом)" : "не вышло";
+        }
         if(m == "come_closer") return game::TaskGoTo(ped, game::Pos(pl), ms, 1.2f) ? "подходишь" : "не вышло";
+        if(m == "flee" || m == "wait_here" || m == "go_home" || m == "go_away" || m == "wander") DropFollower(c, m.c_str());
         if(m == "flee") { if(c) world::ChangeRelation(*c, who, 0, 0, 0, 5, ""); if(!g_memberAct) EndConversation(); return game::TaskFlee(ped, pl) ? "убегаешь" : "не вышло"; }
         if(m == "wait_here") return game::TaskStand(ped, 60000) ? "ждёшь" : "не вышло";
         if(m == "go_home" && c) { game::Vec h = c->home; if(!g_memberAct) g_c.endAfterSpeech = true; return game::TaskGoTo(ped, h, ms, 2.0f) ? "идёшь домой" : "не вышло"; }
@@ -1276,7 +1309,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         }
         if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
         else game::SetCurrentWeapon(ped, 0);
-        if(c) { world::Remember(*c, "Я напал на " + std::string(WhoName(who))); world::ChangeRelation(*c, who, -10, 0, -10, 0, ""); }
+        if(c) { world::Remember(*c, "Я напал на " + std::string(WhoName(who))); world::ChangeRelation(*c, who, -10, 0, -10, 0, ""); DropFollower(c, "напал на него"); }
         if(!g_memberAct) EndConversation();
         return game::TaskAttack(ped, pl) ? (w.w ? "напал" : "полез драться на кулаках") : "не вышло";
     }
@@ -1635,7 +1668,7 @@ static void HitFrameFor(Conv& cv, HitState& hs, uintptr_t speaker)
             bool busy = (st >= 1000 && st < 1100)                 // бьют / дерётся / стреляет
                      || (st >= 700 && st < 800)                    // садится в машину / едет
                      || st == 205 || st == 206                     // падает / встаёт
-                     || ((at == 401 || at == 203) && st == 900);   // наша поза «стоять», а он куда-то идёт (убегает)
+                     || ((at == 401 || at == 203) && st == 900 && !FreshPose(p));   // наша поза «стоять», а он куда-то идёт (убегает) — не в первые 1,5 с
             if((at == 401 || at == 203 || at == 920) && busy)
             { TRACE("РАЗГОВОР", "#%d занят своим (тело %d) — снимаю нашу позу %d", id, st, at); game::ClearTask(p); }
         }
@@ -1676,6 +1709,57 @@ static void HitFrame()
 {
     HitFrameFor(g_c, g_hitMine, game::Player());
     if(coopnet::GetRole() == coopnet::HOST) HitFrameFor(g_fc, g_hitFriend, game::Player2());
+}
+
+// Спутники (см. g_followers): сел CJ в машину — садятся к нему; вышел — выходят и идут следом; отстал — догоняет.
+static double g_nextFollow = 0;
+static void FollowersFrame(double now)
+{
+    if(now < g_nextFollow || g_followers.empty()) return;
+    g_nextFollow = now + 0.5;
+    if(game::CutsceneRunning() || police::Arresting()) return;
+    std::map<uintptr_t, int> claimed;                                   // машина → занятое в этом проходе место
+    for(auto it = g_followers.begin(); it != g_followers.end();)
+    {
+        Character* c = world::Find(it->first);
+        Follower& f = it->second;
+        uintptr_t ped = c ? world::PedOf(*c) : 0;
+        uintptr_t tgt = (f.who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST) ? game::Player2() : game::Player();
+        const char* why = nullptr;
+        if(!c || !c->alive || !ped || !game::Alive(ped)) why = "его нет";
+        else if(!tgt) why = "CJ нет";
+        else if(game::Dist(game::Pos(ped), game::Pos(tgt)) > 100) why = "отстал";
+        else if(now - f.since > 1800) why = "прошло полчаса";
+        if(why) { TRACE("СПУТНИК", "#%d больше не идёт: %s", it->first, why); it = g_followers.erase(it); continue; }
+        ++it;
+        if(game::IsScriptPed(ped) || crew::Defending(ped) || now < f.nextAct) continue;
+        int st = game::SimplestTaskType(ped), at = game::ActiveTaskType(ped);
+        if(st >= 1000 && st < 1100) continue;                          // дерётся — не мешаем
+        uintptr_t tv = game::Vehicle(tgt), pv = game::Vehicle(ped);
+        float d = game::Dist(game::Pos(ped), game::Pos(tgt));
+        if(tv && pv != tv)
+        {   // CJ в машине, а он нет — садится рядом (если близко и есть место)
+            if(pv) { game::TaskLeaveCar(ped); f.nextAct = now + 2.0; continue; }
+            if(d > 30) { if(at != 900) game::TaskGoTo(ped, game::Pos(tgt), 6, 3.0f); f.nextAct = now + 1.5; continue; }
+            if(st >= 700 && st < 800) continue;                         // уже садится
+            int skip = claimed.count(tv) ? claimed[tv] : -1;
+            int seat = game::FreePassengerSeat(tv, skip);
+            if(seat < 0) continue;                                      // мест нет — стоит рядом
+            claimed[tv] = seat;
+            if(game::TaskEnterCar(ped, tv, false, seat)) { f.car = tv; TRACE("СПУТНИК", "#%d садится к нему в машину (место %d)", c->id, seat); }
+            f.nextAct = now + 3.0;
+            continue;
+        }
+        if(!tv && pv)
+        {   // CJ вышел, а он сидит — выходит следом
+            if(pv == f.car || !game::VehDriver(pv) || game::VehDriver(pv) == tgt) { game::TaskLeaveCar(ped); f.nextAct = now + 2.0; }
+            continue;
+        }
+        if(tv && pv == tv) { f.car = tv; continue; }                   // едут вместе
+        // оба пешком: идёт следом (если не стоит с ним рядом в разговоре — тогда наша поза важнее)
+        bool talkingNear = d < 6 && (at == 401 || at == 203 || at == 920 || at == 933 || at == 1600 || FreshPose(ped));
+        if(!talkingNear && at != 936) { game::TaskFollow(ped, tgt); f.nextAct = now + 1.0; }
+    }
 }
 
 // Хост: разговор друга с настоящим педом заканчивается, когда друг отошёл или замолчал надолго — снять позы
@@ -1855,6 +1939,7 @@ void Frame()
     AimFrame(Now());
     HitFrame();
     FriendConvFrame();
+    FollowersFrame(Now());
     WarmFrame(Now());
     if(g_c.active && g_c.reqId == -1 && Now() - g_c.sentAt > 30) { g_c.reqId = 0; Notify("Хост не ответил"); }
 

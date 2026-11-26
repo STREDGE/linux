@@ -111,6 +111,53 @@ namespace
         }
     }
 
+    // ---- «приду к тебе» (обещал по телефону или в разговоре) ----
+    // Раньше цель meet_player только записывалась: человек говорил «уже подхожу», а сам гулял (тест 0.4.1).
+    // Теперь: далеко или не в мире — «приезжает» (появляется в 35–45 м вне кадра), дальше идёт/бежит к CJ;
+    // дошёл — цель снята, ИИ говорит, что пришёл (и что CJ в машине — можно сесть).
+    std::map<int, double> g_meetGo;
+    void MeetGoal(Character& c)
+    {
+        uintptr_t pl = game::Player();
+        uintptr_t tgt = c.goalTarget == world::WHO_CJ ? pl : FriendNearHost();
+        if(!tgt || game::OnMission() || game::CutsceneRunning() || police::Arresting()) return;
+        if(talk::Current() == &c && talk::InConversation() && !talk::PhoneMode()) return;   // уже говорит с ним рядом
+        uintptr_t ped = world::PedOf(c);
+        if(ped && !game::Alive(ped)) return;
+        game::Vec tp = game::Pos(tgt);
+        if(!ped || game::Dist(game::Pos(ped), tp) > 150)
+        {
+            game::Vec at = Around(tp, 40.0f);
+            float sx, sy;
+            for(int i = 0; i < 6 && game::WorldToScreen(at, sx, sy); ++i) at = Around(tp, 35.0f + i * 2);   // появиться за кадром, а не перед глазами
+            if(!ped)
+            {
+                ped = game::SpawnPed(c.pedType, c.model, at);
+                if(!ped) return;
+                world::Bind(c, ped);
+            }
+            else if(!game::Vehicle(ped)) game::Teleport(ped, at);
+            TRACE("ЖИЗНЬ", "#%d %s идёт к %s (обещал прийти)", c.id, c.name.c_str(), c.goalTarget == world::WHO_CJ ? "CJ" : "другу");
+        }
+        float d = game::Dist(game::Pos(ped), tp);
+        if(d < 4.5f)
+        {
+            c.goal.clear();
+            game::TaskTurnTo(ped, tgt);
+            bool car = game::Vehicle(tgt) != 0;
+            NotifyFor(c.goalTarget, Fmt("%s пришёл", c.nick.empty() ? c.name.c_str() : c.nick.c_str()));
+            talk::React(c, c.goalTarget, std::string("Ты пришёл к ") + (c.goalTarget == world::WHO_CJ ? world::W().playerNick : world::W().friendNick) +
+                        ", как обещал, — стоишь рядом с ним." + (car ? " Он сидит в машине: позовёт — садись (move get_in)." : " Скажи, что пришёл."), true);
+            TRACE("ЖИЗНЬ", "#%d пришёл к CJ", c.id);
+            return;
+        }
+        if(game::Vehicle(ped)) { if(!game::VehDriver(game::Vehicle(ped)) || game::VehDriver(game::Vehicle(ped)) != ped) game::TaskLeaveCar(ped); return; }
+        double now = talk::Now();
+        if(now - g_meetGo[c.id] < 2.0) return;                           // CJ двигается — цель обновляем раз в 2 с
+        g_meetGo[c.id] = now;
+        game::TaskGoTo(ped, tp, d > 25 ? 6 : 4, 3.0f);
+    }
+
     // ---- цели (месть, засада) ----
     void Goals()
     {
@@ -121,6 +168,7 @@ namespace
         {
             if(!c.alive || c.goal.empty()) continue;
             if(c.goalUntilMin && nowMin > c.goalUntilMin) { LOG_INFO("Цель #%d истекла: %s", c.id, c.goal.c_str()); c.goal.clear(); continue; }
+            if(c.goal.rfind("meet_player", 0) == 0) { MeetGoal(c); continue; }
             bool hunt = c.goal.rfind("hunt_player", 0) == 0 || c.goal.rfind("revenge", 0) == 0;
             if(!hunt) continue;
             // цель — тот CJ, на кого зуб: у хоста друг — второй CJ (только когда вы рядом: мир хоста — вокруг хоста)

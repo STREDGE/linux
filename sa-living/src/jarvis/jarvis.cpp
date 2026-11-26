@@ -398,6 +398,16 @@ namespace
                 if(pt == game::PT_PLAYER1 || pt == game::PT_PLAYER2 || !match(pt)) return;
                 int ref = game::Ref(ped);
                 if(!ids.empty() && std::find(ids.begin(), ids.end(), ref) == ids.end()) return;
+                if(act != "list")
+                {
+                    if(game::IsScriptPed(ped)) return;                    // люди миссии — дело сценария (сломается миссия)
+                    // Друзей и знакомых (в телефоне, симпатия от 25) «всех» не трогаем — только если назвали по номеру.
+                    // Тест 0.4.1: «убери всех» — и погиб Рикки, с которым CJ только что подружился.
+                    if(ids.empty() && (act == "kill" || act == "remove" || act == "attack"))
+                        if(world::Character* ch = world::FindByPed(ped))
+                            if(ch->rel[world::WHO_CJ].contact || ch->rel[world::WHO_CJ].liking >= 25 || ch->rel[world::WHO_CJ].payroll) return;
+                    if(act == "remove" && game::Vehicle(ped)) return;     // водителей не вынимаем (машина осталась бы без водителя)
+                }
                 found.push_back({ ped, ref, pt, d });
             });
             std::sort(found.begin(), found.end(), [](const P& x, const P& y) { return x.d < y.d; });
@@ -417,6 +427,7 @@ namespace
             for(auto& f : found)
             {
                 if(act == "kill") { script::Do(0x0223, { Arg::I(f.ref), Arg::I(0) }); script::Do(0x05BE, { Arg::I(f.ref) }); }
+                else if(act == "remove") game::DeletePed(f.ped);                // просто исчезают — никто не гибнет
                 else if(act == "flee") game::TaskFlee(f.ped, pl, 60.0f, 25000);
                 else if(act == "attack") game::TaskAttack(f.ped, pl);
                 else if(act == "follow") game::TaskFollow(f.ped, pl);
@@ -424,7 +435,7 @@ namespace
                 else return "неизвестное действие";
                 ++n;
             }
-            const char* what = act == "kill" ? "убито" : act == "flee" ? "разбежались" : act == "attack" ? "нападают" : act == "follow" ? "идут за тобой" : "успокоились";
+            const char* what = act == "kill" ? "убито" : act == "remove" ? "убрано из мира (живы, просто ушли)" : act == "flee" ? "разбежались" : act == "attack" ? "нападают" : act == "follow" ? "идут за тобой" : "успокоились";
             Done(Fmt("Люди: %s %d", what, n));
             return Fmt("%s: %d", what, n);
         }
@@ -523,7 +534,7 @@ namespace
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
 {"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак; explode_near — взорвать машины вокруг (who: all, police, empty; radius — метров, по умолчанию 40, до 120; машину игрока не трогает).","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack","explode_near"]},"model":{"type":"string"},"who":{"type":"string"},"radius":{"type":"number"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
 {"name":"world","description":"Мир: hour/minute — время; weather — номер (0–1 ясно, 4 пасмурно, 8 дождь, 9 туман, 16 гроза, 19 песчаная буря; -1 — как в игре); time_scale — скорость игры (1 — обычная, 0.4 — замедление); traffic и peds — плотность машин и людей (0 — нет, 1 — обычно, 2 — много); clear_area — убрать всех вокруг.","input_schema":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"},"weather":{"type":"integer"},"time_scale":{"type":"number"},"traffic":{"type":"number"},"peds":{"type":"number"},"clear_area":{"type":"boolean"}}}},
-{"name":"people","description":"Люди вокруг игрока (прохожие, бандиты, копы). action: list — кто рядом (номер, кто, расстояние); kill — убить; flee — разбежаться от игрока; attack — напасть на игрока; follow — идти за игроком (охрана); calm — оставить в покое (вернуться к своим делам). who: all, gang (любая банда), grove, ballas, vagos, aztecas, rifa, triads, danang, mafia, cops, civil (прохожие). ids — номера из list (если нужно конкретных). radius — метров (по умолчанию 50, до 150). Игрока и друга никогда не трогает.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["list","kill","flee","attack","follow","calm"]},"who":{"type":"string"},"ids":{"type":"array","items":{"type":"integer"}},"radius":{"type":"number"}}}},
+{"name":"people","description":"Люди вокруг игрока (прохожие, бандиты, копы). action: list — кто рядом (номер, кто, расстояние); remove — убрать/удалить/стереть из мира (люди исчезают, никто не погибает — это значат «убери», «удали», «очисти улицу»); kill — убить (ТОЛЬКО если прямо сказано «убей»); flee — разбежаться от игрока; attack — напасть на игрока; follow — идти за игроком (охрана); calm — оставить в покое (вернуться к своим делам). who: all, gang (любая банда), grove, ballas, vagos, aztecas, rifa, triads, danang, mafia, cops, civil (прохожие). ids — номера из list (если нужно конкретных). radius — метров (по умолчанию 50, до 150). Игрока и друга никогда не трогает; друзей и знакомых CJ при «все» не трогает (только по номеру из list); людей миссии — никогда.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["list","remove","kill","flee","attack","follow","calm"]},"who":{"type":"string"},"ids":{"type":"array","items":{"type":"integer"}},"radius":{"type":"number"}}}},
 {"name":"undo","description":"Отменить последнее действие (перенос, время, погоду, розыск, бессмертие, созданную машину).","input_schema":{"type":"object","properties":{}}},
 {"name":"find_commands","description":"Для просьб, которых нет среди готовых инструментов: поиск по справочнику команд сценария игры (около 1500 команд, тех же, которыми игра делает миссии). query — 1–4 английских слова по смыслу (car, explosion, fire, camera, char, object, pickup, particle, sound, stat, gang, zone…). Вернёт имена, параметры и описания.","input_schema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}}},
 {"name":"run_commands","description":"Выполнить по очереди команды сценария игры, найденные через find_commands. args — только ВХОДНЫЕ параметры по порядку; выходные вернутся в ответе с номерами [$1], [$2]… — их можно подставлять в следующие команды как \"$1\". Особые значения: \"$me\" — персонаж игрока (Char), \"$player\" — игрок (Player), \"$car\" — его машина (Car). Модели машин и оружие можно писать названием. Команд перехода и ожидания нет: только действия подряд. Перед созданием объекта по модели: REQUEST_MODEL, LOAD_ALL_MODELS_NOW. confirmed=true — только после явного «да» игрока на опасное.","input_schema":{"type":"object","required":["commands"],"properties":{"commands":{"type":"array","items":{"type":"object","required":["name","args"],"properties":{"name":{"type":"string"},"args":{"type":"array","items":{}}}}},"confirmed":{"type":"boolean"}}}}

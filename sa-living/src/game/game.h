@@ -51,6 +51,7 @@ namespace game
     void ForEachVehicle(const std::function<void(uintptr_t veh)>& fn);
     uintptr_t VehDriver(uintptr_t veh);            // CVehicle::pDriver (+0x5A0) или 0
     int  VehFreeSeats(uintptr_t veh);              // свободных пассажирских мест (max - занято)
+    int  FreePassengerSeat(uintptr_t veh, int skip = -1);   // первое свободное место пассажира (0..), -1 — нет
     bool IsPoliceCar(int model);                   // патрульные машины, в которые можно посадить задержанного
     // Ближайшая патрульная машина: без водителя или за рулём коп, есть 2 свободных места (коп + задержанный)
     uintptr_t NearestPoliceCar(const Vec& at, float radius);

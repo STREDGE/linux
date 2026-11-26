@@ -9,6 +9,10 @@
 #include <ctype.h>
 
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 #include "util/log.h"
 
@@ -246,6 +250,42 @@ static Relation RelFromJ(const json::Value& v)
 static json::Value VecToJ(const game::Vec& p) { json::Value a = json::Value::Array(); a.push(p.x); a.push(p.y); a.push(p.z); return a; }
 static game::Vec VecFromJ(const json::Value& a) { game::Vec p; p.x = (float)a[0].num(); p.y = (float)a[1].num(); p.z = (float)a[2].num(); return p; }
 
+// Запись памяти на диск — в фоновом потоке: в кадре игры только снимок мира (JSON), а превращение в текст и запись
+// файла (сотни КБ с длинными разговорами) — в стороне. Тест 0.4.1: «Память: записана» = подвисание игры на 1,2 с.
+namespace
+{
+    struct SaveJob { std::string path; json::Value root; };
+    std::mutex g_saveMx; std::condition_variable g_saveCv; std::deque<SaveJob> g_saveQ; bool g_saveThread = false;
+    void SaveWorker()
+    {
+        for(;;)
+        {
+            SaveJob j;
+            {
+                std::unique_lock<std::mutex> l(g_saveMx);
+                g_saveCv.wait(l, [] { return !g_saveQ.empty(); });
+                j = std::move(g_saveQ.front()); g_saveQ.pop_front();
+                while(!g_saveQ.empty() && g_saveQ.front().path == j.path) { j = std::move(g_saveQ.front()); g_saveQ.pop_front(); }   // только свежий снимок
+            }
+            std::string tmp = j.path + ".tmp";
+            FILE* f = fopen(tmp.c_str(), "wb");
+            if(!f) { LOG_ERROR("Мир: не записать %s", tmp.c_str()); continue; }
+            std::string s = j.root.dump();
+            bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
+            fclose(f);
+            if(ok) { remove(j.path.c_str()); ok = rename(tmp.c_str(), j.path.c_str()) == 0; }
+            if(!ok) LOG_ERROR("Мир: запись %s не удалась", j.path.c_str());
+        }
+    }
+    void QueueSave(const std::string& path, json::Value&& root)
+    {
+        std::lock_guard<std::mutex> l(g_saveMx);
+        if(!g_saveThread) { g_saveThread = true; std::thread(SaveWorker).detach(); }
+        g_saveQ.push_back(SaveJob{ path, std::move(root) });
+        g_saveCv.notify_one();
+    }
+}
+
 bool Save(const std::string& path)
 {
     g_path = path;
@@ -308,14 +348,8 @@ bool Save(const std::string& path)
     root["usage"] = g_w.usage;
     root["batch"] = g_w.pendingBatch;
 
-    std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
-    if(!f) { LOG_ERROR("Мир: не записать %s", tmp.c_str()); return false; }
-    std::string s = root.dump();
-    bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
-    fclose(f);
-    if(ok) { remove(path.c_str()); ok = rename(tmp.c_str(), path.c_str()) == 0; }
-    return ok;
+    QueueSave(path, std::move(root));                         // текст и диск — в фоне
+    return true;
 }
 
 bool Load(const std::string& path)
