@@ -14,6 +14,7 @@
 #include "sim/life.h"
 #include "talk/talk.h"
 #include "util/log.h"
+#include "trace/trace.h"
 #include "world/world.h"
 
 using world::Fmt;
@@ -79,6 +80,7 @@ namespace
     {
         Register_t orig = imm ? RegisterCrimeImm : RegisterCrime;
         uintptr_t mine = FindWanted ? (uintptr_t)FindWanted(-1) : 0;
+        if(self == mine && !g_bypass) TRACE("ИГРА", "CWanted::RegisterCrime%s тип %d «%s» (%.1f,%.1f,%.1f)%s", imm ? "_Immediately" : "", type, CrimeText(type), pos.x, pos.y, pos.z, dontCare ? " (не важно)" : "");
         if(g_bypass || !settings::Get().enabled || !settings::Get().witnesses || self != mine || dontCare) { orig(self, type, pos, victim, dontCare); return; }
 
         int sev = Severity(type);
@@ -111,6 +113,8 @@ namespace
             if(d < bestD) { bestD = d; caller = p; }
         });
         double now = talk::Now();
+        TRACE("ПРЕСТУПЛЕНИЕ", "тип %d «%s», тяжесть %d, свидетелей %d, звонит %s, (%.1f,%.1f,%.1f)", type, CrimeText(type), sev, count,
+              caller ? world::Fmt("P#%d", game::Ref(caller)).c_str() : "никто", at.x, at.y, at.z);
         if(now - g_lastCrimeLog > 3) { g_lastCrimeLog = now; LOG_INFO("Преступление: %s, свидетелей %d, %s", CrimeText(type), count, caller ? "кто-то звонит в полицию" : "звонить некому"); }
         if(!count) return;                      // никто не видел — розыска нет
 
@@ -426,6 +430,8 @@ namespace
     SDECL_HOOKv(ArrestPlayerH, uintptr_t self)
     {
         g_playerInfoForArrest = self;
+        {   static double s_last = -10; double n = talk::Now();
+            if(n - s_last > 1) { s_last = n; TRACE("ИГРА", "CPlayerInfo::ArrestPlayer (сценарий %d, миссия %d, катсцена %d)", (int)g_st, game::OnMission(), game::CutsceneRunning()); } }
         // обычный «Busted» игры: наш выключен, идёт миссия/катсцена (провал миссии — дело игры), или мы сами попросили
         if(g_inOrigArrest || g_passNextArrest || !settings::Get().enabled || !settings::Get().realArrest || game::OnMission() || game::CutsceneRunning())
         { g_passNextArrest = false; ArrestPlayerH(self); return; }
@@ -434,6 +440,7 @@ namespace
     }
     SDECL_HOOKv(RegisterKillH, uintptr_t ped, int weapon, bool head, int playerId)
     {
+        TRACE("УБИЙСТВО", "игрок %d убил P#%d m=%d тип %d оружием %d%s", playerId, game::Ref(ped), game::Model(ped), game::PedType(ped), weapon, head ? " (в голову)" : "");
         life::OnKill(ped, weapon, playerId);
         RegisterKillH(ped, weapon, head, playerId);
     }

@@ -10,6 +10,7 @@
 #include "platform/bridge.h"
 #include "settings.h"
 #include "util/log.h"
+#include "trace/trace.h"
 
 namespace claude
 {
@@ -27,6 +28,7 @@ namespace
         Result r;
         bool cancelled = false;
         bool gotStop = false;
+        double sentAt = 0;
     };
     std::map<int, Pending> g_pending;
     struct Proxied { TextFn onText; DoneFn onDone; std::string tag; double at = 0; };
@@ -106,6 +108,13 @@ namespace
         LOG_INFO("[ИИ] %s: %s, ток. вход %d (кэш %d/%d), выход %d, инстр. %d, стоп %s",
                  p.tag.c_str(), r.ok ? "ok" : r.error.c_str(), r.inTok, r.cacheRead, r.cacheWrite, r.outTok,
                  (int)r.tools.size(), r.stopReason.c_str());
+        {
+            std::string tools;
+            for(auto& t : r.tools) { std::string in = t.input.dump(); if(in.size() > 600) in = in.substr(0, 600) + "…"; tools += " " + t.name + in; }
+            TRACE("ИИ<", "#%d %s: %s за %.2f с, вход %d (кэш %d/%d), выход %d, стоп %s%s | текст: %s | инструменты:%s", id, p.tag.c_str(),
+                  r.ok ? "ok" : r.error.c_str(), p.sentAt > 0 ? Mono() - p.sentAt : 0.0, r.inTok, r.cacheRead, r.cacheWrite, r.outTok,
+                  r.stopReason.c_str(), p.cancelled ? " (отменён)" : "", r.text.c_str(), tools.empty() ? " нет" : tools.c_str());
+        }
         if(!p.cancelled && p.onDone) p.onDone(r);
     }
 
@@ -215,7 +224,18 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
     int id = bridge::HttpPost(g_s.url.c_str(), headers, body.dump(), req.timeoutMs);
     if(!id) return 0;
     Pending& p = g_pending[id];
-    p.onText = onText; p.onDone = onDone; p.tag = req.tag;
+    p.onText = onText; p.onDone = onDone; p.tag = req.tag; p.sentAt = Mono();
+    {   // в подробный лог: что спросили (последнее сообщение — обстановка и слова игрока / результаты инструментов)
+        std::string last;
+        if(req.messages.isArray() && req.messages.size())
+        {
+            const json::Value& m = req.messages[req.messages.size() - 1];
+            last = m["content"].isString() ? m["content"].str() : m["content"].dump();
+        }
+        if(last.size() > 3000) last = last.substr(0, 3000) + "…";
+        TRACE("ИИ>", "#%d %s: режим %s%s, сообщений %d, последнее: %s", id, req.tag, (req.effort.empty() ? g_s.effort : req.effort).c_str(),
+              req.noThinking ? " без размышления" : "", req.messages.isArray() ? (int)req.messages.size() : 0, last.c_str());
+    }
     return id;
 }
 

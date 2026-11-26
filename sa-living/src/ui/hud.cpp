@@ -28,6 +28,7 @@
 #include "ui/fonts_data.h"
 #include "ui/imgui_rw.h"
 #include "util/log.h"
+#include "trace/trace.h"
 #include "world/world.h"
 
 using world::Fmt;
@@ -127,7 +128,9 @@ namespace
         DL()->AddRect(a, b, C(accent, enabled ? 0.9f : 0.3f), U(1.2f), 0, U(0.3f));
         ImVec2 ts = TS(F_SMALL, label);
         Tx(F_SMALL, ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f), C(held ? kNight : kInk, enabled ? 1 : 0.5f), label);
-        return enabled && Clicked(a, b);
+        bool clicked = enabled && Clicked(a, b);
+        if(clicked) TRACE("КНОПКА", "«%s»", label);
+        return clicked;
     }
 
     // ---------- состояние ----------
@@ -771,6 +774,10 @@ namespace
         ImVec2 c(s.phoneX * Ww(), s.phoneY * Hh());
         ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y + h * 0.5f);
         if(Button(a, b, "Телефон", kGrove)) g_phoneOpen = !g_phoneOpen;
+        // «Метка»: заметил странное — нажми, в подробный лог ляжет отметка и полный снимок всего вокруг
+        float mw = TS(F_SMALL, "Метка").x + U(2.4f), mh = U(4.6f) * s.phoneS;
+        ImVec2 ma(a.x - mw - U(1.5f), c.y - mh * 0.5f), mb(a.x - U(1.5f), c.y + mh * 0.5f);
+        if(Button(ma, mb, "Метка", kRed)) { trace::Mark("кнопка «Метка»"); talk::Notify("Метка записана в подробный лог"); }
     }
 
     void DrawContextButtons()

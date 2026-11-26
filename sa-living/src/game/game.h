@@ -113,4 +113,16 @@ namespace game
     const char* PedTypeName(int pedType);   // «прохожий», «Ballas»…
     bool IsGang(int pedType);
     bool IsFemaleType(int pedType);
+
+    // ---- для подробного лога (только чтение) ----
+    float Speed(uintptr_t ent);                 // м/с (CPhysical::m_vecMoveSpeed)
+    float VehHealth(uintptr_t veh);             // 1000 — целая, <250 горит
+    int   VehMaxPassengers(uintptr_t veh);
+    int   AreaCode(uintptr_t ent);              // 0 — улица, иначе интерьер
+    int   PedState(uintptr_t ped);              // ePedState (1 стоит, 50 в машине, 54/55 мёртв, 63 арестован)
+    bool  CurWeapon(uintptr_t ped, int& type, int& ammo);
+    bool  PadLocked();                          // управление игрока заблокировано
+    bool  CamFading();                          // экран в затемнении/проявлении
+    void  PoolUse(int& peds, int& pedMax, int& cars, int& carMax);
+    int   VehRef(uintptr_t veh);
 }

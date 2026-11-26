@@ -16,6 +16,7 @@
 #include "sim/police.h"
 #include "speech/speech.h"
 #include "util/log.h"
+#include "trace/trace.h"
 
 using world::Character;
 using world::Fmt;
@@ -667,6 +668,7 @@ bool Recognizing() { return g_waitFinal; }
 
 void PttDown()
 {
+    TRACE("КНОПКА", "«Говорить» нажата");
     if(g_captureActive) return;
     if(g_waitFinal) { Notify("Секунду, распознаю прошлую фразу…"); return; }
     if(g_sink) { BeginListen(); return; }
@@ -695,7 +697,7 @@ void PttDown()
     BeginListen();
 }
 
-void PttUp() { if(!g_captureActive) EndListen(); }
+void PttUp() { TRACE("КНОПКА", "«Говорить» отпущена"); if(!g_captureActive) EndListen(); }
 
 static void SendToHost(Character& c, const std::string& text, bool phone)
 {

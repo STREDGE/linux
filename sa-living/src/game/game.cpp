@@ -8,6 +8,7 @@
 #include <ctype.h>
 
 #include "util/log.h"
+#include "trace/trace.h"
 
 namespace game
 {
@@ -44,6 +45,8 @@ namespace
     uintptr_t g_radarTrace = 0;
 
     uintptr_t g_players = 0, g_focus = 0, g_pedPool = 0, g_vehPool = 0, g_timeMs = 0, g_userPause = 0, g_codePause = 0;
+    uintptr_t g_camera = 0;
+    int (*GetVehRefFn)(uintptr_t) = nullptr;
     uintptr_t g_cutscene = 0, g_clockH = 0, g_clockM = 0, g_weatherNew = 0, g_zoneName = 0, g_animBlocks = 0;
 
     typedef void* (*TaskNew_t)(unsigned long);
@@ -108,13 +111,15 @@ namespace
         return intel ? (void*)(intel + 8) : nullptr;
     }
 
-    bool Assign(uintptr_t ped, void* task)
+    bool AssignN(uintptr_t ped, void* task, const char* what)
     {
         void* mgr = Mgr(ped);
         if(!mgr || !task) return false;
+        TRACE("ЗАДАЧА", "P#%d m=%d ← %s [мод: %s]", Ref(ped), Model(ped), what, g_where ? g_where : "?");
         SetTask(mgr, task, kSlotPrimary, false);
         return true;
     }
+    #define Assign(ped, task) AssignN(ped, task, __func__)
 
     void* NewTask() { return TaskNew ? TaskNew(0x80) : nullptr; }   // все задачи берутся из пула задач (запись 0x80)
 }
@@ -156,6 +161,8 @@ bool Init(void* h)
     g_userPause = Sym(h, "_ZN6CTimer11m_UserPauseE");
     g_codePause = Sym(h, "_ZN6CTimer11m_CodePauseE", false);
     g_cutscene  = Sym(h, "_ZN12CCutsceneMgr10ms_runningE", false);
+    g_camera    = Sym(h, "TheCamera", false);
+    GetVehRefFn = (int(*)(uintptr_t))Sym(h, "_ZN6CPools13GetVehicleRefEP8CVehicle", false);
     g_clockH    = Sym(h, "_ZN6CClock18ms_nGameClockHoursE", false);
     g_clockM    = Sym(h, "_ZN6CClock20ms_nGameClockMinutesE", false);
     g_weatherNew= Sym(h, "_ZN8CWeather14NewWeatherTypeE", false);
@@ -259,13 +266,41 @@ void SetWanted(int s)
 {
     void* w = FindWanted ? FindWanted(-1) : nullptr; if(!w) return;
     if(s < 0) s = 0; if(s > 6) s = 6;
+    TRACE("МОД", "SetWanted %d (было %d) [мод: %s]", s, Wanted(), g_where ? g_where : "?");
     if(s < Wanted() && CheatWanted) CheatWanted(w, s); else SetWantedFn(w, s);
 }
 bool PlayerInVehicle() { uintptr_t p = Player(); return p && (F<uint8_t>(p, kPedFlags585) & 1) && F<uintptr_t>(p, kPedVehicle); }
 uintptr_t PlayerVehicle() { return PlayerInVehicle() ? F<uintptr_t>(Player(), kPedVehicle) : 0; }
+// ---------------- для подробного лога ----------------
+float Speed(uintptr_t e) { if(!e) return 0; float x = F<float>(e, 0x68), y = F<float>(e, 0x6C), z = F<float>(e, 0x70); return sqrtf(x * x + y * y + z * z) * 50.0f; }
+float VehHealth(uintptr_t v) { return v ? F<float>(v, 0x634) : 0; }
+int   VehMaxPassengers(uintptr_t v) { return v ? (int)F<uint8_t>(v, 0x5EC) : 0; }
+int   AreaCode(uintptr_t e) { return e ? (int)F<uint8_t>(e, 0x4B) : 0; }
+int   PedState(uintptr_t p) { return p ? F<int>(p, kPedState) : -1; }
+bool  CurWeapon(uintptr_t p, int& type, int& ammo)
+{
+    if(!p) return false;
+    int slot = F<int8_t>(p, 0x8DC);
+    if(slot < 0 || slot > 12) return false;
+    uintptr_t w = p + 0x730 + (uintptr_t)slot * 0x20;          // CPed::m_WeaponSlots[13], CWeapon 0x20
+    type = F<int>(w, 0); ammo = F<int>(w, 0xC);
+    return true;
+}
+bool  PadLocked() { void* pad = GetPad ? GetPad(0) : nullptr; return pad && F<uint16_t>((uintptr_t)pad, kPadDisable) != 0; }
+bool  CamFading() { return g_camera && F<uint8_t>(g_camera, 0x57) != 0; }     // CCamera::m_bFading
+void  PoolUse(int& peds, int& pedMax, int& cars, int& carMax)
+{
+    peds = pedMax = cars = carMax = 0;
+    Pool p;
+    if(GetPool(g_pedPool, p)) { pedMax = p.size; for(int i = 0; i < p.size; ++i) if(!(F<uint8_t>(p.flags, i) & 0x80)) ++peds; }
+    if(GetPool(g_vehPool, p)) { carMax = p.size; for(int i = 0; i < p.size; ++i) if(!(F<uint8_t>(p.flags, i) & 0x80)) ++cars; }
+}
+int   VehRef(uintptr_t v) { return v && GetVehRefFn ? GetVehRefFn(v) : 0; }
+
 void LockPlayer(bool lock)
 {
     void* pad = GetPad ? GetPad(0) : nullptr; if(!pad) return;
+    TRACE("МОД", "LockPlayer %d [мод: %s]", lock, g_where ? g_where : "?");
     F<uint16_t>((uintptr_t)pad, kPadDisable) = lock ? 1 : 0;
 }
 
@@ -496,9 +531,9 @@ bool TaskAnim(uintptr_t ped, const char* anim, const char* block, bool loop, int
     return Assign(ped, t);
 }
 
-void LoadScene(const Vec& at) { if(LoadSceneFn) LoadSceneFn(at); }
+void LoadScene(const Vec& at) { TRACE("МОД", "LoadScene (%.1f,%.1f,%.1f)", at.x, at.y, at.z); if(LoadSceneFn) LoadSceneFn(at); }
 
-void ClearTask(uintptr_t ped) { void* m = Mgr(ped); if(m) SetTask(m, nullptr, kSlotPrimary, false); }
+void ClearTask(uintptr_t ped) { void* m = Mgr(ped); if(m) { TRACE("ЗАДАЧА", "P#%d m=%d ← снять задачу [мод: %s]", Ref(ped), Model(ped), g_where ? g_where : "?"); SetTask(m, nullptr, kSlotPrimary, false); } }
 
 int ActiveTaskType(uintptr_t ped)
 {
@@ -519,6 +554,7 @@ void GiveWeapon(uintptr_t ped, int w, int ammo)
     static const int kModels[] = { 0, 331, 333, 334, 335, 336, 337, 338, 339, 341, 321, 322, 323, 0, 325, 326, 342, 343, 344, 0, 0, 0,
                                    346, 347, 348, 349, 350, 351, 352, 353, 355, 356, 372, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 371 };
     if(w > 0 && w < (int)(sizeof(kModels) / sizeof(kModels[0])) && kModels[w]) { RequestModel(kModels[w], 2); LoadAll(false); }
+    TRACE("МОД", "GiveWeapon P#%d оружие %d патроны %d", Ref(ped), w, ammo);
     GiveWeaponFn(ped, w, (unsigned)ammo, true);
 }
 void SetCurrentWeapon(uintptr_t ped, int w) { if(ped && SetCurWeaponFn) SetCurWeaponFn(ped, w); }
@@ -536,10 +572,11 @@ uintptr_t SpawnPed(int pedType, int model, const Vec& at)
     RequestModel(model, 2);
     LoadAll(false);
     uintptr_t ped = AddPed(pedType, (unsigned)model, at, true);   // true — игра ставит обычную прогулку по умолчанию (без неё пед стоял статуей)
+    TRACE("МОД", "SpawnPed тип %d модель %d (%.1f,%.1f,%.1f) → P#%d [мод: %s]", pedType, model, at.x, at.y, at.z, ped ? Ref(ped) : 0, g_where ? g_where : "?");
     if(ped) KeepPed(ped, true);
     return ped;
 }
-void DeletePed(uintptr_t ped) { if(ped && RemovePed && !IsPlayer(ped)) RemovePed(ped); }
+void DeletePed(uintptr_t ped) { if(ped && RemovePed && !IsPlayer(ped)) { TRACE("МОД", "DeletePed P#%d", Ref(ped)); RemovePed(ped); } }
 // Держать педа (игра не удаляет его, пока игрок рядом): ставим ТОЛЬКО байт «создан скриптом».
 // CPed::SetCharCreatedBy(2) заодно ставил «решатель» миссий (-1) и дальность зрения миссий —
 // пед переставал бояться ствола, убегать, звать своих. Чужих педов миссий не трогаем вовсе.
@@ -553,8 +590,9 @@ void KeepPed(uintptr_t ped, bool keep)
     {
         if(F<uint8_t>(ped, kPedCreatedBy) == 2 && !g_kept.count(ref)) return;   // пед миссии/скрипта — он не наш
         F<uint8_t>(ped, kPedCreatedBy) = 2; g_kept.insert(ref);
+        TRACE("МОД", "KeepPed P#%d (держать)", ref);
     }
-    else if(g_kept.count(ref)) { F<uint8_t>(ped, kPedCreatedBy) = 1; g_kept.erase(ref); }
+    else if(g_kept.count(ref)) { F<uint8_t>(ped, kPedCreatedBy) = 1; g_kept.erase(ref); TRACE("МОД", "KeepPed P#%d (отпустить игре)", ref); }
 }
 
 // ---------------- мир ----------------

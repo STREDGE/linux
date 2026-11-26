@@ -19,6 +19,7 @@
 #include "speech/speech.h"
 #include "talk/talk.h"
 #include "util/log.h"
+#include "trace/trace.h"
 #include "world/world.h"
 
 using world::Fmt;
@@ -646,6 +647,18 @@ namespace
         LOG_INFO("[ДЖАРВИС] услышал: «%s»", text.c_str());
         if(text.empty()) { Reply(Fmt("Не расслышал, %s.", Sir())); return; }
         if(!game::Player()) { Reply(Fmt("Сначала загрузите игру, %s.", Sir())); return; }
+        {   // «отметь баг: …», «метка …», «запиши баг …» — отметка в подробный лог, без ИИ
+            std::string t = jbrain::Lower(text);
+            size_t at = std::string::npos;
+            for(const char* k : { "отметь", "отметка", "метка", "запиши баг", "запомни баг" }) { at = t.find(k); if(at != std::string::npos && at < 24) break; at = std::string::npos; }
+            if(at != std::string::npos)
+            {
+                trace::Mark("голосом: " + text);
+                Done("Метка в подробном логе");
+                Reply(Fmt("Отметил, %s.", Sir()));
+                return;
+            }
+        }
         if(claude::Available() && !claude::LimitReached()) Ask(text);
         else Offline(text);
     }

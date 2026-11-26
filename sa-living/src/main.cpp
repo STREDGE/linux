@@ -27,9 +27,10 @@
 #include "talk/talk.h"
 #include "ui/hud.h"
 #include "util/log.h"
+#include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.2.5, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.2.6, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
@@ -42,6 +43,7 @@ ON_GAME_CRASH()
     g_fileLog.Error("ВЫЛЕТ: сигнал %d, код %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX",
                     sig, code, library ? library : "?", (unsigned long)(pc - libaddr), (unsigned long)pc, (unsigned long)lr);
     g_fileLog.Error("Мод в момент вылета: %s", g_where ? g_where : "?");
+    trace::Crash(sig, (unsigned long)pc, (unsigned long)lr, library, (unsigned long)(pc - libaddr), g_where);
 }
 
 // Прошлый лог не стираем: saliving.txt → saliving_prev.txt (там запись о вылете, если игра упала)
@@ -60,11 +62,13 @@ void LogInfo(const char* fmt, ...)
 {
     char buf[1024]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     g_fileLog.Info("%s", buf); logger->Info("%s", buf);
+    trace::Line("ЛОГ", "%s", buf);
 }
 void LogError(const char* fmt, ...)
 {
     char buf[1024]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     g_fileLog.Error("%s", buf); logger->Error("%s", buf);
+    trace::Line("ОШИБКА", "%s", buf);
 }
 
 static bool   g_ok = false;
@@ -208,6 +212,7 @@ static void HostSync()
 // ---------- игровой кадр ----------
 static void Frame()
 {
+    WHERE("кадр: подробный лог"); trace::Frame();
     if(!g_ok || !settings::Get().enabled) return;
     double now = talk::Now();
     if(!bridge::Ready() && now >= g_nextBridgeTry) { g_nextBridgeTry = now + 10; bridge::Init(); }
@@ -244,7 +249,9 @@ SDECL_HOOKv(GameProcess)
 // Сохранение игры — заодно сохраняем мир (тот же поток игры, ничего не удаляем)
 SDECL_HOOKb(GenericSave, int slot)
 {
+    WHERE("сохранение игры");
     bool r = GenericSave(slot);
+    TRACE("СОХРАНЕНИЕ", "слот %d: %s, файл «%s»", slot, r ? "ok" : "ошибка", g_validSaveName ? g_validSaveName : "?");
     if(g_ok && r)
     {
         SaveUsageFile();
@@ -273,6 +280,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
 
 SDECL_HOOKv(MenuNewGame)
 {
+    TRACE("ИГРА", "новая игра");
     if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); police::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
     MenuNewGame();
 }
@@ -293,6 +301,7 @@ ON_MOD_LOAD()
     if(!h) { LogError("libGTASA.so не найдена — мод выключен"); return; }
 
     settings::Load();
+    trace::Init();
     const settings::Data& s = settings::Get();
     if(!s.enabled) { LogInfo("Мод выключен в настройках (Enabled = 0)"); return; }
 

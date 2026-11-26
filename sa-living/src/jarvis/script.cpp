@@ -8,7 +8,9 @@
 #include <unistd.h>
 
 #include "game/game.h"
+#include "world/world.h"
 #include "util/log.h"
+#include "trace/trace.h"
 
 namespace script
 {
@@ -64,6 +66,19 @@ bool Run(uint16_t opcode, std::vector<Arg>& args, bool* flag)
     memcpy(scr + kOffBase, &base, sizeof(base));
     memcpy(scr + kOffPC, &base, sizeof(base));
     scr[kOffActive] = 1;
+    if(opcode != 0x0457)        // 0457 (целится ли игрок) опрашивается 5 раз в секунду — не засоряем
+    {
+        std::string a;
+        for(Arg& x : args)
+            switch(x.type)
+            {
+                case Arg::INT: a += world::Fmt(" %d", x.i); break;
+                case Arg::FLOAT: a += world::Fmt(" %.2f", x.f); break;
+                case Arg::STR: a += " \"" + x.s + "\""; break;
+                default: a += " →"; break;
+            }
+        TRACE("КОМАНДА", "%04X%s [мод: %s]", opcode, a.c_str(), g_where ? g_where : "?");
+    }
     ProcessOne(scr);
     if(flag) *flag = scr[kOffCmp] != 0;
     outIndex = 0;

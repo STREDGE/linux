@@ -102,9 +102,11 @@ namespace world {
     void SetStoryVoice(const std::string&, const StoryVoice&) {} void ClearStoryVoice(const std::string&) {}
     std::string Fmt(const char* fmt, ...) { char b[1024]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof(b), fmt, a); va_end(a); return b; }
 }
+namespace trace { void Line(const char*, const char*, ...) {} void Mark(const std::string&) {} }
 namespace talk {
     static std::deque<Sub> g_subs; static bool g_conv = false;
     void Frame() {} bool PopNotify(std::string&) { return false; } void Notify(const std::string&) {}
+    double Now() { return 0; }
     bool Capturing() { return false; } bool Recognizing() { return false; } void CaptureDown(std::function<void(const std::string&)>) {} void CaptureUp() {}
     void EnsureVoice(world::Character& c, const std::vector<std::string>&) { if(c.voice.empty()) c.voice = "m01"; }
     bool Listening() { return false; } bool Thinking() { return false; } bool PhoneMode() { return false; } const std::string& Partial() { static std::string e; return e; }
