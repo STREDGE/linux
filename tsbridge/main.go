@@ -414,6 +414,12 @@ func loginWithKey(c *local.Client, k string) {
 	defer cancel()
 	if err := c.Start(ctx, ipn.Options{AuthKey: k}); err != nil {
 		logf("вход по ключу: %v", err)
+		return
+	}
+	// Start только кладёт ключ; сам вход запускает Login — как в tsnet (StartLoginInteractive с ключом
+	// регистрирует узел ключом, без ссылки). Без этого узел висел в NeedsLogin (тест игрока, 1.2.0).
+	if err := c.StartLoginInteractive(ctx); err != nil {
+		logf("вход по ключу (login): %v", err)
 	}
 }
 

@@ -829,6 +829,7 @@ namespace
         char text[256];
         if(active && ni.info[0]) snprintf(text, sizeof(text), "%s", ni.info);
         else if(ni.tsState == ts::State::Running) snprintf(text, sizeof(text), "Tailscale в сети · %s", ni.tsIp);
+        else if(ni.tsState == ts::State::NeedsLogin && byKey) snprintf(text, sizeof(text), "Tailscale: вхожу по коду приглашения…");
         else snprintf(text, sizeof(text), "Tailscale: %s", ts::StateText(ni.tsState));
         Text(F_SMALL, ImVec2(dc.x + U(2.2f), (a.y + b.y - TextSize(F_SMALL, "Ag").y) * 0.5f), C(kInk), text, width - U(8) - cw);
         if(chip)
@@ -906,7 +907,8 @@ namespace
         bool active = st.role == net::Role::Client && !st.pending;
         float keysW = U(34);
         float lw = pw - keysW - U(3);
-        Text(F_SMALL, ImVec2(px, y), C(kGold), "КОД ДРУГА (ИЛИ ID ТОЧКИ, 6 ЦИФР)"); float ly = y + U(3.8f);
+        bool codeIn = g_settings.net.tsKey[0] && g_ip.size() == 6;
+        Text(F_SMALL, ImVec2(px, y), C(codeIn ? kGrove : kGold), codeIn ? "КОД ВСТАВЛЕН · ТОЧКА ДРУГА, КЛЮЧ СОХРАНЁН" : "КОД ДРУГА (ИЛИ ID ТОЧКИ, 6 ЦИФР)"); float ly = y + U(3.8f);
         IpReadout(ImVec2(px, ly), ImVec2(px + lw, ly + U(11)), g_ip.c_str(), true, false);
         ly += U(11) + U(2.0f);
         bool paste = false, clear = false;
@@ -918,7 +920,8 @@ namespace
         ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
         ly = TsStatusRow(ImVec2(px, ly), lw, active) + U(1.4f);
         if(!active)
-            Text(F_SMALL, ImVec2(px, ly), C(kDim), "Скопируй код приглашения, который прислал друг (кнопка «Копировать» у него), и нажми «Вставить». Аккаунт Tailscale не нужен.", lw);
+            Text(F_SMALL, ImVec2(px, ly), C(kDim), codeIn ? "6 цифр — это номер точки друга, ключ из кода спрятан и сохранён. Жми «Подключиться» — аккаунт Tailscale не нужен."
+                                                          : "Скопируй код приглашения, который прислал друг (кнопка «Копировать» у него), и нажми «Вставить». Аккаунт Tailscale не нужен.", lw);
         Keypad(ImVec2(px + pw - keysW, y), keysW);
         if(paste)
         {
@@ -927,7 +930,7 @@ namespace
             {
                 g_ip = id;
                 SaveTsKey(key);
-                Toast("Код приглашения вставлен — жми «Подключиться» (аккаунт Tailscale не нужен)");
+                char t[200]; snprintf(t, sizeof(t), "Код вставлен: точка друга %s, ключ сохранён. Жми «Подключиться»", id); Toast(t);
             }
             else if(text[0])
             {

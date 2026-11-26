@@ -494,9 +494,10 @@ namespace
         if(st.state != ts::State::Running)
         {
             std::string key = TsKey();
-            if(st.state == ts::State::NeedsLogin && !key.empty() && now >= g_tsKeyTryUs)
-            {   // код приглашения: входим ключом, без браузера (повтор раз в 20 с, если не вышло)
-                g_tsKeyTryUs = now + 20000000;
+            if(st.state == ts::State::NeedsLogin && !key.empty() && st.error[0] && now >= g_tsKeyTryUs)
+            {   // код приглашения: ключ уже отдан при запуске; повтор — только если вход сообщил ошибку, не чаще раза в 30 с
+                // (в 1.2.0 повтор сразу после запуска обрывал вход, который ключ уже начал)
+                g_tsKeyTryUs = now + 30000000;
                 ts::UseKey(key.c_str());
             }
             if(st.state == ts::State::NeedsLogin && st.error[0]) { char m[192]; LoginErrText(st.error, !key.empty(), m, sizeof(m)); TsInfo("%s", m); }
@@ -586,7 +587,7 @@ namespace
                 if(c.role == net::Role::Client && !c.relay[0] && IsPointId(c.hostAddress))
                 {   // друг ввёл ID точки: сначала встроенный Tailscale находит хоста
                     snprintf(g_tsClientId, sizeof(g_tsClientId), "%s", c.hostAddress);
-                    g_tsClientWait = true; g_tsNextTryUs = 0; g_tsKeyTryUs = 0;
+                    g_tsClientWait = true; g_tsNextTryUs = 0; g_tsKeyTryUs = net::NowUs() + 30000000;
                     ts::Start(c.myId, c.tsKey);
                     TsInfo("Включаю Tailscale…");
                     Log(false, "[TAILSCALE] Ищу точку хоста %s (мой ID %s)", g_tsClientId, c.myId);
@@ -595,7 +596,7 @@ namespace
                 if(!g_session.Start(c, g_log)) Log(true, "Сеть не запустилась — второй CJ не появится");
                 if(c.role == net::Role::Host && !c.relay[0])
                 {   // хост: открыть точку во встроенном Tailscale (обычный адрес тоже работает)
-                    g_tsHost = true; g_tsNextTryUs = 0; g_tsKeyTryUs = 0;
+                    g_tsHost = true; g_tsNextTryUs = 0; g_tsKeyTryUs = net::NowUs() + 30000000;
                     ts::Start(c.myId, c.tsKey);
                     TsInfo("Включаю Tailscale…");
                 }
