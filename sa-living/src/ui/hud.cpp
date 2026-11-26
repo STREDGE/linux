@@ -458,10 +458,6 @@ namespace
 
     void TabSettings(settings::Data& s, float x0, float x1, float& y)
     {
-        static const char* tiers[] = { "Быстрее (Haiku)", "Максимум (Sonnet)" };
-        int ti = s.tier <= 0 ? 0 : 1;
-        int nt = Chips(y, x0, x1, "Мозг людей и Джарвиса", tiers, 2, ti);
-        if(nt != ti) { s.tier = nt; claude::Settings cs = claude::Get(); cs.tier = s.tier; claude::Configure(cs); }
         static const char* efforts[] = { "Быстро", "Умнее" };
         int ei = s.effort == "medium" ? 1 : 0;
         int ne = Chips(y, x0, x1, "Режим размышлений", efforts, 2, ei);

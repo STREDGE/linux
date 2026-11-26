@@ -719,7 +719,7 @@ namespace
         req.maxTokens = 6000;
         req.tag = "джарвис";
         req.role = claude::ROLE_JARVIS;
-        req.effort = "low";                      // Sonnet 5.5 и на low точнее прежнего Haiku medium, а отвечает быстрее
+        req.effort = "medium";                   // Haiku 5.5: на medium Джарвис был и умный, и быстрый (тест 0.2.10)
         Show(THINKING);
         g_req = claude::Send(req, OnAiText, OnAiDone);
         if(!g_req) { g_hist = json::Value::Array(); Reply(Fmt("ИИ сейчас недоступен, %s.", Sir())); }

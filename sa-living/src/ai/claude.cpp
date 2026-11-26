@@ -388,12 +388,11 @@ Usage Total() { return g_total; }
 
 double CostUsd(const Usage& u) { return u.usd; }
 
-// Уровень 1 (по умолчанию): разговоры, Джарвис и мир — Sonnet 5.5 (умнее, живее), а мгновенные реакции на событие
-// (ударили, навели ствол, напали) — Haiku 5.5: там важнее скорость, слова короткие. Уровень 0 — всё на Haiku (быстрее всего).
+// Только Haiku 5.5 — решение игрока (0.5.1): «сделай, чтобы был только Хайку». Роли оставлены — по ним лог и effort.
 std::string ModelFor(int role)
 {
-    if(g_s.tier <= 0 || role == ROLE_REACT) return "claude-haiku-5-5";
-    return "claude-sonnet-5-5";
+    (void)role;
+    return "claude-haiku-5-5";
 }
 
 void SetDailyLimit(int r) { g_dailyLimit = r; }
