@@ -119,6 +119,8 @@ namespace coop
     std::vector<world::SaveEntry> ListSaves();
     const char* SavesFolder();
     bool Launch(const char* path, const char* name, char* why, size_t whyLen);   // path == nullptr — текущая игра
+    bool LaunchNewGame(char* why, size_t whyLen);                                  // «Новая игра» — вместе с другом
+    bool NewGameAvailable();
 
     // Спрятать второго CJ из слота игрока 2 на время чужого кода (например, отрисовки
     // интерфейса игры: иначе она рисует вторую иконку оружия — «дубль кулака»).

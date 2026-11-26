@@ -28,6 +28,9 @@ namespace coop { namespace mission {
     void OnPacket(uint8_t type, const uint8_t* data, int len);   // PKT_BLIPS и REL_TEXT … REL_RECRUIT
     bool HandlesReliable(uint8_t relType);
     void Reset(const char* why);
+    // Друг начинает новую игру по команде хоста: миссии (вступление) не запускать с первого кадра,
+    // даже пока свой CJ ещё не появился и обычная проверка «друг на связи» не сработала
+    void ForceClientBlock(bool on);
 
     bool ClientCutscene();              // друг смотрит катсцену хоста (coop не двигает своего CJ)
     bool IsHiddenPed(uintptr_t ped);    // хост: пед миссии уступил место другу

@@ -80,6 +80,8 @@ namespace coop {
     }
     const char* SavesFolder() { return "/storage/emulated/0/SA/SACoop/Сохранения"; }
     bool Launch(const char*, const char*, char*, size_t) { return true; }
+    bool LaunchNewGame(char*, size_t) { return true; }
+    bool NewGameAvailable() { return true; }
 }
 namespace ts { const char* StateText(State) { return "в сети"; } }
 namespace settings {

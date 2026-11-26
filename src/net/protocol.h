@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 14;
+    constexpr uint8_t  kProtocolVersion = 15;   // 15: «Новая игра» в лобби (LOBBY_NEW)
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -320,7 +320,8 @@ namespace net
     struct WorldAckPacket   { Header hdr; uint32_t nonce; uint32_t offset; };
 
     // Лобби: хост выбирает сохранение и жмёт «Запуск» — launchId меняется, друг загружается
-    enum LobbySource : uint8_t { LOBBY_NONE = 0, LOBBY_CURRENT = 1, LOBBY_FILE = 2 };
+    // LOBBY_NEW: хост начинает новую игру — друг тоже начинает новую (мир не передаётся), сюжет ведёт хост
+    enum LobbySource : uint8_t { LOBBY_NONE = 0, LOBBY_CURRENT = 1, LOBBY_FILE = 2, LOBBY_NEW = 3 };
     struct LobbyPacket
     {
         Header   hdr;

@@ -48,6 +48,9 @@ namespace coop { namespace world {
     const char* SavesFolder();                   // полный путь папки (для подсказки)
     // Хост: «Запуск». path == nullptr — текущая игра (хост уже играет). false — не вышло (why).
     bool HostLaunch(const char* path, const char* name, char* why, size_t whyLen);
+    // Хост: «Новая игра» — оба начинают новую игру одновременно (друг — по команде в лобби)
+    bool HostNewGame(char* why, size_t whyLen);
+    bool NewGameAvailable();
     struct Lobby
     {
         uint32_t launchId = 0;

@@ -675,7 +675,7 @@ namespace
     // ---------- точка (встроенный Tailscale) и лобби ----------
     std::vector<coop::world::SaveEntry> g_saves;
     double g_savesAt = -100;
-    int    g_lobbySel = -2;             // -2 — ничего, -1 — текущая игра, 0.. — файл из списка
+    int    g_lobbySel = -2;             // -2 — ничего, -3 — новая игра, -1 — текущая игра, 0.. — файл из списка
     char   g_lobbySelPath[320] = "";
     int    g_lobbyPage = 0;
     bool   g_picking = false;
@@ -706,6 +706,7 @@ namespace
         coop::LobbyInfo l = coop::GetLobbyInfo();
         if(l.lobby.hostLoading) return false;
         if(g_lobbySel == -1) return l.inGame;
+        if(g_lobbySel == -3) return coop::NewGameAvailable();
         return g_lobbySel >= 0 && g_lobbySel < (int)g_saves.size();
     }
 
@@ -714,9 +715,10 @@ namespace
         char why[160] = "";
         bool ok;
         if(g_lobbySel == -1) ok = coop::Launch(nullptr, "Текущая игра хоста", why, sizeof(why));
+        else if(g_lobbySel == -3) ok = coop::LaunchNewGame(why, sizeof(why));
         else ok = g_lobbySel >= 0 && g_lobbySel < (int)g_saves.size() &&
                   coop::Launch(g_saves[g_lobbySel].path, g_saves[g_lobbySel].name, why, sizeof(why));
-        if(ok) { Toast("Запуск! Друг загружается"); Close(); }
+        if(ok) { Toast(g_lobbySel == -3 ? "Новая игра! Друг начинает вместе с тобой" : "Запуск! Друг загружается"); Close(); }
         else { char t[200]; snprintf(t, sizeof(t), "Не запустилось: %s", why); Toast(t); }
     }
 
@@ -912,8 +914,9 @@ namespace
         }
         if(!l.isHost)
         {
-            const char* t1; char t2[200];
-            if(l.lobby.launchId) { t1 = "Хост запустил игру"; snprintf(t2, sizeof(t2), "«%s» — загружаешься следом. Экран загрузки появится сам.", l.lobby.saveName); }
+            const char* t1; char t2[320];
+            if(l.lobby.launchId && l.lobby.source == net::LOBBY_NEW) { t1 = "Хост начал новую игру"; snprintf(t2, sizeof(t2), "Ты начинаешь вместе с ним — загрузка начнётся сама. Сюжет ведёт хост: вступление и миссии идут у него, ты рядом."); }
+            else if(l.lobby.launchId) { t1 = "Хост запустил игру"; snprintf(t2, sizeof(t2), "«%s» — загружаешься следом. Экран загрузки появится сам.", l.lobby.saveName); }
             else { t1 = "Хост выбирает, во что играем"; snprintf(t2, sizeof(t2), "%s", l.lobby.hostInGame ? "Хост уже в игре. Когда он нажмёт «Запуск», ты загрузишься к нему."
                                                                                                          : "Когда хост выберет сохранение и нажмёт «Запуск», у тебя начнётся загрузка."); }
             Text(F_HEAD, ImVec2(px, y), C(kInk), t1); y += U(7);
@@ -960,6 +963,7 @@ namespace
         if(rowsFit < 2) rowsFit = 2;
         struct Row { int sel; const char* title; char sub[96]; };
         std::vector<Row> rows;
+        if(coop::NewGameAvailable()) { Row r{ -3, "Новая игра", "" }; snprintf(r.sub, sizeof(r.sub), "сюжет с начала — друг начинает вместе с тобой"); rows.push_back(r); }
         if(l.inGame) { Row r{ -1, "Текущая игра", "" }; snprintf(r.sub, sizeof(r.sub), "продолжить с того места, где ты сейчас"); rows.push_back(r); }
         for(int i = 0; i < (int)g_saves.size(); ++i)
         {

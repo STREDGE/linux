@@ -1,5 +1,6 @@
 #include "world.h"
 #include "trace/ctrace.h"
+#include "coop/mission.h"
 
 #include <mod/amlmod.h>
 #include <mod/logger.h>
@@ -51,6 +52,7 @@ namespace
     void (*MenuLoadSlot)(int slot) = nullptr;
     bool (*MenuIsPlayingGame)(bool) = nullptr;
     void (*MainMenuOnResume)(void* self) = nullptr;
+    void (*NewGameCheck)(void* self) = nullptr;     // StartGameScreen::OnNewGameCheck — как «Новая игра» в меню игры
     int  (*OSFileOpen)(int area, void** handle, const char* name, int access) = nullptr;
     int  (*OSFileRead)(void* h, void* buf, int n) = nullptr;
     int  (*OSFileWrite)(void* h, const void* buf, int n) = nullptr;
@@ -80,6 +82,9 @@ namespace
     uint32_t g_seenLaunch = 0;              // друг: на какой «Запуск» уже загрузились
     bool     g_lobbyHostInGame = false, g_lobbyHostLoading = false;
     bool     g_inGame = false;
+    bool     g_wantNewGame = false;         // начать новую игру в безопасный момент (хост — после рассылки, друг — по команде хоста)
+    uint64_t g_newGameAtUs = 0;             // хост: не раньше (лобби успевает уйти другу)
+    uint64_t g_newGameSinceUs = 0;          // хост: когда снова в игре после «Новой игры»
 
     std::vector<std::string> g_notices;
     void Notice(const char* t) { if(g_notices.size() < 8) g_notices.push_back(t); }
@@ -292,6 +297,14 @@ namespace
            (g_cs == CState::Idle || g_cs == CState::Done || g_cs == CState::Failed))
         {
             g_seenLaunch = g_launchId;
+            if(g_launchSource == net::LOBBY_NEW)
+            {   // хост начал новую игру — начинаем свою новую одновременно (мир не передаём: он одинаковый)
+                g_wantNewGame = true; g_newGameAtUs = 0;
+                g_usedHostWorld = true;
+                Log(false, "[ЛОББИ] Хост начал новую игру — начинаю новую игру вместе с ним");
+                Notice("Хост начал новую игру — начинаем вместе");
+                return;
+            }
             g_usedHostWorld = false;
             g_cs = CState::Requesting; g_myNonce = (uint32_t)(now ^ (now >> 32)) | 1; g_nextReqUs = 0; g_startUs = now;
             Log(false, "[ЛОББИ] Хост запустил «%s» — загружаюсь в его мир", g_launchName);
@@ -380,6 +393,7 @@ bool Install(void* h, FLogger* log)
     MenuLoadSlot = (void(*)(int))sym("_Z13Menu_LoadSloti");
     MenuIsPlayingGame = (bool(*)(bool))sym("_Z18Menu_IsPlayingGameb");
     MainMenuOnResume = (void(*)(void*))sym("_ZN14MainMenuScreen8OnResumeEv");
+    NewGameCheck = (void(*)(void*))sym("_ZN15StartGameScreen14OnNewGameCheckEv");
     OSFileOpen  = (int(*)(int, void**, const char*, int))sym("_Z11OS_FileOpen14OSFileDataAreaPPvPKc16OSFileAccessType");
     OSFileRead  = (int(*)(void*, void*, int))sym("_Z11OS_FileReadPvS_i");
     OSFileWrite = (int(*)(void*, const void*, int))sym("_Z12OS_FileWritePvPKvi");
@@ -393,6 +407,7 @@ bool Install(void* h, FLogger* log)
     aml->Hook((void*)SaveSlot, (void*)HookOf_SaveSlotHook, (void**)&SaveSlotHook);
     SaveSlot = SaveSlotHook;   // свои сохранения мира для друга — без копии в папку (g_hostSaving)
     MakeFolders();
+    if(!NewGameCheck) Log(true, "[ЛОББИ] Нет StartGameScreen::OnNewGameCheck — «Новая игра» в лобби недоступна");
     Log(false, "[ЛОББИ] Папка кооп-сохранений: %s", g_savesDir[0] ? g_savesDir : "(не создалась)");
     Log(false, "[МИР] Готово: друг сможет заходить сразу в мир хоста");
     return true;
@@ -403,6 +418,20 @@ void SetSession(net::Session* s) { g_session = s; }
 bool RunDeferredLoad(bool fromMenuUpdate)
 {
     if(!g_ok) return false;
+    if(g_wantNewGame)
+    {   // «Новая игра»: как кнопка игры (из главного меню — в обновлении меню, из игры — в игровом кадре)
+        if(!NewGameCheck) { g_wantNewGame = false; return false; }
+        if(g_newGameAtUs && net::NowUs() < g_newGameAtUs) return false;
+        bool playing = MenuIsPlayingGame(true);
+        if(playing == fromMenuUpdate) return false;
+        g_wantNewGame = false;
+        g_coopWorld = true;
+        g_newGameSinceUs = 0;
+        if(g_role == net::Role::Client) mission::ForceClientBlock(true);   // вступление и миссии — только у хоста
+        Log(false, "[ЛОББИ] Начинаю новую игру (%s)", playing ? "из игры" : "из главного меню");
+        NewGameCheck(nullptr);
+        return true;
+    }
     if(g_hostWantLoad)
     {
         bool playing = MenuIsPlayingGame(true);
@@ -497,13 +526,22 @@ void Tick(net::Role role, bool connected, bool inGame, uint64_t now)
         g_coopWorld = false;
         Log(false, "[ЛОББИ] Кооп выключен — сохранения снова одиночные (твои ячейки)");
     }
+    if(role == net::Role::Host && g_launchSource == net::LOBBY_NEW && !g_wantNewGame && inGame)
+    {   // новая игра идёт: через 30 с переподключившийся друг должен получать мир хоста, а не начинать заново
+        if(!g_newGameSinceUs) g_newGameSinceUs = now;
+        else if(net::Since(now, g_newGameSinceUs) > 30000000)
+        {
+            g_launchSource = net::LOBBY_CURRENT;
+            Log(false, "[ЛОББИ] Новая игра идёт — переподключившийся друг загрузится в мой мир");
+        }
+    }
     if(role == net::Role::Host && connected && now >= g_nextLobbyUs)
     {
-        g_nextLobbyUs = now + 1000000;
+        g_nextLobbyUs = now + (g_wantNewGame ? 200000 : 1000000);   // перед «Новой игрой» — чаще, чтобы друг точно получил
         net::LobbyPacket l{};
         l.hdr = net::MakeHeader(net::PKT_LOBBY);
         l.launchId = g_launchId; l.source = (uint8_t)g_launchSource;
-        l.hostInGame = inGame ? 1 : 0; l.hostLoading = (g_hostLoading || g_hostWantLoad) ? 1 : 0;
+        l.hostInGame = inGame ? 1 : 0; l.hostLoading = (g_hostLoading || g_hostWantLoad || g_wantNewGame) ? 1 : 0;
         snprintf(l.saveName, sizeof(l.saveName), "%s", g_launchName);
         SendGame(&l, sizeof(l));
     }
@@ -657,12 +695,32 @@ bool HostLaunch(const char* path, const char* name, char* why, size_t whyLen)
     return true;
 }
 
+bool NewGameAvailable() { return g_ok && NewGameCheck; }
+
+bool HostNewGame(char* why, size_t whyLen)
+{
+    auto fail = [&](const char* t) { snprintf(why, whyLen, "%s", t); Log(true, "[ЛОББИ] Новая игра не началась: %s", t); return false; };
+    if(!g_ok || !NewGameCheck) return fail("игра не даёт моду начать новую игру");
+    if(g_role != net::Role::Host) return fail("запускает только хост");
+    if(g_hostLoading || g_hostWantLoad || g_wantNewGame) return fail("уже загружается");
+    g_launchFile.clear();
+    g_launchSource = net::LOBBY_NEW;
+    snprintf(g_launchName, sizeof(g_launchName), "Новая игра");
+    g_launchId = (uint32_t)(net::NowUs() & 0x7FFFFFFF) | 1;
+    g_sendNonce = 0; g_out.clear();
+    g_nextLobbyUs = 0;
+    g_coopWorld = true;
+    g_wantNewGame = true; g_newGameAtUs = net::NowUs() + 800000; g_newGameSinceUs = 0;   // 0,8 с — друг успевает получить команду
+    Log(false, "[ЛОББИ] Запуск: «Новая игра» — начинаем вместе с другом");
+    return true;
+}
+
 Lobby GetLobby()
 {
     Lobby l;
     l.launchId = g_launchId; l.source = g_launchSource;
     snprintf(l.saveName, sizeof(l.saveName), "%s", g_launchName);
-    if(g_role == net::Role::Host) { l.hostInGame = g_inGame; l.hostLoading = g_hostLoading || g_hostWantLoad; }
+    if(g_role == net::Role::Host) { l.hostInGame = g_inGame; l.hostLoading = g_hostLoading || g_hostWantLoad || g_wantNewGame; }
     else { l.hostInGame = g_lobbyHostInGame; l.hostLoading = g_lobbyHostLoading; }
     return l;
 }

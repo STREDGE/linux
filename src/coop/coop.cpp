@@ -1299,6 +1299,14 @@ bool Launch(const char* path, const char* name, char* why, size_t whyLen)
     return ok;
 }
 
+bool LaunchNewGame(char* why, size_t whyLen)
+{
+    bool ok = world::HostNewGame(why, whyLen);
+    CTRACE("КНОПКА", "«Новая игра» в лобби → %s%s%s", ok ? "ок" : "НЕТ", ok ? "" : ": ", ok ? "" : why);
+    return ok;
+}
+bool NewGameAvailable() { return world::NewGameAvailable(); }
+
 void StartTailscale() { CTRACE("КНОПКА", "включить Tailscale"); net::Config c = GetConfig(); ts::Start(c.myId, c.tsKey); }
 void SetTsKey(const char* key)
 {

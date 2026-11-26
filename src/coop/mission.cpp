@@ -247,10 +247,10 @@ DECL_HOOKv(CutSkipHook)
 }
 
 // ========== запуск миссий у друга — нельзя (ведёт хост) ==========
-namespace { uint64_t g_blockedUs = 0, g_blockLogUs = 0; bool g_blockRecover = false; }
+namespace { uint64_t g_blockedUs = 0, g_blockLogUs = 0; bool g_blockRecover = false; bool g_forceBlock = false; }
 DECL_HOOK(int8_t, ProcessCommands1000, uintptr_t script, int cmd)
 {
-    if(cmd == 0x417 && ClientOn() && CollectParameters)
+    if(cmd == 0x417 && (ClientOn() || g_forceBlock) && CollectParameters)
     {
         CollectParameters(script, 1);              // номер миссии — забрать, миссию не грузить
         if(net::Since(g_now, g_blockLogUs) > 5000000)
@@ -832,6 +832,7 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
     if(!g_ok) return;
     bool was = g_connected && (g_role == net::Role::Host || g_role == net::Role::Client);
     g_role = role; g_now = now; g_local = local; g_remote = remote; g_rs = rs;
+    if(g_forceBlock && role != net::Role::Client) { g_forceBlock = false; Log(false, "[МИССИЯ] Кооп не «друг» — запрет миссий для новой игры снят"); }
     g_connected = connected && local && (role == net::Role::Host || role == net::Role::Client);
     if(!g_connected)
     {
@@ -900,6 +901,12 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
     GuardContacts();
     ApplyBlips();
     ClientSeat();
+}
+
+void ForceClientBlock(bool on)
+{
+    g_forceBlock = on;
+    Log(false, on ? "[МИССИЯ] Новая игра у друга: миссии ведёт хост, своё вступление не запускаю" : "[МИССИЯ] Запрет миссий для новой игры снят");
 }
 
 void Reset(const char* why)
