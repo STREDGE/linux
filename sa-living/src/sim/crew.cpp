@@ -32,9 +32,10 @@ namespace
 
     std::map<int, float> g_ownHp;             // свои рядом: ref → здоровье (кто их ранит)
     struct Hurt { double at = -1e9; bool armed = false; };
-    std::map<int, Hurt> g_ownHurtBy;          // ref своего → когда его ранил CJ (и было ли это оружием)
-    double g_ownHurtAny = -1e9;               // когда CJ последний раз ранил кого-то из своих
-    double g_ownHurtArmed = -1e9;             // … оружием или машиной (не кулаками)
+    // [0] CJ этого телефона, [1] друг (у хоста урон от друга по педу приходит событием SA Coop — обидчик = второй CJ)
+    std::map<int, Hurt> g_ownHurtBy[2];       // ref своего → когда его ранил CJ (и было ли это оружием)
+    double g_ownHurtAny[2] = { -1e9, -1e9 };  // когда CJ последний раз ранил кого-то из своих
+    double g_ownHurtArmed[2] = { -1e9, -1e9 };// … оружием или машиной (не кулаками)
 
     std::map<int, double> g_shoutAt;          // ref врага → когда свои уже кричали (одна реплика на стычку)
     double g_next = 0;
@@ -100,12 +101,13 @@ namespace
     void TrackOwnHurt(double now)
     {
         uintptr_t pl = game::Player(); if(!pl) return;
+        uintptr_t p2 = game::Player2();
         game::Vec me = game::Pos(pl);
         uint32_t tnow = game::TimeMs();
         std::map<int, float> next;
         game::ForEachPed([&](uintptr_t p) {
-            if(p == pl || game::IsPlayer(p) || p == game::Player2() || !Own(p)) return;
-            if(game::Dist(game::Pos(p), me) > 50) return;
+            if(p == pl || game::IsPlayer(p) || p == p2 || !Own(p)) return;
+            if(game::Dist(game::Pos(p), me) > 50 && !(p2 && game::Dist(game::Pos(p), game::Pos(p2)) < 50)) return;
             int ref = game::Ref(p); if(!ref) return;
             float hp = game::Health(p);
             auto it = g_ownHp.find(ref);
@@ -113,13 +115,16 @@ namespace
             {
                 int wpn = 0; uint32_t tm = 0; uintptr_t by = game::LastDamager(p, wpn, tm);
                 bool fresh = tm && tnow >= tm && tnow - tm < 1500;
-                if(fresh && (by == pl || (game::Vehicle(pl) && by == game::Vehicle(pl))))
+                int who = -1;
+                if(fresh && by && (by == pl || (game::Vehicle(pl) && by == game::Vehicle(pl)))) who = 0;
+                else if(fresh && by && p2 && (by == p2 || (game::Vehicle(p2) && by == game::Vehicle(p2)))) who = 1;
+                if(who >= 0)
                 {
-                    if(now - g_ownHurtAny > 5) TRACE("СВОИ", "игрок ранил своего %s (%s, оружие %d) — свои могут ответить", game::EntName(p).c_str(), Who(p).c_str(), wpn);
+                    if(now - g_ownHurtAny[who] > 5) TRACE("СВОИ", "%s ранил своего %s (%s, оружие %d) — свои могут ответить", who ? "друг" : "игрок", game::EntName(p).c_str(), Who(p).c_str(), wpn);
                     bool armed = wpn >= 2;                              // 0/1 — кулаки/кастет; дальше оружие, машина, взрыв
-                    Hurt& h = g_ownHurtBy[ref];
+                    Hurt& h = g_ownHurtBy[who][ref];
                     h.at = now; h.armed = h.armed || armed;
-                    g_ownHurtAny = now; if(armed) g_ownHurtArmed = now;
+                    g_ownHurtAny[who] = now; if(armed) g_ownHurtArmed[who] = now;
                 }
             }
             next[ref] = hp;
@@ -139,6 +144,12 @@ namespace
         Character* ch = world::FindByPed(defender);
         std::string name = ch ? (ch->nick.empty() ? ch->name : ch->nick) : std::string("Свой из Grove");
         talk::Say(name, line, false, ch ? ch->id : 0, ch ? ch->pitch : 1.0f, ch ? ch->rate : 1.0f, ch != nullptr);
+        uintptr_t p2 = game::Player2();
+        if(coopnet::GetRole() == coopnet::HOST && p2 && game::Dist(game::Pos(defender), game::Pos(p2)) < 60)
+        {   // друг рядом — пусть тоже видит крик (субтитром)
+            json::Value m = json::Value::Object(); m["t"] = "shout"; m["who"] = name; m["text"] = line;
+            coopnet::Send(m);
+        }
     }
 
     // Отбой: враг упал, убежал, защитник занят другим или прошло время — каждый возвращается к своим делам
@@ -201,7 +212,7 @@ namespace
                     int ref = game::Ref(p); if(!ref || g_def.count(ref)) return;
                     float d = game::Dist(game::Pos(p), at); if(d > 25.0f) return;
                     if(game::FightTarget(p)) return;                         // уже дерётся / целится в кого-то
-                    if(i == 0) { auto h = g_ownHurtBy.find(ref); if(h != g_ownHurtBy.end() && now - h->second.at < 300) return; }   // CJ только что бил его самого
+                    { auto h = g_ownHurtBy[i].find(ref); if(h != g_ownHurtBy[i].end() && now - h->second.at < 300) return; }   // этот CJ только что бил его самого
                     if(Character* ch = world::FindByPed(p)) if(ch->rel[i].liking < -30) return;   // в обиде на него
                     cand.push_back({ p, d });
                 });
@@ -226,7 +237,8 @@ namespace
 void Reset()
 {
     g_hits[0].clear(); g_hits[1].clear(); g_plHp[0] = g_plHp[1] = -1;
-    g_def.clear(); g_ownHp.clear(); g_ownHurtBy.clear(); g_ownHurtAny = g_ownHurtArmed = -1e9; g_shoutAt.clear();
+    g_def.clear(); g_ownHp.clear(); g_shoutAt.clear();
+    for(int i = 0; i < 2; ++i) { g_ownHurtBy[i].clear(); g_ownHurtAny[i] = g_ownHurtArmed[i] = -1e9; }
 }
 
 std::vector<uintptr_t> AttackersOf(uintptr_t pl)
@@ -306,12 +318,14 @@ bool Defend(uintptr_t ped, uintptr_t attacker, int weapon, const char* why)
     return true;
 }
 
-bool PlayerArmedVsOwn(uintptr_t ped)
+bool PlayerArmedVsOwn(uintptr_t ped, int who)
 {
+    if(who < 0 || who > 1) who = 0;
     double now = talk::Now();
-    if(now - g_ownHurtArmed < 120 && ped && game::Dist(game::Pos(ped), game::Pos(game::Player())) < 40) return true;
-    auto it = g_ownHurtBy.find(game::Ref(ped));
-    return it != g_ownHurtBy.end() && it->second.armed && now - it->second.at < 300;
+    uintptr_t pl = who ? game::Player2() : game::Player();
+    if(now - g_ownHurtArmed[who] < 120 && ped && pl && game::Dist(game::Pos(ped), game::Pos(pl)) < 40) return true;
+    auto it = g_ownHurtBy[who].find(game::Ref(ped));
+    return it != g_ownHurtBy[who].end() && it->second.armed && now - it->second.at < 300;
 }
 
 bool Defending(uintptr_t ped) { return ped && g_def.count(game::Ref(ped)); }

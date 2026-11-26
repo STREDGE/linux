@@ -987,7 +987,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
     };
     // Свой из банды на CJ за слова оружие не поднимает (тест 0.2.10: обиделся на «индюка» — и стрелять).
     // Оружие против CJ — только если CJ сам недавно ранил своих оружием (кулак — кулаком).
-    auto ownVsCJ = [&]() { return c && c->faction == world::W().playerGang && c->faction != world::F_CIVIL && !crew::PlayerArmedVsOwn(ped); };
+    auto ownVsCJ = [&]() { return c && c->faction == world::W().playerGang && c->faction != world::F_CIVIL && !crew::PlayerArmedVsOwn(ped, pl == game::Player2() && pl ? 1 : 0); };
     if(n == "attack")
     {
         if(!needPed()) return "ты не рядом";
