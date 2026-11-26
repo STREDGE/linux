@@ -157,12 +157,6 @@ namespace
         for(auto& f : g_f) if(f.released && In(f.downPos, a, b) && In(f.pos, a, b)) return true;
         return false;
     }
-    // Палец только что коснулся этой области (для волны от нажатия)
-    bool PressedIn(ImVec2 a, ImVec2 b, ImVec2* at)
-    {
-        for(auto& f : g_f) if(f.pressed && In(f.downPos, a, b)) { if(at) *at = f.downPos; return true; }
-        return false;
-    }
 
     // ---------- состояние меню ----------
     bool      g_editRequested = false;  // открыть редактор раскладки при возврате в игру
