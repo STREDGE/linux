@@ -321,7 +321,7 @@ void RunDirector(bool force)
         "news":{"type":"array","items":{"type":"string"}},
         "police":{"type":"object","additionalProperties":false,"required":["heat_change","start_internal_affairs"],
           "properties":{"heat_change":{"type":"integer"},"start_internal_affairs":{"type":"boolean"}}}}}})", fmt);
-    r.format = fmt; r.maxTokens = 6000; r.effort = "medium"; r.cache = false; r.tag = "режиссёр"; r.role = claude::ROLE_WORLD;   // в фоне — можно подумать
+    r.format = fmt; r.maxTokens = 16000; r.effort = "high"; r.timeoutMs = 120000; r.cache = false; r.tag = "режиссёр"; r.role = claude::ROLE_WORLD;   // в фоне, ответа никто не ждёт — думает глубоко (игрок, 0.5.2)
     g_directorReq = claude::Send(r, nullptr, [](claude::Result& res) {
         g_directorReq = 0;
         json::Value v;
@@ -364,7 +364,7 @@ void RequestProfile(Character& c)
     r.messages = json::Value::Array(); r.messages.push(msg);
     json::Value fmt; json::Parse(R"({"type":"json_schema","schema":{"type":"object","additionalProperties":false,"required":["nick","backstory","dream","fear","speech","role"],
       "properties":{"nick":{"type":"string"},"backstory":{"type":"string"},"dream":{"type":"string"},"fear":{"type":"string"},"speech":{"type":"string"},"role":{"type":"string"}}}})", fmt);
-    r.format = fmt; r.maxTokens = 4000; r.effort = "low"; r.cache = false; r.tag = "профиль"; r.role = claude::ROLE_WORLD;   // с размышлением — живее; запас под него
+    r.format = fmt; r.maxTokens = 10000; r.effort = "high"; r.timeoutMs = 120000; r.cache = false; r.tag = "профиль"; r.role = claude::ROLE_WORLD;   // в фоне — думает глубоко (игрок, 0.5.2); запас под размышление
     int id = c.id;
     claude::Send(r, nullptr, [id](claude::Result& res) {
         Character* ch = world::Find(id);
