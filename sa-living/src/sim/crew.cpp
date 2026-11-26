@@ -169,10 +169,10 @@ namespace
     }
 
     // Свои рядом сами вступаются за CJ / друга
-    void Backup(double now)
+    void Backup(double now, bool onlyLocal)
     {
         auto& W = world::W();
-        for(int i = 0; i < 2; ++i)
+        for(int i = 0; i < (onlyLocal ? 1 : 2); ++i)
         {
             uintptr_t prot = ProtecteeOf(i);
             if(!prot || !game::Alive(prot)) continue;
@@ -268,8 +268,9 @@ std::string Describe(uintptr_t pl, uintptr_t from)
         bool hit = h != g_hits[idx].end() && now - h->second.at < 6;
         int t = game::PedType(a);
         const char* tag = t == game::PT_COP ? " — полицейский" : Own(a) ? " — твой же из банды" : "";
-        s += Fmt(" [%s%s, %s, %s, в %.0f м от тебя]", Who(a).c_str(), tag, WeaponWord(w), hit ? "бьёт его" : "лезет на него / целится",
-                 from ? game::Dist(game::Pos(a), game::Pos(from)) : 0.0f);
+        s += Fmt(" [%s%s, %s, %s", Who(a).c_str(), tag, WeaponWord(w), hit ? "бьёт его" : "лезет на него / целится");
+        if(from) s += Fmt(", в %.0f м от тебя", game::Dist(game::Pos(a), game::Pos(from)));
+        s += "]";
     }
     int helping = 0;
     for(auto& kv : g_def) if(kv.second.protectee == idx) ++helping;
@@ -324,9 +325,10 @@ void Frame()
     TrackPlayerHits(now);
     TrackOwnHurt(now);
     Release(now);
-    // Подмога — там, где живёт мир SA Living (хост или одиночка): у друга педы — копии хоста
-    if(coopnet::GetRole() == coopnet::CLIENT) return;
     if(game::CutsceneRunning() || police::Arresting()) return;
-    Backup(now);
+    // Хост (и одиночка) прикрывает обоих CJ своими педами — друг видит это на копиях.
+    // У друга — только его самого и только своими людьми: когда вы рядом, люди у него — копии хоста
+    // (createdBy 2, как у миссии) и в защитники не берутся; разъехались — у друга своё население, его и зовём.
+    Backup(now, coopnet::GetRole() == coopnet::CLIENT);
 }
 }

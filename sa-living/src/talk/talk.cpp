@@ -76,6 +76,10 @@ namespace
         return who == world::WHO_CJ ? w.playerNick.c_str() : (w.friendNick.empty() ? "друг CJ" : w.friendNick.c_str());
     }
 
+    // Друг в коопе рядом с хостом: люди на его экране — копии педов хоста (SA Coop ставит им createdBy 2, как у миссии).
+    // Говорить с ними можно; действия телом исполняет хост на настоящем педе (сообщение «act»).
+    bool CoopCopy(uintptr_t p) { return p && coopnet::GetRole() == coopnet::CLIENT && game::IsScriptPed(p); }
+
     uintptr_t PlayerFor(int who)
     {
         (void)who;   // друг на своём телефоне тоже «игрок 0»
@@ -569,10 +573,11 @@ namespace
         float h = game::Heading(pl);
         float fx = -sinf(h), fy = cosf(h);
         uintptr_t target = game::PlayerTarget();
-        if(target && game::Alive(target) && !game::IsScriptPed(target) && game::Dist(game::Pos(target), me) < 15) return target;
+        if(target && target != game::Player2() && game::Alive(target) && (!game::IsScriptPed(target) || CoopCopy(target)) && game::Dist(game::Pos(target), me) < 15) return target;
         uintptr_t best = 0; float bestScore = 1e9f;
         game::ForEachPed([&](uintptr_t p) {
-            if(p == pl || game::IsPlayer(p) || !game::Alive(p) || game::IsScriptPed(p)) return;   // педы миссий — не трогаем (сломается сценарий)
+            if(p == pl || p == game::Player2() || game::IsPlayer(p) || !game::Alive(p)) return;
+            if(game::IsScriptPed(p) && !CoopCopy(p)) return;   // педы миссий — не трогаем (сломается сценарий); копии хоста у друга — можно
             game::Vec v = game::Pos(p);
             float d = game::Dist(v, me);
             if(d > 8.0f) return;
@@ -637,7 +642,7 @@ namespace
         if(!g_c.active || g_c.charId != c.id)
         {
             g_c = Conv(); g_c.active = true; g_c.charId = c.id; g_c.who = world::WHO_CJ; g_c.remote = coopnet::GetRole() == coopnet::CLIENT;
-            if(!game::Vehicle(ped)) { game::TaskTurnTo(ped, game::Player()); }
+            if(!game::Vehicle(ped)) ExecutePhysical(&c, ped, world::WHO_CJ, "face", json::Value::Object());   // повернуться к CJ (у друга копию поворачивает хост)
             c.rel[world::WHO_CJ].met = true;
             EnsureVoice(c);
             int mainId = c.id;
@@ -890,10 +895,29 @@ bool React(Character& c, int who, const std::string& eventText, bool important)
 std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::string& n, const json::Value& in)
 {
     uintptr_t pl = game::Player();
+    if(who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST && game::Player2()) pl = game::Player2();   // действие для друга — у хоста его CJ второй
     bool phone = g_c.active && g_c.phone && c && g_c.charId == c->id;
     auto needPed = [&]() { return ped && !phone && game::Alive(ped) && !game::Vehicle(ped) && !game::IsScriptPed(ped); };   // водителю нельзя: сломаем езду
 
+    // У друга собеседник — копия педа хоста: телом им управляет хост, поэтому действие отправляем хосту,
+    // он найдёт настоящего педа (та же модель, рядом с этим местом) и выполнит его против CJ друга.
+    if(!phone && CoopCopy(ped) && (n == "gesture" || n == "move" || n == "attack" || n == "aim_weapon" || n == "holster" || n == "face"))
+    {
+        json::Value m = json::Value::Object();
+        m["t"] = "act"; m["name"] = n; m["input"] = in;
+        game::Vec at = game::Pos(ped);
+        m["x"] = at.x; m["y"] = at.y; m["z"] = at.z; m["model"] = game::Model(ped);
+        m["hostCharId"] = c ? c->hostId : 0;
+        coopnet::Send(m);
+        TRACE("КООП", "действие %s копии %s — выполнит хост", n.c_str(), game::EntName(ped).c_str());
+        const std::string& md = in["mode"].str();
+        if(n == "attack" && in["target"].str() != "his_attacker") g_c.endAfterSpeech = true;
+        if(n == "move" && (md == "flee" || md == "go_away" || md == "wander" || md == "go_home")) g_c.endAfterSpeech = true;
+        return "делаешь";
+    }
+
     if(n == "end_conversation") { g_c.endAfterSpeech = true; return "ок"; }
+    if(n == "face") { if(!ped || game::Vehicle(ped) || game::IsScriptPed(ped) || !game::Alive(ped)) return "нет"; return game::TaskTurnTo(ped, pl) ? "ок" : "не вышло"; }   // не инструмент ИИ: начало разговора
     if(n == "gesture")
     {
         if(!needPed()) return "ты не рядом";
@@ -1135,7 +1159,13 @@ void HandleFriendTalk(const json::Value& req)
         c = &W.chars.back();
         life::RequestProfile(*c);
     }
-    std::string text = req["situation"].str() + "\n" + req["text"].str();
+    std::string sit = req["situation"].str();
+    if(sit.find("НАПАДАЮТ") == std::string::npos && game::Player2())
+    {   // у хоста видно, кто бьёт второго CJ (настоящие педы), — добавим к обстановке друга
+        std::string d = crew::Describe(game::Player2(), 0);
+        if(!d.empty()) sit += "\n[Видно со стороны:" + d + "]";
+    }
+    std::string text = sit + "\n" + req["text"].str();
     int cid = c->id;
     int localId = req["localId"].i();
     SendTurn(*c, world::WHO_FRIEND, text, false, true, [cid, localId](json::Value rep) {
@@ -1159,6 +1189,22 @@ void HandleHostReply(const json::Value& rep)
     uintptr_t ped = world::PedOf(*c);
     for(auto& a : rep["actions"].arr()) ExecutePhysical(c, ped, world::WHO_CJ, a["name"].str(), a["input"]);
     if(g_c.active && g_c.charId == c->id) g_c.lastAt = Now();
+}
+
+// Хост: действие телом от разговора друга с копией педа. Ищем настоящего педа (та же модель, до 6 м от места
+// копии у друга) и выполняем против второго CJ. Разговор хоста при этом не трогаем (как действие слушателя).
+void HandleFriendAct(const json::Value& m)
+{
+    game::Vec at{ (float)m["x"].num(), (float)m["y"].num(), (float)m["z"].num() };
+    int model = m["model"].i();
+    uintptr_t p2 = game::Player2();
+    uintptr_t ped = game::NearestPed(at, 6.0f, [&](uintptr_t p) { return p != p2 && p != game::Player() && !game::IsPlayer(p) && game::Model(p) == model; });
+    const std::string& n = m["name"].str();
+    if(!ped || !p2) { TRACE("КООП", "действие друга %s: педа m=%d у (%.1f,%.1f,%.1f) не нашёл", n.c_str(), model, at.x, at.y, at.z); return; }
+    Character* c = world::Find(m["hostCharId"].i());
+    struct MemberScope { MemberScope() { g_memberAct = true; } ~MemberScope() { g_memberAct = false; } } scope;
+    std::string res = ExecutePhysical(c, ped, world::WHO_FRIEND, n, m["input"]);
+    TRACE("КООП", "действие друга %s %s на %s: %s", n.c_str(), m["input"].dump().c_str(), game::EntName(ped).c_str(), res.c_str());
 }
 
 // ---------- кадр ----------

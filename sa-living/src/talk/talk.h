@@ -65,6 +65,8 @@ namespace talk
     void HandleFriendTalk(const json::Value& req);
     // Друг: получить ответ хоста и исполнить физические действия у себя
     void HandleHostReply(const json::Value& rep);
+    // Хост: действие телом из разговора друга с копией педа — выполнить на настоящем педе
+    void HandleFriendAct(const json::Value& m);
 
     // Исполнение действий, требующих педа и денег игрока (локально у того, кто говорил)
     std::string ExecutePhysical(world::Character* c, uintptr_t ped, int who, const std::string& name, const json::Value& in);
