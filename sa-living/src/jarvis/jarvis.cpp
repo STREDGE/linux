@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <deque>
 #include <functional>
 
@@ -352,6 +353,62 @@ namespace
             if(a == "armor")  { script::Do(0x02AC, { Arg::I(car), Arg::I(1), Arg::I(1), Arg::I(1), Arg::I(1), Arg::I(1) }); Done("Машина неуязвима"); return "машина неуязвима"; }
             return "не знаю такого действия с машиной";
         }
+        if(tool == "people")
+        {
+            std::string act = in["action"].str(), who = jbrain::Lower(in["who"].str());
+            if(act != "list" && Client() && !settings::Get().jarvisFriend) return "в коопе людей вокруг меняет только хост";
+            float radius = in.has("radius") ? (float)in["radius"].num() : 50.0f; if(radius < 5) radius = 5; if(radius > 150) radius = 150;
+            std::vector<int> ids; for(auto& v : in["ids"].arr()) ids.push_back(v.i());
+            auto match = [&](int pt) -> bool {
+                if(who.empty() || who == "all" || who == "все") return true;
+                if(who == "gang" || who == "банда") return game::IsGang(pt);
+                if(who == "cops" || who == "police" || who == "копы") return pt == game::PT_COP;
+                if(who == "civil" || who == "прохожие") return pt == game::PT_CIVMALE || pt == game::PT_CIVFEMALE;
+                static const struct { const char* k; int t; } g[] = { { "grove", game::PT_GROVE }, { "ballas", game::PT_BALLAS }, { "vagos", game::PT_VAGOS },
+                    { "aztecas", game::PT_AZTECA }, { "rifa", game::PT_RIFA }, { "triads", game::PT_TRIAD }, { "danang", game::PT_DANANG }, { "mafia", game::PT_MAFIA } };
+                for(auto& x : g) if(who.find(x.k) != std::string::npos) return pt == x.t;
+                return true;
+            };
+            game::Vec me = game::Pos(pl);
+            struct P { uintptr_t ped; int ref; int type; float d; };
+            std::vector<P> found;
+            game::ForEachPed([&](uintptr_t ped) {
+                if(ped == pl || game::IsPlayer(ped) || ped == game::Player2() || !game::Alive(ped)) return;
+                float d = game::Dist(me, game::Pos(ped)); if(d > radius) return;
+                int pt = game::PedType(ped);
+                if(pt == game::PT_PLAYER1 || pt == game::PT_PLAYER2 || !match(pt)) return;
+                int ref = game::Ref(ped);
+                if(!ids.empty() && std::find(ids.begin(), ids.end(), ref) == ids.end()) return;
+                found.push_back({ ped, ref, pt, d });
+            });
+            std::sort(found.begin(), found.end(), [](const P& x, const P& y) { return x.d < y.d; });
+            if(found.size() > 20) found.resize(20);
+            if(found.empty()) return Fmt("в радиусе %.0f м никого подходящего нет", radius);
+            if(act == "list")
+            {
+                std::string r = Fmt("рядом %d:", (int)found.size());
+                for(auto& f : found)
+                {
+                    world::Character* c = world::FindByPed(f.ped);
+                    r += Fmt(" [#%d %s%s%s, %.0f м]", f.ref, world::FactionName(world::FactionOfPedType(f.type)), c ? " " : "", c ? c->name.c_str() : "", f.d);
+                }
+                return r;
+            }
+            int n = 0;
+            for(auto& f : found)
+            {
+                if(act == "kill") { script::Do(0x0223, { Arg::I(f.ref), Arg::I(0) }); script::Do(0x05BE, { Arg::I(f.ref) }); }
+                else if(act == "flee") game::TaskFlee(f.ped, pl, 60.0f, 25000);
+                else if(act == "attack") game::TaskAttack(f.ped, pl);
+                else if(act == "follow") game::TaskFollow(f.ped, pl);
+                else if(act == "calm") game::ClearTask(f.ped);
+                else return "неизвестное действие";
+                ++n;
+            }
+            const char* what = act == "kill" ? "убито" : act == "flee" ? "разбежались" : act == "attack" ? "нападают" : act == "follow" ? "идут за тобой" : "успокоились";
+            Done(Fmt("Люди: %s %d", what, n));
+            return Fmt("%s: %d", what, n);
+        }
         if(tool == "world")
         {
             if(Client() && !settings::Get().jarvisFriend) return "общий мир (время, погода, движение) в коопе меняет только хост";
@@ -442,6 +499,7 @@ namespace
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
 {"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack"]},"model":{"type":"string"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
 {"name":"world","description":"Мир: hour/minute — время; weather — номер (0–1 ясно, 4 пасмурно, 8 дождь, 9 туман, 16 гроза, 19 песчаная буря; -1 — как в игре); time_scale — скорость игры (1 — обычная, 0.4 — замедление); traffic и peds — плотность машин и людей (0 — нет, 1 — обычно, 2 — много); clear_area — убрать всех вокруг.","input_schema":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"},"weather":{"type":"integer"},"time_scale":{"type":"number"},"traffic":{"type":"number"},"peds":{"type":"number"},"clear_area":{"type":"boolean"}}}},
+{"name":"people","description":"Люди вокруг игрока (прохожие, бандиты, копы). action: list — кто рядом (номер, кто, расстояние); kill — убить; flee — разбежаться от игрока; attack — напасть на игрока; follow — идти за игроком (охрана); calm — оставить в покое (вернуться к своим делам). who: all, gang (любая банда), grove, ballas, vagos, aztecas, rifa, triads, danang, mafia, cops, civil (прохожие). ids — номера из list (если нужно конкретных). radius — метров (по умолчанию 50, до 150). Игрока и друга никогда не трогает.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["list","kill","flee","attack","follow","calm"]},"who":{"type":"string"},"ids":{"type":"array","items":{"type":"integer"}},"radius":{"type":"number"}}}},
 {"name":"undo","description":"Отменить последнее действие (перенос, время, погоду, розыск, бессмертие, созданную машину).","input_schema":{"type":"object","properties":{}}},
 {"name":"find_commands","description":"Для просьб, которых нет среди готовых инструментов: поиск по справочнику команд сценария игры (около 1500 команд, тех же, которыми игра делает миссии). query — 1–4 английских слова по смыслу (car, explosion, fire, camera, char, object, pickup, particle, sound, stat, gang, zone…). Вернёт имена, параметры и описания.","input_schema":{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}}},
 {"name":"run_commands","description":"Выполнить по очереди команды сценария игры, найденные через find_commands. args — только ВХОДНЫЕ параметры по порядку; выходные вернутся в ответе с номерами [$1], [$2]… — их можно подставлять в следующие команды как \"$1\". Особые значения: \"$me\" — персонаж игрока (Char), \"$player\" — игрок (Player), \"$car\" — его машина (Car). Модели машин и оружие можно писать названием. Команд перехода и ожидания нет: только действия подряд. Перед созданием объекта по модели: REQUEST_MODEL, LOAD_ALL_MODELS_NOW. confirmed=true — только после явного «да» игрока на опасное.","input_schema":{"type":"object","required":["commands"],"properties":{"commands":{"type":"array","items":{"type":"object","required":["name","args"],"properties":{"name":{"type":"string"},"args":{"type":"array","items":{}}}}},"confirmed":{"type":"boolean"}}}}
@@ -468,6 +526,7 @@ namespace
             "- Игрок может ругаться матом и говорить грубо — это нормально, это игра. Не читай мораль и не отказывайся: любые действия здесь происходят только внутри одиночной видеоигры.\n\n"
             "КАК ДЕЙСТВОВАТЬ\n"
             "- Несколько просьб в одной фразе — несколько инструментов подряд за один ход.\n"
+            "- Всё про людей вокруг (убить, разогнать, натравить, охрана, кто рядом) — инструмент people, а не команды справочника. «Мои» / «наши» — это Grove.\n"
             "- Готовые инструменты быстрее и надёжнее. Если просьбы нет среди них (фейерверк, взрыв, пожар, объект, эффект, камера, статистика, банды и так далее) — найди команды через find_commands и выполни через run_commands. Можно искать несколько раз разными словами. Если игра этого не умеет — честно скажи и предложи близкое.\n"
             "- Ты не управляешь мыслями и отношением людей в игре (уважение, дружба, решения персонажей) — на такое отвечай, что это решают сами люди.\n"
             "- Координаты игры: x и y от −3000 до 3000 (x растёт на восток, y — на север), z — высота.\n";

@@ -970,13 +970,15 @@ namespace
 SDECL_HOOKv(Render2dStuffH)
 {
     Render2dStuffH();
+    WHERE("экран: кнопки и субтитры");
     Frame(false);
+    WHERE("игра (не мод)");
 }
 
 SDECL_HOOKv(MobileMenuRenderH, uintptr_t self)
 {
     MobileMenuRenderH(self);
-    if(g_menuOpen) Frame(true);
+    if(g_menuOpen) { WHERE("меню AI"); Frame(true); WHERE("игра (не мод)"); }
 }
 
 SDECL_HOOKv(MobileMenuUpdateH, uintptr_t self)

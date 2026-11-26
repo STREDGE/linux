@@ -78,7 +78,7 @@ namespace
     SetCreatedBy_t SetCreatedBy; AnimBlockIndex_t AnimBlockIndex; OnScreen_t OnScreenFn;
 
     // конструкторы задач
-    void* ctorGoTo; void* ctorFollow; void* ctorFlee; void* ctorKill; void* ctorStand; void* ctorTurn; void* ctorWander;
+    void* ctorGoTo; void* ctorFollow; void* ctorFlee; void* ctorKill; void* ctorStand; void* ctorTurn;;
     void* ctorEnterDriver; void* ctorEnterPass; void* ctorLeave; void* ctorDrive; void* ctorPhone; void* ctorArrest;
     void* ctorNamedAnim; void* ctorSeekAim;
 
@@ -190,7 +190,6 @@ bool Init(void* h)
     ctorKill   = (void*)Sym(h, "_ZN25CTaskComplexKillPedOnFootC2EP4CPedijjji");
     ctorStand  = (void*)Sym(h, "_ZN21CTaskSimpleStandStillC2Eibbf");
     ctorTurn   = (void*)Sym(h, "_ZN35CTaskComplexTurnToFaceEntityOrCoordC2EP7CEntityff");
-    ctorWander = (void*)Sym(h, "_ZN18CTaskComplexWanderC2Eihbf", false);
     ctorEnterDriver = (void*)Sym(h, "_ZN28CTaskComplexEnterCarAsDriverC2EP8CVehicle");
     ctorEnterPass   = (void*)Sym(h, "_ZN31CTaskComplexEnterCarAsPassengerC2EP8CVehicleib");
     ctorLeave  = (void*)Sym(h, "_ZN20CTaskComplexLeaveCarC2EP8CVehicleiibb");
@@ -366,12 +365,13 @@ bool TaskTurnTo(uintptr_t ped, uintptr_t target)
     ((void(*)(void*, uintptr_t, float, float))ctorTurn)(t, target, 0.5f, 0.2f);
     return Assign(ped, t);
 }
+// «Иди гуляй»: снимаем нашу задачу — пед возвращается к своей обычной (у прохожего — прогулка, у бандита — своя).
+// CTaskComplexWander самому создавать нельзя: это незаконченная заготовка (нет GetWanderType/ScanForStuff) —
+// игра падала на «Уйти» (0.2.0).
 bool TaskWander(uintptr_t ped)
 {
-    if(!ctorWander) { ClearTask(ped); return true; }
-    void* t = NewTask(); if(!t) return false;
-    ((void(*)(void*, int, uint8_t, bool, float))ctorWander)(t, 4, (uint8_t)(rand() % 8), true, 0.5f);
-    return Assign(ped, t);
+    ClearTask(ped);
+    return true;
 }
 bool TaskEnterCar(uintptr_t ped, uintptr_t veh, bool driver, int seat)
 {

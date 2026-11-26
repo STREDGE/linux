@@ -29,9 +29,32 @@
 #include "util/log.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.2.0, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.2.1, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
+const char* volatile g_where = "загрузка";
+
+// Если игра упадёт — записать, где именно (библиотека, адрес, что делал мод)
+ON_GAME_CRASH()
+{
+    uintptr_t pc = mcontext ? (uintptr_t)mcontext->pc : 0;
+    uintptr_t lr = mcontext ? (uintptr_t)mcontext->regs[30] : 0;
+    g_fileLog.Error("ВЫЛЕТ: сигнал %d, код %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX",
+                    sig, code, library ? library : "?", (unsigned long)(pc - libaddr), (unsigned long)pc, (unsigned long)lr);
+    g_fileLog.Error("Мод в момент вылета: %s", g_where ? g_where : "?");
+}
+
+// Прошлый лог не стираем: saliving.txt → saliving_prev.txt (там запись о вылете, если игра упала)
+static void KeepPreviousLog()
+{
+    const char* root = aml->GetInternalPath();
+    if(!root || !root[0]) return;
+    char dir[512], cur[600], prev[600];
+    snprintf(dir, sizeof(dir), "%s/Documents/AMLModLogs/%s", root, modinfo->GUID());
+    snprintf(cur, sizeof(cur), "%s/saliving.txt", dir);
+    snprintf(prev, sizeof(prev), "%s/saliving_prev.txt", dir);
+    if(access(cur, F_OK) == 0) { remove(prev); rename(cur, prev); }
+}
 
 void LogInfo(const char* fmt, ...)
 {
@@ -190,16 +213,17 @@ static void Frame()
     if(!bridge::Ready() && now >= g_nextBridgeTry) { g_nextBridgeTry = now + 10; bridge::Init(); }
     if(bridge::Ready() && !g_ttsAsked && settings::Get().engine == 1) { g_ttsAsked = true; bridge::TtsInit(settings::Get().lang.c_str()); }
     if(bridge::Ready()) InitSpeechOnce();
-    claude::Pump();
-    speech::Frame();
-    coopnet::Frame();
-    if(!game::Player()) return;
+    WHERE("кадр: ответы ИИ"); claude::Pump();
+    WHERE("кадр: речь"); speech::Frame();
+    WHERE("кадр: кооп"); coopnet::Frame();
+    if(!game::Player()) { WHERE("кадр: нет игрока"); return; }
     if(world::MemoryKey().empty()) world::SwitchTo("default");     // игра началась, а загрузку/новую игру мы не увидели
-    world::Tick();
-    talk::Frame();
-    jarvis::Frame();
-    police::Frame();
-    life::Frame();
+    WHERE("кадр: мир"); world::Tick();
+    WHERE("кадр: разговор"); talk::Frame();
+    WHERE("кадр: Джарвис"); jarvis::Frame();
+    WHERE("кадр: полиция"); police::Frame();
+    WHERE("кадр: жизнь города"); life::Frame();
+    WHERE("кадр: прочее");
     { std::string n; while(speech::PopNotice(n)) talk::Notify(n); }
     if(coopnet::GetRole() == coopnet::HOST && now >= g_nextSync) { g_nextSync = now + 15; HostSync(); }
     if(now >= g_nextSave)
@@ -211,8 +235,10 @@ static void Frame()
 
 SDECL_HOOKv(GameProcess)
 {
+    WHERE("игра (не мод)");
     GameProcess();
     Frame();
+    WHERE("игра (не мод)");
 }
 
 // Сохранение игры — заодно сохраняем мир (тот же поток игры, ничего не удаляем)
@@ -260,6 +286,7 @@ SDECL_HOOKv(SetHelpMessageH, const char* label, uint16_t* text, bool quick, bool
 
 ON_MOD_LOAD()
 {
+    KeepPreviousLog();
     logger->SetTag("SALiving");
     LogInfo("SA Living %s загружается", modinfo->VersionString());
     void* h = aml->GetLibHandle("libGTASA.so");
@@ -313,8 +340,3 @@ ON_ALL_MODS_LOAD()
     coopnet::Init();
 }
 
-ON_GAME_CRASH()
-{
-    uintptr_t pc = mcontext ? (uintptr_t)mcontext->pc : 0;
-    g_fileLog.Error("ВЫЛЕТ: сигнал %d, код %d, библиотека %s, адрес +0x%lX", sig, code, library ? library : "?", (unsigned long)(pc - libaddr));
-}

@@ -65,7 +65,7 @@ const char* ToolsJson()
 {"name":"aim_weapon","description":"Достать оружие и держать собеседника на прицеле (угроза без выстрела).","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["weapon"],"properties":{
   "weapon":{"type":"string","enum":["knife","pistol","uzi","shotgun","ak47"]}}}},
-{"name":"holster","description":"Убрать оружие, успокоиться.","strict":true,
+{"name":"holster","description":"Убрать оружие, успокоиться.",
  "input_schema":{"type":"object","additionalProperties":false,"required":[],"properties":{}}},
 {"name":"give_money","description":"Отдать собеседнику деньги из своего кармана (не больше, чем у тебя есть).","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["amount","reason"],"properties":{
@@ -88,7 +88,7 @@ const char* ToolsJson()
  "input_schema":{"type":"object","additionalProperties":false,"required":["kind","text","hours"],"properties":{
   "kind":{"type":"string","enum":["meet_player","revenge","hunt_player","avoid_player","guard_area","work_for_player","other"]},
   "text":{"type":"string"},"hours":{"type":"integer"}}}},
-{"name":"share_contact","description":"Дать собеседнику свой номер телефона (он сможет звонить тебе).","strict":true,
+{"name":"share_contact","description":"Дать собеседнику свой номер телефона (он сможет звонить тебе).",
  "input_schema":{"type":"object","additionalProperties":false,"required":[],"properties":{}}},
 {"name":"agree_deal","description":"Договориться о постоянных отношениях: payroll — работать на игрока за еженедельную плату; informant — тайно сливать сведения; protection — крышевать/защищать; truce — перемирие от лица своих (только если ты из главных); defect — перейти к игроку от своих; service — разовая услуга. price — $ в неделю или за услугу.","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["kind","price","details"],"properties":{
@@ -115,7 +115,7 @@ const char* ToolsJson()
   "who":{"type":"integer"},
   "action":{"type":"string","enum":["laugh","agree","disagree","angry","threaten","scared","cross_arms","fuck_you","point","smoke","come_closer","go_away","flee","wait_here","follow_player","aim_weapon","attack","holster"]},
   "weapon":{"type":"string","enum":["fists","knife","bat","pistol","uzi","shotgun","ak47"]}}}},
-{"name":"end_conversation","description":"Закончить разговор (уйти, отвернуться, бросить трубку).","strict":true,
+{"name":"end_conversation","description":"Закончить разговор (уйти, отвернуться, бросить трубку).",
  "input_schema":{"type":"object","additionalProperties":false,"required":[],"properties":{}}}
 ])JSON";
 }
