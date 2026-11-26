@@ -1,4 +1,5 @@
 #include "sync.h"
+#include "trace/ctrace.h"
 
 #include <mod/amlmod.h>
 #include <mod/logger.h>
@@ -53,6 +54,7 @@ namespace
         va_list a; va_start(a, fmt); vsnprintf(buf, sizeof(buf), fmt, a); va_end(a);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
         if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }
+        ctrace::FromLog(error, buf);
     }
 
     // ---------- текущий кадр ----------

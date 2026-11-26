@@ -3,6 +3,7 @@
 // частоты, кодирование и декодирование — в игровом потоке (Pump).
 
 #include "voice.h"
+#include "trace/ctrace.h"
 
 #include <dlfcn.h>
 #include <math.h>
@@ -155,6 +156,7 @@ namespace
         if(!g_log) return;
         char buf[512]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
         if(err) g_log->Error("[ГОЛОС] %s", buf); else g_log->Info("[ГОЛОС] %s", buf);
+        ctrace::Line("ГОЛОС", err ? "ОШИБКА: %s" : "%s", buf);
     }
 
     // ---------------- потоки AAudio ----------------

@@ -143,13 +143,7 @@ namespace
         const char* line = gun ? kGuns[world::Rand(0, 3)] : kFists[world::Rand(0, 3)];
         Character* ch = world::FindByPed(defender);
         std::string name = ch ? (ch->nick.empty() ? ch->name : ch->nick) : std::string("Свой из Grove");
-        talk::Say(name, line, false, ch ? ch->id : 0, ch ? ch->pitch : 1.0f, ch ? ch->rate : 1.0f, ch != nullptr);
-        uintptr_t p2 = game::Player2();
-        if(coopnet::GetRole() == coopnet::HOST && p2 && game::Dist(game::Pos(defender), game::Pos(p2)) < 60)
-        {   // друг рядом — пусть тоже видит крик (субтитром)
-            json::Value m = json::Value::Object(); m["t"] = "shout"; m["who"] = name; m["text"] = line;
-            coopnet::Send(m);
-        }
+        talk::SayNear(ch, name, line, defender);     // слышат оба CJ, кто рядом (у второго — субтитр и голос)
     }
 
     // Отбой: враг упал, убежал, защитник занят другим или прошло время — каждый возвращается к своим делам

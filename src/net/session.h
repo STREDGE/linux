@@ -79,6 +79,17 @@ namespace net
         // PKT_RELIABLE — только полезные данные события.
         typedef void (*GameSink)(uint8_t type, const uint8_t* data, int len);
         void  SetGameSink(GameSink fn) { m_gameSink = fn; }
+        // Счётчики для подробного лога (только игровой поток)
+        struct Stats
+        {
+            uint32_t sentPk[32] = {}, sentB[32] = {}, recvPk[32] = {}, recvB[32] = {};   // по типу пакета (PacketType)
+            uint32_t relSent = 0, relRecv = 0, relDup = 0, relResend = 0, relDropped = 0;
+            uint32_t pingSent = 0, pongRecv = 0, badVersion = 0;
+            uint32_t modOut[256] = {}, modIn[256] = {};                                     // канал SACoopNet
+        };
+        const Stats& GetStats() const { return m_stats; }
+        int   ReliableQueue() const { return (int)m_relOut.size(); }
+        uint64_t LastRecvUs() const { return m_lastRecvUs; }
         bool  UsingRelay() const { return m_useRelay; }
         const char* RoomCode() const { return m_room; }     // хост через посредника: код комнаты (6 цифр)
         void  SendGame(const void* pkt, int len);       // заголовок уже заполнен
@@ -138,6 +149,7 @@ namespace net
         uint32_t    m_relSeen[128] = {};    // последние принятые номера (повторы отбрасываем)
         int         m_relSeenHead = 0;
         uint32_t    m_voiceIn = 0, m_voiceOut = 0;
+        Stats       m_stats;
     };
 
     uint64_t NowUs();

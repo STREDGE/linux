@@ -18,9 +18,10 @@
 #include "platform/android.h"
 #include "ui/menu.h"
 #include "ui/overlay.h"
+#include "trace/ctrace.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 1.0.1, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 1.0.2, SA Coop Team)
 
 // Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
 static FLogger   g_fileLog("sacoop.txt");
@@ -50,6 +51,7 @@ ON_GAME_CRASH()
                     sig, code, library ? library : "?", (unsigned long)(pc - libaddr),
                     (unsigned long)pc, (unsigned long)lr, (unsigned long)(pGTASA ? lr - pGTASA : 0));
     g_fileLog.Error("Мод в момент вылета: %s", coop::Where());
+    ctrace::Crash(sig, (unsigned long)pc, (unsigned long)lr, library, (unsigned long)(pc - libaddr), coop::Where());
 }
 
 static bool g_installed = false;
@@ -71,6 +73,7 @@ static void KeepPreviousLog()
 ON_MOD_LOAD()
 {
     KeepPreviousLog();
+    ctrace::Init();          // подробный лог коопа (всегда включён)
     logger->SetTag("SACoop");
     logger->Info("SA Coop %s загружается", modinfo->VersionString());
 
@@ -91,6 +94,7 @@ ON_MOD_LOAD()
         else     {          logger->Error("[НЕТ]  %s (%s)", s.desc, s.sym); }
     }
     logger->Info("Символов найдено: %d из %d", found, total);
+    CTRACE("СЕССИЯ", "libGTASA.so base = 0x%lX, символов найдено %d из %d", (unsigned long)pGTASA, found, total);
 
     // Папка SA/cleo в корне памяти (рядом с Download, Documents): CLEO игрока читает скрипты оттуда.
     // Создаём, если её нет (на новой установке). Нужен «Доступ ко всем файлам».
@@ -110,9 +114,13 @@ ON_MOD_LOAD()
         g_fileLog.Info(mic == 1 ? "Микрофон: разрешение ЕСТЬ — голос сможет работать"
                      : mic == 0 ? "Микрофон: разрешения НЕТ (нет в APK или не включено в настройках Android)"
                                 : "Микрофон: не удалось проверить разрешение");
+        CTRACE("ГОЛОС", "разрешение микрофона: %s", mic == 1 ? "есть" : mic == 0 ? "НЕТ" : "не проверить");
     }
 
     settings::Data st = settings::Load();
+    CTRACE("СЕССИЯ", "настройки: включён=%d режим=%s хост=%s порт=%u ник=«%s» мой ID=%s посредник=%s огонь по своим=%d общий розыск=%d",
+           st.enabled, settings::RoleToString(st.net.role), st.net.hostAddress, (unsigned)st.net.port, st.net.nick,
+           st.net.myId[0] ? st.net.myId : "-", st.net.relay[0] ? st.net.relay : "нет", st.friendlyFire, st.sharedWanted);
 
     g_fileLog.Info("SA Coop %s, символов найдено %d из %d", modinfo->VersionString(), found, total);
     g_fileLog.Info("Режим из настроек: %s, адрес хоста: %s, порт: %u",

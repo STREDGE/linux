@@ -1,4 +1,5 @@
 #include "coop.h"
+#include "trace/ctrace.h"
 
 #include <mod/amlmod.h>
 #include <mod/logger.h>
@@ -113,6 +114,7 @@ namespace
         va_end(args);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
         if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }
+        ctrace::FromLog(error, buf);
     }
 
     float WrapAngle(float a)
@@ -579,6 +581,170 @@ namespace
             g_session.SendVoice(seq, spurt, buf, n);
     }
 
+    // ---------- подробный лог коопа (ctrace) ----------
+    const char* RoleName(net::Role r)
+    {
+        switch(r) { case net::Role::Off: return "выкл"; case net::Role::Echo: return "эхо"; case net::Role::Host: return "хост"; case net::Role::Client: return "друг"; }
+        return "?";
+    }
+    const char* LinkName(net::Link l)
+    {
+        switch(l)
+        {
+            case net::Link::Idle: return "ждёт друга"; case net::Link::Requesting: return "стучится к хосту";
+            case net::Link::Pending: return "запрос ждёт ответа"; case net::Link::Connected: return "принят"; case net::Link::Denied: return "отказ";
+        }
+        return "?";
+    }
+    const char* PktName(int t)
+    {
+        static const char* n[] = { "?", "PING", "PONG", "STATE", "HELLO", "ACCEPT", "DENY", "VOICE", "MOD", "VEH", "VEH_GONE", "SHOT",
+                                   "REL", "ACK", "WORLD_REQ", "WORLD_CHUNK", "WORLD_ACK", "PEDS", "TIME", "BLIPS", "LOBBY" };
+        return t >= 0 && t < (int)(sizeof(n) / sizeof(n[0])) ? n[t] : "?";
+    }
+
+    struct TraceState
+    {
+        int       link = -1, connected = -1, role = -1, running = -1, tsState = -1;
+        uint64_t  nextPlayerUs = 0, nextNetUs = 0, nextPerfUs = 0, lastFrameUs = 0, worstUs = 0, prevStatsUs = 0;
+        int       frames = 0;
+        net::Session::Stats prev;
+        int       remoteSpawned = -1, inWorld = -1;
+    };
+    TraceState g_tr;
+
+    template<size_t N> uint32_t Delta(const uint32_t (&cur)[N], const uint32_t (&prev)[N], size_t i) { return cur[i] >= prev[i] ? cur[i] - prev[i] : cur[i]; }
+
+    // Связь: смена этапа — сразу; счётчики пакетов, пинг, потери — раз в 5 с. Зовётся и из игры, и из меню.
+    void TraceNet(uint64_t now)
+    {
+        if(!ctrace::Started()) return;
+        int link = (int)g_session.GetLink(), conn = g_session.Connected() ? 1 : 0, role = (int)g_cfg.role, run = g_session.Running() ? 1 : 0;
+        // состояние Tailscale — раз в секунду (запрос уходит в Go, каждый кадр дорого)
+        static ts::Status tst; static uint64_t nextTsUs = 0;
+        if(now >= nextTsUs) { nextTsUs = now + 1000000; tst = ts::GetStatus(); }
+        int tsState = (int)tst.state;
+        if(link != g_tr.link || conn != g_tr.connected || role != g_tr.role || run != g_tr.running || tsState != g_tr.tsState)
+        {
+            CTRACE("СВЯЗЬ", "роль %s, сокет %s, этап «%s», на связи %s, друг «%s», посредник %s%s; Tailscale: %s%s%s, адрес %s; пинг %d мс",
+                   RoleName(g_cfg.role), run ? "открыт" : "закрыт", LinkName(g_session.GetLink()), conn ? "ДА" : "нет", g_session.PeerNick(),
+                   g_session.UsingRelay() ? "да, комната " : "нет", g_session.UsingRelay() ? g_session.RoomCode() : "",
+                   ts::StateText(tst.state), tst.error[0] ? " — " : "", tst.error, tst.ip[0] ? tst.ip : "-", g_session.LastRttMs());
+            g_tr.link = link; g_tr.connected = conn; g_tr.role = role; g_tr.running = run; g_tr.tsState = tsState;
+        }
+        if(now < g_tr.nextNetUs) return;
+        g_tr.nextNetUs = now + 5000000;
+        const net::Session::Stats& st = g_session.GetStats();
+        if(!run) { g_tr.prev = st; g_tr.prevStatsUs = now; return; }
+        double sec = g_tr.prevStatsUs ? net::Since(now, g_tr.prevStatsUs) / 1e6 : 5.0;
+        if(sec <= 0) sec = 5.0;
+        char out[700] = "", in[700] = "";
+        size_t lo = 0, li = 0;
+        uint32_t bOut = 0, bIn = 0;
+        for(size_t t = 0; t < 32; ++t)
+        {
+            uint32_t po = Delta(st.sentPk, g_tr.prev.sentPk, t), bo = Delta(st.sentB, g_tr.prev.sentB, t);
+            uint32_t pi = Delta(st.recvPk, g_tr.prev.recvPk, t), bi = Delta(st.recvB, g_tr.prev.recvB, t);
+            bOut += bo; bIn += bi;
+            if(po && lo < sizeof(out) - 40) lo += snprintf(out + lo, sizeof(out) - lo, " %s:%u", PktName((int)t), po);
+            if(pi && li < sizeof(in) - 40)  li += snprintf(in + li, sizeof(in) - li, " %s:%u", PktName((int)t), pi);
+        }
+        char mods[300] = ""; size_t lm = 0;
+        for(size_t ch = 0; ch < 256; ++ch)
+        {
+            uint32_t mo = Delta(st.modOut, g_tr.prev.modOut, ch), mi = Delta(st.modIn, g_tr.prev.modIn, ch);
+            if((mo || mi) && lm < sizeof(mods) - 40) lm += snprintf(mods + lm, sizeof(mods) - lm, " канал %u: >%u <%u", (unsigned)ch, mo, mi);
+        }
+        uint32_t pings = st.pingSent >= g_tr.prev.pingSent ? st.pingSent - g_tr.prev.pingSent : st.pingSent;
+        uint32_t pongs = st.pongRecv >= g_tr.prev.pongRecv ? st.pongRecv - g_tr.prev.pongRecv : st.pongRecv;
+        uint64_t lastRecv = g_session.LastRecvUs();
+        CTRACE("СЕТЬ", "за %.1f с: пинг %d мс, ответов на пинг %u из %u (потеря %.0f%%), отправлено %.1f КБ/с:%s | принято %.1f КБ/с:%s | "
+                       "надёжные: отпр %u, прин %u, повторов %u, дублей %u, выброшено %u, в очереди %d | последний пакет %.1f с назад%s%s%s",
+               sec, g_session.LastRttMs(), pongs, pings, pings ? 100.0 * (pings > pongs ? pings - pongs : 0) / pings : 0.0,
+               bOut / 1024.0 / sec, out[0] ? out : " —", bIn / 1024.0 / sec, in[0] ? in : " —",
+               st.relSent - (st.relSent >= g_tr.prev.relSent ? g_tr.prev.relSent : 0), st.relRecv - (st.relRecv >= g_tr.prev.relRecv ? g_tr.prev.relRecv : 0),
+               st.relResend - (st.relResend >= g_tr.prev.relResend ? g_tr.prev.relResend : 0), st.relDup - (st.relDup >= g_tr.prev.relDup ? g_tr.prev.relDup : 0),
+               st.relDropped - (st.relDropped >= g_tr.prev.relDropped ? g_tr.prev.relDropped : 0), g_session.ReliableQueue(),
+               lastRecv ? net::Since(now, lastRecv) / 1e6 : -1.0, mods[0] ? " | SACoopNet:" : "", mods, st.badVersion ? " | ЕСТЬ ПАКЕТЫ ДРУГОЙ ВЕРСИИ ПРОТОКОЛА" : "");
+        g_tr.prev = st; g_tr.prevStatsUs = now;
+    }
+
+    // Кадры: подвисания сразу, FPS раз в 5 с
+    void TracePerf(uint64_t now)
+    {
+        if(!ctrace::Started()) return;
+        if(g_tr.lastFrameUs)
+        {
+            uint64_t d = net::Since(now, g_tr.lastFrameUs);
+            if(d > g_tr.worstUs) g_tr.worstUs = d;
+            if(d > 150000) CTRACE("ПОДВИСАНИЕ", "кадр %.0f мс", d / 1000.0);
+        }
+        g_tr.lastFrameUs = now; ++g_tr.frames;
+        if(now >= g_tr.nextPerfUs)
+        {
+            if(g_tr.nextPerfUs)
+                CTRACE("FPS", "%.0f кадр/с (худший кадр %.0f мс), общих машин %d, общий мир людей %s, второй CJ %s",
+                       g_tr.frames / 5.0, g_tr.worstUs / 1000.0, sync::TrackedVehicles(), crowd::Active() ? "включён" : "нет",
+                       g_remotePed ? (g_inWorld ? "в мире" : "далеко (метка)") : "нет");
+            g_tr.nextPerfUs = now + 5000000; g_tr.frames = 0; g_tr.worstUs = 0;
+        }
+    }
+
+    // Оба игрока 4 раза в секунду: свой CJ (что отправлено) и друг (что пришло и где стоит его копия)
+    void TracePlayers(uint64_t now, uintptr_t local, const net::PlayerStatePacket& me, const net::RemoteState* rs)
+    {
+        if(!ctrace::Started() || now < g_tr.nextPlayerUs) return;
+        g_tr.nextPlayerUs = now + 250000;
+        CVector lp = GetPosition(local);
+        float spd = sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1] + me.vel[2] * me.vel[2]);
+        char veh[96] = "";
+        if(me.seat != net::kNoSeat || me.vehId)
+        {
+            uintptr_t v = InVehicle(local) ? Field<uintptr_t>(local, off::PedVehicle) : 0;
+            snprintf(veh, sizeof(veh), " машина=%04X м=%d место=%d садится=%d hpм=%.0f", (unsigned)me.vehId, v ? ModelOf(v) : 0,
+                     me.seat == net::kNoSeat ? -1 : (int)me.seat, me.enterSeat == net::kNoSeat ? -1 : (int)me.enterSeat, v ? Field<float>(v, off::VehHealth) : 0.0f);
+        }
+        bool padOff = Field<uint16_t>(GetPad(0), off::PadDisableCtrl) != 0;
+        bool cut = g_cutsceneRunning && *g_cutsceneRunning;
+        bool fade = TheCamera && Field<uint8_t>(TheCamera, 0x57);   // CCamera::m_bFading
+        CTRACE("ИГРОК", "(%.1f,%.1f,%.1f) h=%.0f v=%.1f hp=%u бр=%u w=%u зв=%u st=%d mv=%u сила=%.2f i=%u%s%s%s%s%s%s%s%s%s",
+               lp.x, lp.y, lp.z, me.heading * 57.29578f, spd, (unsigned)me.health, (unsigned)me.armour, (unsigned)me.weapon, (unsigned)me.wanted,
+               Field<int>(local, off::PedState), (unsigned)me.moveState, me.moveRatio, (unsigned)me.area, veh,
+               (me.flags & net::PSF_AIMING) ? " ЦЕЛИТСЯ" : "", (me.flags & net::PSF_DUCK) ? " ПРИСЕЛ" : "", (me.flags & net::PSF_TALKING) ? " ГОВОРИТ" : "",
+               (me.flags & net::PSF_DEAD) ? " МЁРТВ" : "", cut ? " КАТСЦЕНА" : "", fade ? " ЗАТЕМНЕНИЕ" : "", padOff ? " УПРАВЛЕНИЕ-ВЫКЛ" : "",
+               mission::ClientCutscene() ? " КАТСЦЕНА-ХОСТА" : "");
+        int spawned = g_remotePed ? 1 : 0, inWorld = g_inWorld ? 1 : 0;
+        if(spawned != g_tr.remoteSpawned || inWorld != g_tr.inWorld)
+        {
+            CTRACE("ДРУГ", "второй CJ: %s", !spawned ? "нет на карте" : inWorld ? "на карте" : "далеко — только метка");
+            g_tr.remoteSpawned = spawned; g_tr.inWorld = inWorld;
+        }
+        if(!rs || !rs->valid) return;
+        const net::PlayerStatePacket& p = rs->pkt;
+        float rspd = sqrtf(p.vel[0] * p.vel[0] + p.vel[1] * p.vel[1] + p.vel[2] * p.vel[2]);
+        CVector pp{ p.pos[0], p.pos[1], p.pos[2] };
+        char copy[200];
+        if(g_remotePed && GetPedFromRef(g_remoteRef) == g_remotePed)
+        {
+            CVector cp = GetPosition(g_remotePed);
+            float dx = cp.x - pp.x, dy = cp.y - pp.y, dz = cp.z - pp.z;
+            snprintf(copy, sizeof(copy), " | копия (%.1f,%.1f,%.1f) расхожд=%.1f м st=%d hp=%.0f%s%s", cp.x, cp.y, cp.z, sqrtf(dx * dx + dy * dy + dz * dz),
+                     Field<int>(g_remotePed, off::PedState), Field<float>(g_remotePed, off::PedHealth), InVehicle(g_remotePed) ? " в_машине" : "",
+                     sync::RemoteBusy() ? " занят_машиной" : "");
+        }
+        else snprintf(copy, sizeof(copy), " | копии нет");
+        char rveh[64] = "";
+        if(p.seat != net::kNoSeat || p.vehId)
+            snprintf(rveh, sizeof(rveh), " машина=%04X место=%d садится=%d", (unsigned)p.vehId, p.seat == net::kNoSeat ? -1 : (int)p.seat,
+                     p.enterSeat == net::kNoSeat ? -1 : (int)p.enterSeat);
+        CTRACE("ДРУГ", "пакет #%u %.0f мс назад (%.1f,%.1f,%.1f) h=%.0f v=%.1f hp=%u бр=%u w=%u зв=%u mv=%u сила=%.2f i=%u%s%s%s%s%s%s%s до тебя %.0f м%s",
+               p.seq, net::Since(now, rs->receivedUs) / 1000.0, pp.x, pp.y, pp.z, p.heading * 57.29578f, rspd, (unsigned)p.health, (unsigned)p.armour,
+               (unsigned)p.weapon, (unsigned)p.wanted, (unsigned)p.moveState, p.moveRatio, (unsigned)p.area, rveh,
+               (p.flags & net::PSF_AIMING) ? " ЦЕЛИТСЯ" : "", (p.flags & net::PSF_DUCK) ? " ПРИСЕЛ" : "", (p.flags & net::PSF_TALKING) ? " ГОВОРИТ" : "",
+               (p.flags & net::PSF_DEAD) ? " МЁРТВ" : "", (p.flags & net::PSF_FF) ? " огонь_по_своим" : "", (p.flags & net::PSF_SHARED_WANTED) ? " общий_розыск" : "",
+               Dist2D(lp, pp), copy);
+    }
+
     void OnFrameImpl();
     void OnFrame()
     {
@@ -599,6 +765,8 @@ namespace
 
         static bool firstFrame = true;
         if(firstFrame) { firstFrame = false; Log(false, "Первый игровой кадр — перехват CGame::Process работает"); }
+        TracePerf(now);
+        TraceNet(now);
 
         uintptr_t local = SlotPed(0);
         bool canSpawnNow = local && Field<uintptr_t>(local, off::EntRwObject) && !(g_cutsceneRunning && *g_cutsceneRunning);
@@ -660,6 +828,7 @@ namespace
             sc.rs = (ers.valid && net::Since(now, ers.receivedUs) < kStaleUs) ? &ers.pkt : nullptr;
             g_where = "синхронизация машин/оружия (эхо)";
             sync::Frame(sc);
+            TracePlayers(now, local, me, &ers);
             // Голос в одиночку: говоришь — через 0,5 с слышишь себя (как двойник повторяет движения)
             voice::SetLoopback(true, (int)(kEchoDelayUs / 1000));
             voice::SetTransmit(g_localTalking);
@@ -694,6 +863,8 @@ namespace
         crowd::Frame(g_cfg.role, sc.connected, local, sc.remote, sc.rs, now);
         g_where = "миссии вместе";
         mission::Frame(g_cfg.role, sc.connected, local, sc.remote, sc.rs, now);
+        g_where = "подробный лог коопа";
+        TracePlayers(now, local, me, &rs);
 
         // Загрузились в мир хоста — встать рядом с ним (один раз)
         if(world::TeleportPending() && sc.rs && !InVehicle(local) && PedTeleport)
@@ -895,6 +1066,7 @@ bool Install(void* h, FLogger* log)
 
 void SetConfig(const net::Config& cfg)
 {
+    CTRACE("КНОПКА", "режим коопа → %s, адрес хоста «%s», порт %u, ник «%s»", RoleName(cfg.role), cfg.hostAddress, (unsigned)cfg.port, cfg.nick);
     std::lock_guard<std::mutex> lock(g_cfgMutex);
     g_pendingCfg = cfg;
     g_hasPending = true;
@@ -992,13 +1164,14 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
     return true;
 }
 
-void AnswerJoin(bool accept) { g_session.AnswerJoin(accept); }
-void SetTalking(bool talking) { g_localTalking = talking; }
-void SetFriendlyFire(bool on) { g_friendlyFire = on; }
-void SetSharedWanted(bool on) { g_sharedWanted = on; }
+void AnswerJoin(bool accept) { CTRACE("КНОПКА", "запрос «%s»: %s", g_session.PendingNick(), accept ? "ПРИНЯТЬ" : "отклонить"); g_session.AnswerJoin(accept); }
+void SetTalking(bool talking) { if(talking != g_localTalking) CTRACE("ГОЛОС", "кнопка микрофона %s", talking ? "зажата" : "отпущена"); g_localTalking = talking; }
+void SetFriendlyFire(bool on) { if(on != g_friendlyFire) CTRACE("КНОПКА", "огонь по своим: %s", on ? "вкл" : "выкл"); g_friendlyFire = on; }
+void SetSharedWanted(bool on) { if(on != g_sharedWanted) CTRACE("КНОПКА", "общий розыск: %s", on ? "вкл" : "выкл"); g_sharedWanted = on; }
 
 void GiveWeapon(bool toFriend, int weapon, int ammo)
 {
+    CTRACE("КНОПКА", "выдать оружие %d (патроны %d) %s", weapon, ammo, toFriend ? "другу" : "себе");
     std::lock_guard<std::mutex> lock(g_cfgMutex);
     g_giveQueue.push_back(GiveReq{ toFriend, weapon, ammo });
 }
@@ -1014,6 +1187,7 @@ void MenuTick()
     TsTick(now);
     if(g_cfg.role != net::Role::Host && g_cfg.role != net::Role::Client) return;
     g_session.Poll();
+    TraceNet(now);
     world::Tick(g_cfg.role, g_session.Connected(), false, now);
 }
 
@@ -1076,10 +1250,15 @@ LobbyInfo GetLobbyInfo()
 }
 std::vector<world::SaveEntry> ListSaves() { return world::ListSaves(); }
 const char* SavesFolder() { return world::SavesFolder(); }
-bool Launch(const char* path, const char* name, char* why, size_t whyLen) { return world::HostLaunch(path, name, why, whyLen); }
+bool Launch(const char* path, const char* name, char* why, size_t whyLen)
+{
+    bool ok = world::HostLaunch(path, name, why, whyLen);
+    CTRACE("КНОПКА", "«Запуск» лобби: %s (%s) → %s%s%s", name ? name : "?", path ? path : "текущая игра", ok ? "ок" : "НЕТ", ok ? "" : ": ", ok ? "" : why);
+    return ok;
+}
 
-void StartTailscale() { ts::Start(GetConfig().myId); }
-bool TailscaleLogout() { return ts::Logout(); }
+void StartTailscale() { CTRACE("КНОПКА", "включить Tailscale"); ts::Start(GetConfig().myId); }
+bool TailscaleLogout() { bool ok = ts::Logout(); CTRACE("КНОПКА", "выйти из аккаунта Tailscale: %s", ok ? "ок" : "не вышло"); return ok; }
 
 bool GameLoaded() { return SlotPed(0) != 0; }
 void LockLocalControls(bool lock) { g_lockLocal = lock; }

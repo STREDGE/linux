@@ -1,4 +1,5 @@
 #include "crowd.h"
+#include "trace/ctrace.h"
 
 #include <mod/amlmod.h>
 #include <mod/logger.h>
@@ -52,6 +53,7 @@ namespace
         va_list a; va_start(a, fmt); vsnprintf(buf, sizeof(buf), fmt, a); va_end(a);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
         if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }
+        ctrace::FromLog(error, buf);
     }
 
     float Dist(const CVector& a, const CVector& b) { float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; return sqrtf(dx * dx + dy * dy + dz * dz); }
@@ -119,6 +121,10 @@ namespace
                 Track nt{ c.ped, GetPedRef(c.ped), g_nextId, g_now, 0 };
                 if(!(g_nextId = (uint16_t)(g_nextId + 1))) g_nextId = 1;
                 g_tracks.push_back(nt);
+                CVector pp = GetPosition(c.ped);
+                CTRACE("ЛЮДИ-ХОСТ", "+ #%u P%d модель %d тип %d (%.1f,%.1f,%.1f) в %.0f м от друга, создан %s%s", nt.id, nt.ref, ModelOf(c.ped),
+                       Field<int>(c.ped, off::PedType), pp.x, pp.y, pp.z, c.d, Field<uint8_t>(c.ped, off::PedCreatedBy) == 2 ? "миссией/модом" : "игрой",
+                       InVehicle(c.ped) ? ", в машине" : "");
             }
             else t->seenUs = g_now;
         }
@@ -126,7 +132,11 @@ namespace
         for(size_t i = 0; i < g_tracks.size();)
         {
             Track& t = g_tracks[i];
-            if(!t.ped || !PedValid(t.ped, t.ref) || net::Since(g_now, t.seenUs) > 3000000) { g_tracks.erase(g_tracks.begin() + i); continue; }
+            if(!t.ped || !PedValid(t.ped, t.ref) || net::Since(g_now, t.seenUs) > 3000000)
+            {
+                CTRACE("ЛЮДИ-ХОСТ", "- #%u (%s)", t.id, !t.ped || !PedValid(t.ped, t.ref) ? "пед удалён игрой" : "давно не рядом с другом");
+                g_tracks.erase(g_tracks.begin() + i); continue;
+            }
             ++i;
         }
 
@@ -222,6 +232,8 @@ namespace
             else if(ctorKill)
                 ((void(*)(void*, uintptr_t, int, unsigned, unsigned, unsigned, int))ctorKill)(task, g_remote, 0, 0, 0, 0, 4);
             Assign(t.ped, task);
+            CTRACE("ЛЮДИ-ХОСТ", "коп #%u → второй CJ: %s (у друга %d зв., до него %.0f м)", t.id,
+                   (wanted == 1 && assigned == 0 && dr < 20.0f && ctorArrest) ? "арестовать" : "убить", wanted, dr);
             t.copTaskUs = g_now;
             if(++assigned >= 2 + wanted) break;
         }
@@ -264,10 +276,11 @@ namespace
     Copy* FindCopy(uint16_t id) { for(auto& c : g_copies) if(c.id == id) return &c; return nullptr; }
     bool CopyValid(Copy& c) { if(!c.ped) return false; if(GetPedFromRef(c.ref) == c.ped) return true; c.ped = 0; c.ref = -1; return false; }
 
-    void DeleteCopy(Copy& c)
+    void DeleteCopy(Copy& c, const char* why = "сброс")
     {
         if(CopyValid(c))
         {
+            CTRACE("КОПИЯ", "- #%u модель %d (%s)", c.id, (int)c.st.model, why);
             if(InVehicle(c.ped)) sync::WarpPedOut(c.ped);
             RemovePed(c.ped);
         }
@@ -298,7 +311,7 @@ namespace
     {
         const net::PedEntry& s = c.st;
         CVector target{ s.pos[0], s.pos[1], s.pos[2] };
-        if(s.flags & net::PDF_HIDDEN) { DeleteCopy(c); return; }   // пед миссии уступил место тебе в машине
+        if(s.flags & net::PDF_HIDDEN) { DeleteCopy(c, "пед миссии уступил место тебе"); return; }   // пед миссии уступил место тебе в машине
         if(!CopyValid(c))
         {
             if(c.killed) return;
@@ -315,6 +328,8 @@ namespace
             if(!ped) return;
             PedSetCharCreatedBy(ped, 2);
             c.ped = ped; c.ref = GetPedRef(ped); c.weapon = -1; c.goUs = 0;
+            CTRACE("КОПИЯ", "+ #%u P%d модель %d тип %d (%.1f,%.1f,%.1f) hp=%u оружие %u%s", c.id, c.ref, model, (int)s.pedType,
+                   target.x, target.y, target.z, (unsigned)s.health, (unsigned)s.weapon, (s.flags & net::PDF_IN_VEHICLE) ? ", в машине" : "");
             Field<float>(ped, off::PedRotCurrent) = s.heading; Field<float>(ped, off::PedRotAiming) = s.heading;
         }
         uintptr_t ped = c.ped;
@@ -327,6 +342,7 @@ namespace
         {
             if(PedIsAlive(ped))
             {
+                CTRACE("КОПИЯ", "#%u погиб у хоста — кладу копию", c.id);
                 g_allowCopyDamage = true;
                 GenerateDamageEvent(ped, 0, s.weapon, 1000, 3, 0);
                 g_allowCopyDamage = false;
@@ -398,9 +414,30 @@ namespace
         for(size_t i = 0; i < g_copies.size();)
         {
             Copy& c = g_copies[i];
-            if(net::Since(g_now, c.stUs) > kCopyStaleUs) { DeleteCopy(c); g_copies.erase(g_copies.begin() + i); continue; }
+            if(net::Since(g_now, c.stUs) > kCopyStaleUs) { DeleteCopy(c, "хост больше не присылает (1,5 с)"); g_copies.erase(g_copies.begin() + i); continue; }
             ApplyCopy(c);
             ++i;
+        }
+        static uint64_t nextSync = 0, nextFull = 0;
+        if(g_now >= nextSync)
+        {
+            nextSync = g_now + 1000000;
+            bool full = g_now >= nextFull;
+            if(full) nextFull = g_now + 5000000;
+            int n = 0; float sum = 0, mx = 0; uint16_t mxId = 0;
+            for(auto& c : g_copies)
+            {
+                if(!CopyValid(c)) continue;
+                CVector cp = GetPosition(c.ped), tp{ c.st.pos[0], c.st.pos[1], c.st.pos[2] };
+                float d = Dist(cp, tp);
+                ++n; sum += d; if(d > mx) { mx = d; mxId = c.id; }
+                if(full || d > 4.0f)
+                    CTRACE(full ? "КОПИИ-ВСЕ" : "КОПИЯ-РАСХОЖД", "#%u м=%u т=%u (%.1f,%.1f,%.1f) цель=(%.1f,%.1f,%.1f) расхожд=%.1f м mv=%u hp=%u w=%u st=%d%s%s",
+                           c.id, (unsigned)c.st.model, (unsigned)c.st.pedType, cp.x, cp.y, cp.z, tp.x, tp.y, tp.z, d, (unsigned)c.st.moveState,
+                           (unsigned)c.st.health, (unsigned)c.st.weapon, Field<int>(c.ped, off::PedState),
+                           (c.st.flags & net::PDF_IN_VEHICLE) ? " в_машине" : "", (c.st.flags & net::PDF_DEAD) ? " МЁРТВ" : "");
+            }
+            CTRACE("КОПИИ", "копий %d (на карте %d), расхождение среднее %.1f м, худшее %.1f м (#%u)", (int)g_copies.size(), n, n ? sum / n : 0.0f, mx, mxId);
         }
         static uint64_t nextLog = 0;
         if(g_now >= nextLog)
@@ -413,7 +450,7 @@ namespace
 
     void ClearCopies()
     {
-        for(auto& c : g_copies) DeleteCopy(c);
+        for(auto& c : g_copies) DeleteCopy(c, "общий мир выключен");
         g_copies.clear();
     }
 }
@@ -482,7 +519,8 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
     bool wasNear = near;
     near = near ? apart < kShareOff : apart < kShareOn;
     if(near != wasNear)
-        Log(false, "[ЛЮДИ] %s (между вами %.0f м)", near ? "вы рядом — люди и машины общие" : "разъехались — у каждого свои люди", apart);
+        Log(false, "[ЛЮДИ] %s (между вами %.0f м; включается ближе %.0f м, выключается дальше %.0f м)",
+            near ? "вы рядом — люди и машины общие" : "разъехались — у каждого свои люди", apart, kShareOn, kShareOff);
     if(role == net::Role::Host)
     {
         HostTime();
@@ -520,6 +558,15 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
     else if(type == net::PKT_WORLD_TIME && len == sizeof(net::WorldTimePacket))
     {
         const auto* t = (const net::WorldTimePacket*)data;
+        {
+            static int lastH = -1, lastW = -1000;
+            int w = t->oldWeather * 100 + t->newWeather;
+            int myH = g_clockH ? *g_clockH : -1, myM = g_clockM ? *g_clockM : -1;
+            if(t->hours != lastH || w != lastW)
+                CTRACE("ВРЕМЯ", "от хоста %02u:%02u, погода %d→%d (%.2f); у тебя было %02d:%02d", (unsigned)t->hours, (unsigned)t->minutes,
+                       (int)t->oldWeather, (int)t->newWeather, t->interp, myH, myM);
+            lastH = t->hours; lastW = w;
+        }
         if(g_clockH) { *g_clockH = t->hours; *g_clockM = t->minutes; }
         if(g_wOld) { *g_wOld = t->oldWeather; *g_wNew = t->newWeather; if(g_wInterp) *g_wInterp = t->interp; }
     }

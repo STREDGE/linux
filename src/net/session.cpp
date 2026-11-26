@@ -16,6 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "trace/ctrace.h"
+
 namespace net
 {
     constexpr uint64_t kPingIntervalUs  = 1000000;   // 1 c
@@ -73,6 +75,7 @@ namespace net
         va_end(args);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
         if(m_log) { if(error) m_log->Error("%s", buf); else m_log->Info("%s", buf); }
+        ctrace::FromLog(error, buf);
     }
 
     void Session::PushEvent(EventType t, const char* nick)
@@ -218,7 +221,17 @@ namespace net
     void Session::SendToAddr(const void* data, int len, const sockaddr_in& to)
     {
         if(m_sock < 0) return;
-        sendto(m_sock, data, len, 0, (const sockaddr*)&to, sizeof(to));
+        if(len >= (int)sizeof(Header))
+        {
+            const Header* h = (const Header*)data;
+            if(h->magic == kMagic) { m_stats.sentPk[h->type & 31]++; m_stats.sentB[h->type & 31] += (uint32_t)len; }
+        }
+        ssize_t r = sendto(m_sock, data, len, 0, (const sockaddr*)&to, sizeof(to));
+        if(r < 0)
+        {
+            static uint64_t lastErrUs = 0; uint64_t n = NowUs();
+            if(n - lastErrUs > 2000000) { lastErrUs = n; CTRACE("СЕТЬ", "ошибка отправки: %s (%d байт)", strerror(errno), len); }
+        }
     }
     void Session::SendTo(const void* data, int len)
     {
@@ -229,6 +242,8 @@ namespace net
     {
         Log(true, "Связь с «%s» потеряна (%s)", m_peerNick, why);
         PushEvent(EventType::Disconnected, m_peerNick);
+        CTRACE("СВЯЗЬ", "РАЗРЫВ с «%s»: %s (последний пакет %.1f с назад, надёжных в очереди %d)", m_peerNick, why,
+               m_lastRecvUs ? (NowUs() - m_lastRecvUs) / 1e6 : -1.0, (int)m_relOut.size());
         m_remote.valid = false;
         ResetReliable();
         if(m_cfg.role == Role::Host) { m_hasPeer = false; m_link = Link::Idle; }
@@ -268,7 +283,7 @@ namespace net
         if(m_link == Link::Connected && now >= m_nextPingUs)
         {
             PingPacket p{ MakeHeader(PKT_PING), ++m_pingSeq, now };
-            SendTo(&p, sizeof(p));
+            SendTo(&p, sizeof(p)); m_stats.pingSent++;
             m_nextPingUs = now + kPingIntervalUs;
         }
 
@@ -289,9 +304,15 @@ namespace net
             for(size_t i = 0; i < m_relOut.size();)
             {
                 RelOut& r = m_relOut[i];
-                if(now - r.firstUs > 15000000ull) { m_relOut.erase(m_relOut.begin() + i); continue; }
+                if(now - r.firstUs > 15000000ull)
+                {
+                    m_stats.relDropped++;
+                    CTRACE("НАДЁЖНОЕ", "#%u тип %u (%d байт) не подтверждено за 15 с — выброшено", r.seq, r.len ? r.data[0] : 0, r.len);
+                    m_relOut.erase(m_relOut.begin() + i); continue;
+                }
                 if(now - r.lastUs >= 150000ull)
                 {
+                    if(r.lastUs) m_stats.relResend++;
                     ReliablePacket p; p.hdr = MakeHeader(PKT_RELIABLE); p.seq = r.seq; p.len = (uint8_t)r.len;
                     p.pad[0] = p.pad[1] = p.pad[2] = 0; memcpy(p.data, r.data, r.len);
                     SendTo(&p, kReliableHeaderSize + r.len);
@@ -346,6 +367,8 @@ namespace net
         RelOut r; r.seq = ++m_relSeq; r.firstUs = NowUs(); r.lastUs = 0; r.len = len;
         memcpy(r.data, data, len);
         m_relOut.push_back(r);
+        m_stats.relSent++;
+        CTRACE("НАДЁЖНОЕ", "> #%u тип %u (%d байт), в очереди %d", r.seq, ((const uint8_t*)data)[0], len, (int)m_relOut.size());
         ReliablePacket p; p.hdr = MakeHeader(PKT_RELIABLE); p.seq = r.seq; p.len = (uint8_t)len;
         p.pad[0] = p.pad[1] = p.pad[2] = 0; memcpy(p.data, data, len);
         SendTo(&p, kReliableHeaderSize + len);
@@ -386,10 +409,12 @@ namespace net
         if(h->version != kProtocolVersion)
         {
             static bool warned = false;
+            m_stats.badVersion++;
             if(!warned) { warned = true; Log(true, "У друга другая версия мода (протокол %u, у нас %u). Обновитесь оба.", h->version, kProtocolVersion); }
             return;
         }
         uint64_t now = NowUs();
+        m_stats.recvPk[h->type & 31]++; m_stats.recvB[h->type & 31] += (uint32_t)len;
 
         if(m_cfg.role == Role::Host)
         {
@@ -469,7 +494,10 @@ namespace net
 
             case PKT_PONG:
                 if(len == sizeof(PingPacket))
+                {
                     m_lastRttMs = (int)((now - ((const PingPacket*)data)->sentUs) / 1000);
+                    m_stats.pongRecv++;
+                }
                 break;
 
             case PKT_PLAYER_STATE:
@@ -502,7 +530,7 @@ namespace net
                 if(len >= kModHeaderSize)
                 {
                     const ModPacket* mp = (const ModPacket*)data;
-                    if(mp->len <= kModMaxBytes && kModHeaderSize + mp->len == len && m_modSink) m_modSink(mp->channel, mp->data, mp->len);
+                    if(mp->len <= kModMaxBytes && kModHeaderSize + mp->len == len) { m_stats.modIn[mp->channel]++; if(m_modSink) m_modSink(mp->channel, mp->data, mp->len); }
                 }
                 break;
 
@@ -546,8 +574,10 @@ namespace net
                     SendTo(&a, sizeof(a));
                     bool seen = false;
                     for(uint32_t s2 : m_relSeen) if(s2 == rp->seq) { seen = true; break; }
-                    if(seen) break;
+                    if(seen) { m_stats.relDup++; break; }
                     m_relSeen[m_relSeenHead] = rp->seq; m_relSeenHead = (m_relSeenHead + 1) % 128;
+                    m_stats.relRecv++;
+                    CTRACE("НАДЁЖНОЕ", "< #%u тип %u (%d байт)", rp->seq, rp->data[0], (int)rp->len);
                     if(m_gameSink) m_gameSink(PKT_RELIABLE, rp->data, rp->len);
                 }
                 break;
@@ -592,6 +622,7 @@ namespace net
         p.hdr = MakeHeader(PKT_MOD); p.channel = channel; p.pad = 0; p.len = (uint16_t)len;
         memcpy(p.data, data, len);
         SendTo(&p, kModHeaderSize + len);
+        m_stats.modOut[channel]++;
         return true;
     }
 }

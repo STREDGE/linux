@@ -10,6 +10,7 @@
 #include "ai/claude.h"
 #include "game/game.h"
 #include "jarvis/script.h"
+#include "net/link.h"
 #include "settings.h"
 #include "sim/life.h"
 #include "talk/talk.h"
@@ -258,6 +259,20 @@ namespace
     double InStage() { return talk::Now() - g_stAt; }
 
     uintptr_t Cop() { return game::FromRef(g_copRef); }
+
+    // Кооп: вы рядом — у друга люди и копы это копии педов хоста, тело копа двигает хост (talk::RemoteBody)
+    bool SharedWorld()
+    {
+        uintptr_t pl = game::Player(), p2 = game::Player2();
+        return coopnet::GetRole() == coopnet::CLIENT && pl && p2 && game::Dist(game::Pos(pl), game::Pos(p2)) < 150;
+    }
+    double g_waitCopUntil = 0;                // друг сдался без копов рядом — ждём копа, которого пришлёт хост
+    void CopAim(uintptr_t cop, uintptr_t pl, int ms) { json::Value a = json::Value::Object(); a["ms"] = ms; if(!talk::RemoteBody(cop, "aim_player", a)) game::TaskAimAt(cop, pl, ms); }
+    void CopSay(world::Character* c, const std::string& text, uintptr_t cop)
+    {
+        std::string name = c ? (c->nick.empty() ? c->name : c->nick) : std::string("Коп");
+        talk::SayNear(c, name, text, cop);       // слышат оба CJ, кто рядом
+    }
 
     uintptr_t FindCop(float r)
     {
@@ -529,6 +544,14 @@ void Surrender()
     if(g_st != ST_NONE) return;
     if(game::Wanted() == 0) { talk::Notify("Тебя никто не ищет"); return; }
     uintptr_t pl = game::Player(); if(!pl) return;
+    if(SharedWorld() && !FindCop(45.0f) && !game::OnMission() && game::AreaCode(pl) == 0)
+    {   // вы рядом: копа пришлёт хост (в его мире), тогда его видят оба
+        json::Value m = json::Value::Object(); m["t"] = "copcall"; coopnet::Send(m);
+        g_waitCopUntil = talk::Now() + 15;
+        talk::Notify("Ты сдаёшься — к тебе идёт полицейский");
+        TRACE("АРЕСТ", "сдача без копов (кооп): попросил хоста прислать копа");
+        return;
+    }
     if(!game::OnMission() && !game::CutsceneRunning() && game::AreaCode(pl) == 0 && !FindCop(45.0f))
     {   // Копов рядом нет: игровой «Busted» тут не годится (появлялся коп — и всё). Вызываем пешего копа своего
         // города в 15–20 м, он подходит — дальше обычный сценарий ареста.
@@ -549,6 +572,25 @@ void Surrender()
         LOG_ERROR("Сдача: коп не создался — обычный «Busted»");
     }
     StartArrest(0);
+}
+
+// Хост: друг сдался, копов рядом с ним нет — пеший коп за его спиной (в мире хоста — его видят оба)
+void SpawnCopForFriend()
+{
+    if(coopnet::GetRole() != coopnet::HOST) return;
+    uintptr_t p2 = game::Player2(); if(!p2) return;
+    game::Vec p = game::Pos(p2);
+    int model = p.x < -1000 ? 281 : (p.y > 500 ? 282 : 280);
+    float a = game::Heading(p2) + 3.1416f;
+    game::Vec at{ p.x - sinf(a) * 17.0f, p.y + cosf(a) * 17.0f, p.z };
+    at.z = game::GroundZ(at.x, at.y, p.z + 2.0f) + 1.0f;
+    WHERE("полиция: коп для друга");
+    if(uintptr_t cop = game::SpawnPed(game::PT_COP, model, at))
+    {
+        game::GiveWeapon(cop, 22, 60); game::SetCurrentWeapon(cop, 22);
+        game::TaskGoTo(cop, p, 4, 3.0f);
+        TRACE("АРЕСТ", "друг сдаётся: вызван коп P#%d к второму CJ", game::Ref(cop));
+    }
 }
 
 void StartArrest(uintptr_t cop)
@@ -573,8 +615,8 @@ void StartArrest(uintptr_t cop)
     g_handsUp = false;
     if(game::Vehicle(pl)) game::TaskLeaveCar(pl);
     else { game::TaskAnim(pl, "handsup", "ped", false, 15000, true); g_handsUp = true; }
-    game::TaskAimAt(cop, pl, 3000);
-    talk::Say(c.nick.empty() ? c.name : c.nick, "Полиция! Руки, чтоб я видел! Не двигаться!", false, c.id, c.pitch, c.rate, true);
+    CopAim(cop, pl, 3000);
+    CopSay(&c, "Полиция! Руки, чтоб я видел! Не двигаться!", cop);
     SetStage(ST_HANDS);
 }
 
@@ -589,7 +631,7 @@ void Release(const char* why)
     CancelGameArrest();
     game::SetWanted(0);
     PoliceIgnore(false);
-    if(uintptr_t cop = Cop()) game::TaskWander(cop);
+    if(uintptr_t cop = Cop()) { if(!talk::RemoteBody(cop, "wander", json::Value::Object())) game::TaskWander(cop); }
     g_st = ST_NONE;
     talk::Notify(Fmt("Тебя отпустили (%s)", why));
 }
@@ -692,6 +734,11 @@ void Frame()
             if(script::Ready()) script::Do(0x0110, { script::Arg::I(0) });
         }
     }
+    if(g_waitCopUntil > 0 && g_st == ST_NONE)
+    {   // друг: ждём копа от хоста; не пришёл за 15 с — как раньше, свой коп
+        if(uintptr_t cop = FindCop(60.0f)) { g_waitCopUntil = 0; TRACE("АРЕСТ", "коп от хоста пришёл: %s", game::EntName(cop).c_str()); StartArrest(cop); }
+        else if(talk::Now() > g_waitCopUntil) { g_waitCopUntil = 0; TRACE("АРЕСТ", "коп от хоста не пришёл — свой"); Surrender(); }
+    }
     if(g_st == ST_NONE) return;
     if(g_gameState && *g_gameState == 2) *g_gameState = 0;      // игра не должна сама затемнять и переносить, пока идёт наш сценарий
     uintptr_t pl = game::Player();
@@ -701,19 +748,28 @@ void Frame()
     switch(g_st)
     {
         case ST_HANDS:
-            if(InStage() > 1.2) { if(!cop) { Fallback("коп пропал"); return; } game::TaskGoTo(cop, game::Pos(pl), 6, 1.2f); SetStage(ST_APPROACH); }
+            if(InStage() > 1.2)
+            {
+                if(!cop) { Fallback("коп пропал"); return; }
+                json::Value a = json::Value::Object(); a["run"] = true; a["r"] = 1.2;
+                if(!talk::RemoteBody(cop, "goto_player", a)) game::TaskGoTo(cop, game::Pos(pl), 6, 1.2f);
+                SetStage(ST_APPROACH);
+            }
             break;
         case ST_APPROACH:
             if(!cop || !game::Alive(cop)) { Release("коп выбыл"); return; }
             if(game::Dist(game::Pos(cop), game::Pos(pl)) < 1.8f || InStage() > 10)
             {
-                game::TaskAnim(cop, "ARRESTgun", "ped", false, 0, true);
+                {
+                    json::Value a = json::Value::Object(); a["anim"] = "ARRESTgun"; a["block"] = "ped"; a["loop"] = false; a["ms"] = 0; a["hold"] = true;
+                    if(!talk::RemoteBody(cop, "anim", a)) game::TaskAnim(cop, "ARRESTgun", "ped", false, 0, true);
+                }
                 game::ClearWeapons(pl);
                 game::SetWanted(0);
                 auto& p = world::W().pcase[world::WHO_CJ];
                 p.evidence = world::Clamp(p.evidence + 5, 0, 100);
                 world::Character* c = world::FindByPed(cop);
-                talk::Say(c ? (c->nick.empty() ? c->name : c->nick) : "Коп", "Руки за спину. Ты задержан. Имеешь право хранить молчание.", false, c ? c->id : 0, c ? c->pitch : 0.85f, 1.0f, true);
+                CopSay(c, "Руки за спину. Ты задержан. Имеешь право хранить молчание.", cop);
                 SetStage(ST_CUFF);
             }
             break;
@@ -722,7 +778,8 @@ void Frame()
             {
                 game::ClearTask(pl);                  // опустить руки: дальше игрока ведут к машине
                 // только патрульная машина (не мотоцикл, не чужая машина с водителем на светофоре)
-                g_car = game::NearestPoliceCar(game::Pos(pl), 45.0f);
+                // у друга (вы рядом) коп и машины — копии хоста: посадку не делаем, патруль «приезжает» за кадром
+                g_car = talk::CoopCopy(cop) ? 0 : game::NearestPoliceCar(game::Pos(pl), 45.0f);
                 if(!g_car)
                 {   // коп на мотоцикле / пешком: вызывает патруль — короткая пауза и затемнение, дальше участок
                     talk::Notify("Коп вызвал патрульную машину — тебя везут в участок");

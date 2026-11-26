@@ -14,6 +14,7 @@ namespace police
     void Reset();                          // загрузка сохранения / новая игра                 // идёт наш сценарий задержания
     void Surrender();                 // игрок сдался (кнопка)
     void StartArrest(uintptr_t cop);  // коп решил задержать
+    void SpawnCopForFriend();         // хост: друг сдался без копов рядом — прислать пешего копа к второму CJ
     void Release(const char* why);    // отпустить (взятка, договорились)
     const char* ArrestStage();        // для HUD
 

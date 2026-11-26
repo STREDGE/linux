@@ -67,6 +67,16 @@ namespace talk
     void HandleHostReply(const json::Value& rep);
     // Хост: действие телом из разговора друга с копией педа — выполнить на настоящем педе
     void HandleFriendAct(const json::Value& m);
+    // Оба: реплика со второго телефона (второй CJ рядом слышит разговор)
+    void HandleHear(const json::Value& m);
+    // Хост: друг навёл ствол на копию педа — рефлекс настоящего педа
+    void HandleFriendAimed(const json::Value& m);
+    // Сказать вслух для всех рядом: мне — если я рядом с src, второму CJ — если он рядом (кооп)
+    void SayNear(world::Character* c, const std::string& who, const std::string& text, uintptr_t src);
+    // У друга: пед — копия педа хоста (SA Coop) — тело ему двигает хост (RemoteBody)
+    bool CoopCopy(uintptr_t ped);
+    // Действие телом педа: у друга с копией — отправить хосту (true), иначе false (делай сам)
+    bool RemoteBody(uintptr_t ped, const std::string& kind, const json::Value& args);
 
     // Исполнение действий, требующих педа и денег игрока (локально у того, кто говорил)
     std::string ExecutePhysical(world::Character* c, uintptr_t ped, int who, const std::string& name, const json::Value& in);

@@ -11,6 +11,7 @@
 #include "net/link.h"
 #include "settings.h"
 #include "talk/talk.h"
+#include "trace/trace.h"
 #include "util/log.h"
 
 using world::Character;
@@ -46,6 +47,21 @@ namespace
     }
 
     bool NightTime() { int h = game::Hour(); return h >= 21 || h < 5; }
+
+    // Хост: второй CJ, если он рядом (мир хоста — вокруг хоста; дальше 150 м там пусто и не прогружено)
+    uintptr_t FriendNearHost()
+    {
+        if(coopnet::GetRole() != coopnet::HOST) return 0;
+        uintptr_t p2 = game::Player2(), pl = game::Player();
+        if(!p2 || !pl || !game::Alive(p2) || game::Dist(game::Pos(p2), game::Pos(pl)) > 150) return 0;
+        return p2;
+    }
+    // Сообщение на экран тому CJ, кого касается (себе — уведомлением, другу — сообщением)
+    void NotifyFor(int who, const std::string& text)
+    {
+        if(who == world::WHO_CJ || coopnet::GetRole() != coopnet::HOST) { talk::Notify(text); return; }
+        json::Value m = json::Value::Object(); m["t"] = "note"; m["text"] = text; coopnet::Send(m);
+    }
 
     // ---- персонажи в мире ----
     void SlowTick()
@@ -103,22 +119,25 @@ namespace
             if(!c.alive || c.goal.empty()) continue;
             if(c.goalUntilMin && nowMin > c.goalUntilMin) { LOG_INFO("Цель #%d истекла: %s", c.id, c.goal.c_str()); c.goal.clear(); continue; }
             bool hunt = c.goal.rfind("hunt_player", 0) == 0 || c.goal.rfind("revenge", 0) == 0;
-            if(!hunt || c.goalTarget != world::WHO_CJ) continue;
+            if(!hunt) continue;
+            // цель — тот CJ, на кого зуб: у хоста друг — второй CJ (только когда вы рядом: мир хоста — вокруг хоста)
+            uintptr_t tgt = c.goalTarget == world::WHO_CJ ? pl : FriendNearHost();
+            if(!tgt) continue;
             if(game::OnMission() || talk::InConversation() || police::Arresting() || game::CutsceneRunning()) continue;
             if(world::Rand(0, 1000) > (NightTime() ? 25 : 8)) continue;   // раз в несколько минут
             uintptr_t ped = world::PedOf(c);
             if(!ped)
             {
-                game::Vec at = Around(game::Pos(pl), 30.0f);
+                game::Vec at = Around(game::Pos(tgt), 30.0f);
                 ped = game::SpawnPed(c.pedType, c.model, at);
                 if(!ped) continue;
                 world::Bind(c, ped);
             }
             game::GiveWeapon(ped, 22, 80); game::SetCurrentWeapon(ped, 22);
-            game::TaskAttack(ped, pl);
-            if(c.faction != world::F_CIVIL && c.faction != world::F_POLICE) SpawnHelpers(c.faction, world::Rand(1, 2), true);
-            talk::Notify(Fmt("%s пришёл за тобой!", c.nick.empty() ? c.name.c_str() : c.nick.c_str()));
-            world::Remember(c, "Пришёл мстить " + W.playerNick);
+            game::TaskAttack(ped, tgt);
+            if(c.faction != world::F_CIVIL && c.faction != world::F_POLICE) SpawnHelpers(c.faction, world::Rand(1, 2), true, tgt);
+            NotifyFor(c.goalTarget, Fmt("%s пришёл за тобой!", c.nick.empty() ? c.name.c_str() : c.nick.c_str()));
+            world::Remember(c, std::string("Пришёл мстить ") + (c.goalTarget == world::WHO_CJ ? W.playerNick : (W.friendNick.empty() ? std::string("другу CJ") : W.friendNick)));
             c.goal.clear();
         }
         // планы банд от режиссёра: засада
@@ -127,8 +146,10 @@ namespace
             auto& s = W.fac[f];
             if(s.plan.find("засада") == std::string::npos || f == W.playerGang || s.truce) continue;
             if(!NightTime() || game::OnMission() || police::Arresting() || game::CutsceneRunning() || world::Rand(0, 1000) > 6) continue;
-            Ambush(f, world::Rand(3, 4));
-            world::News(Fmt("%s устроили засаду!", world::FactionName(f)));
+            uintptr_t fr = FriendNearHost();
+            bool onFriend = fr && (s.plan.find(W.friendNick) != std::string::npos || (s.plan.find(W.playerNick) == std::string::npos && world::Rand(0, 1)));
+            Ambush(f, world::Rand(3, 4), onFriend ? fr : 0);
+            world::News(Fmt("%s устроили засаду на %s!", world::FactionName(f), onFriend ? W.friendNick.c_str() : W.playerNick.c_str()));
             s.plan.clear();
         }
     }
@@ -175,6 +196,25 @@ namespace
             talk::React(c, world::WHO_CJ, Fmt("Ты снова видишь %s рядом с собой (вы знакомы). Отреагируй, как сделал бы на самом деле.", world::W().playerNick.c_str()), false);
             g_nextInit = now + cooldown;
             return;
+        }
+        // 3) то же — со вторым CJ (кооп, у хоста): знакомые друга замечают его так же
+        if(uintptr_t p2 = FriendNearHost())
+        {
+            game::Vec fp = game::Pos(p2);
+            for(auto& c : world::W().chars)
+            {
+                uintptr_t ped = world::PedOf(c);
+                if(!ped || game::Dist(game::Pos(ped), fp) > 10) continue;
+                const world::Relation& r = c.rel[world::WHO_FRIEND];
+                if(!r.met) continue;
+                bool strong = abs(r.liking) >= 40 || r.fear >= 50 || r.payroll || r.informant || (!c.goal.empty() && c.goalTarget == world::WHO_FRIEND);
+                if(!strong) continue;
+                int sinceMin = (world::Day() - c.lastTalkDay) * 1440 + (game::Hour() * 60 + game::Minute() - c.lastTalkMin);
+                if(c.lastTalkDay >= 0 && sinceMin < 180) continue;
+                talk::React(c, world::WHO_FRIEND, Fmt("Ты снова видишь %s рядом с собой (вы знакомы). Отреагируй, как сделал бы на самом деле.", world::W().friendNick.c_str()), false);
+                g_nextInit = now + cooldown;
+                return;
+            }
         }
     }
 
@@ -315,10 +355,10 @@ void OnKill(uintptr_t victim, int weapon, int playerId)
             }
 }
 
-void SpawnHelpers(int faction, int count, bool hostile)
+void SpawnHelpers(int faction, int count, bool hostile, uintptr_t target)
 {
     const FacModels* fm = FacInfo(faction);
-    uintptr_t pl = game::Player();
+    uintptr_t pl = target ? target : game::Player();
     if(!fm || !pl) return;
     for(int i = 0; i < count; ++i)
     {
@@ -329,10 +369,17 @@ void SpawnHelpers(int faction, int count, bool hostile)
         else game::TaskGoTo(p, game::Pos(pl), 6, 3.0f);
         game::KeepPed(p, false);      // временные: игра уберёт сама
     }
-    LOG_INFO("Подмога %s: %d чел. (%s)", world::FactionName(faction), count, hostile ? "враждебно" : "мирно");
+    LOG_INFO("Подмога %s: %d чел. (%s) к %s", world::FactionName(faction), count, hostile ? "враждебно" : "мирно", pl == game::Player() ? "игроку" : "второму CJ");
 }
 
-void Ambush(int faction, int count) { SpawnHelpers(faction, count, true); }
+void Ambush(int faction, int count, uintptr_t target) { SpawnHelpers(faction, count, true, target); }
+
+void HelpersForFriend(int faction, int count, bool hostile)
+{
+    uintptr_t p2 = FriendNearHost();
+    if(!p2) { TRACE("СВОИ", "подмога другу: он далеко от хоста — не к кому"); return; }
+    SpawnHelpers(faction, world::Clamp(count, 1, 4), hostile, p2);
+}
 
 void Frame()
 {
