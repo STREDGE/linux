@@ -77,6 +77,7 @@ namespace game
     // Анимация по имени из набора (блока). loop — повторять ms миллисекунд. false — набор ещё грузится.
     bool TaskAnim(uintptr_t ped, const char* anim, const char* block, bool loop, int ms, bool holdLast = false);
     void ClearTask(uintptr_t ped);
+    bool IsScriptPed(uintptr_t ped);         // пед миссии/скрипта игры (не наш) — задачи ему не давать
     int  ActiveTaskType(uintptr_t ped);     // тип задачи в основном слоте (-1 нет)
 
     // ---- оружие ----

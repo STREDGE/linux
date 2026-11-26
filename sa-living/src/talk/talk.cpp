@@ -25,6 +25,7 @@ namespace talk
 namespace
 {
     // ---- разговор ----
+    bool g_memberAct = false;
     struct Conv
     {
         int  charId = 0;
@@ -32,6 +33,7 @@ namespace
         bool phone = false;
         bool active = false;
         int  reqId = 0;
+        double sentAt = 0;            // когда ушёл запрос хосту (кооп, reqId=-1)
         std::string spoken;           // уже озвученная часть текущего ответа
         std::string buf;              // хвост, ещё не озвученный
         double lastAt = 0;
@@ -235,6 +237,7 @@ namespace
                 return "сказал";
             }
             if(!mped) return "он уже ушёл";
+            struct MemberScope { MemberScope() { g_memberAct = true; } ~MemberScope() { g_memberAct = false; } } scope;   // действие одного из компании не обрывает весь разговор
             const std::string& a = in["action"].str();
             json::Value arg = json::Value::Object();
             static const char* moves[] = { "follow_player", "come_closer", "go_away", "flee", "wait_here" };
@@ -462,10 +465,10 @@ namespace
         float h = game::Heading(pl);
         float fx = -sinf(h), fy = cosf(h);
         uintptr_t target = game::PlayerTarget();
-        if(target && game::Alive(target) && game::Dist(game::Pos(target), me) < 15) return target;
+        if(target && game::Alive(target) && !game::IsScriptPed(target) && game::Dist(game::Pos(target), me) < 15) return target;
         uintptr_t best = 0; float bestScore = 1e9f;
         game::ForEachPed([&](uintptr_t p) {
-            if(p == pl || game::IsPlayer(p) || !game::Alive(p)) return;
+            if(p == pl || game::IsPlayer(p) || !game::Alive(p) || game::IsScriptPed(p)) return;   // педы миссий — не трогаем (сломается сценарий)
             game::Vec v = game::Pos(p);
             float d = game::Dist(v, me);
             if(d > 8.0f) return;
@@ -496,7 +499,7 @@ namespace
                 int fac = c.faction, mainId = c.id;
                 std::vector<uintptr_t> near;
                 game::ForEachPed([&](uintptr_t p) {
-                    if(p == ped || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p)) return;
+                    if(p == ped || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p) || game::IsScriptPed(p)) return;
                     if(world::FactionOfPedType(game::PedType(p)) != fac || game::Dist(game::Pos(p), at) > 7.0f) return;
                     near.push_back(p);
                 });
@@ -581,6 +584,15 @@ void EnsureVoice(Character& c, const std::vector<std::string>& avoid)
     LOG_INFO("Голос: #%d %s — «%s», высота %.2f, скорость %.2f", c.id, c.name.c_str(), c.voice.c_str(), c.vpitch, c.vrate);
 }
 
+// После разговора снять «разговорные» задачи (стоять, жест, целиться, телефон, повернуться), чтобы пед
+// вернулся к своим делам. Идти за CJ (936) оставляем — если согласился пойти. Педов в машинах не трогаем.
+static void ReleaseTask(uintptr_t ped)
+{
+    if(!ped || game::Vehicle(ped) || game::IsScriptPed(ped)) return;
+    int t = game::ActiveTaskType(ped);
+    if(t == 203 || t == 401 || t == 920 || t == 933 || t == 1600) game::TaskWander(ped);
+}
+
 void EndConversation()
 {
     if(!g_c.active) return;
@@ -588,10 +600,10 @@ void EndConversation()
     if(Character* c = Current())
     {
         uintptr_t ped = world::PedOf(*c);
-        if(ped && !g_c.phone && game::ActiveTaskType(ped) == 203 /*стоит*/) game::TaskWander(ped);
+        if(ped && !g_c.phone) ReleaseTask(ped);
     }
     for(int id : g_c.group)
-        if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); if(mp && game::ActiveTaskType(mp) == 203) game::TaskWander(mp); }
+        if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); if(mp) ReleaseTask(mp); }
     g_c = Conv();
 }
 
@@ -602,7 +614,7 @@ void StartPhoneCall(int charId)
     if(c->jailUntilDay > world::Day()) { Notify(Fmt("%s сейчас в тюрьме", c->name.c_str())); return; }
     EndConversation();
     g_c.active = true; g_c.charId = charId; g_c.phone = true; g_c.remote = coopnet::GetRole() == coopnet::CLIENT;
-    if(uintptr_t pl = game::Player()) game::TaskPhone(pl, 4000);
+    if(uintptr_t pl = game::Player()) if(!game::Vehicle(pl)) game::TaskPhone(pl, 4000);
     Notify(Fmt("Звонок: %s. Зажми «Говорить»", c->name.c_str()));
 }
 
@@ -656,12 +668,23 @@ void PttDown()
     if(g_sink) { BeginListen(); return; }
     if(!g_c.phone)
     {
-        uintptr_t ped = PickTarget();
+        // уже говорим с человеком рядом — продолжаем с ним (а не с прохожим, который оказался впереди)
+        uintptr_t cur = CurrentPed(), aim = game::PlayerTarget();
+        uintptr_t ped = (cur && game::Alive(cur) && game::Dist(game::Pos(cur), game::Pos(game::Player())) < 12 && (!aim || aim == cur)) ? cur : PickTarget();
         if(!ped) { Notify("Рядом никого — подойди к человеку ближе"); return; }
         StartWith(ped);
     }
     if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
-    if(Character* c = Current()) { uintptr_t ped = world::PedOf(*c); if(ped && !g_c.phone && !game::Vehicle(ped)) game::TaskStand(ped, 15000); }
+    if(Character* c = Current())
+    {
+        uintptr_t ped = world::PedOf(*c);
+        if(ped && !g_c.phone && !game::Vehicle(ped) && !game::IsScriptPed(ped))
+        {   // стоять и смотреть на CJ (поворот задаём сразу — задача «повернуться» перезаписалась бы стоянием)
+            game::Vec a = game::Pos(ped), b = game::Pos(game::Player());
+            game::SetHeading(ped, atan2f(-(b.x - a.x), b.y - a.y));
+            game::TaskStand(ped, 15000);
+        }
+    }
     for(int id : g_c.group) if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); if(mp && !game::Vehicle(mp)) game::TaskStand(mp, 15000); }
     BeginListen();
 }
@@ -675,7 +698,7 @@ static void SendToHost(Character& c, const std::string& text, bool phone)
     m["pedType"] = c.pedType; m["model"] = c.model; m["phone"] = phone; m["hostCharId"] = c.hostId; m["localId"] = c.id;
     m["nick"] = world::W().playerNick;
     if(!coopnet::Send(m)) { Notify("Нет связи с хостом"); return; }
-    if(g_c.active && g_c.charId == c.id) g_c.reqId = -1;
+    if(g_c.active && g_c.charId == c.id) { g_c.reqId = -1; g_c.sentAt = Now(); }
 }
 
 static void OnPlayerSaid(const std::string& text)
@@ -742,7 +765,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
 {
     uintptr_t pl = game::Player();
     bool phone = g_c.active && g_c.phone && c && g_c.charId == c->id;
-    auto needPed = [&]() { return ped && !phone && game::Alive(ped); };
+    auto needPed = [&]() { return ped && !phone && game::Alive(ped) && !game::Vehicle(ped) && !game::IsScriptPed(ped); };   // водителю нельзя: сломаем езду
 
     if(n == "end_conversation") { g_c.endAfterSpeech = true; return "ок"; }
     if(n == "gesture")
@@ -778,10 +801,10 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         int ms = run ? 6 : 4;
         if(m == "follow_player") return game::TaskFollow(ped, pl) ? "идёшь за ним" : "не вышло";
         if(m == "come_closer") return game::TaskGoTo(ped, game::Pos(pl), ms, 1.2f) ? "подходишь" : "не вышло";
-        if(m == "flee") { if(c) world::ChangeRelation(*c, who, 0, 0, 0, 5, ""); EndConversation(); return game::TaskFlee(ped, pl) ? "убегаешь" : "не вышло"; }
+        if(m == "flee") { if(c) world::ChangeRelation(*c, who, 0, 0, 0, 5, ""); if(!g_memberAct) EndConversation(); return game::TaskFlee(ped, pl) ? "убегаешь" : "не вышло"; }
         if(m == "wait_here") return game::TaskStand(ped, 60000) ? "ждёшь" : "не вышло";
-        if(m == "go_home" && c) { game::Vec h = c->home; g_c.endAfterSpeech = true; return game::TaskGoTo(ped, h, ms, 2.0f) ? "идёшь домой" : "не вышло"; }
-        if(m == "go_away" || m == "wander") { g_c.endAfterSpeech = true; return game::TaskWander(ped) ? "уходишь" : "не вышло"; }
+        if(m == "go_home" && c) { game::Vec h = c->home; if(!g_memberAct) g_c.endAfterSpeech = true; return game::TaskGoTo(ped, h, ms, 2.0f) ? "идёшь домой" : "не вышло"; }
+        if(m == "go_away" || m == "wander") { if(!g_memberAct) g_c.endAfterSpeech = true; return game::TaskWander(ped) ? "уходишь" : "не вышло"; }
         return "?";
     }
     static const struct { const char* n; int w; int ammo; } kW[] = { { "fists", 0, 0 }, { "knife", 4, 1 }, { "bat", 5, 1 }, { "pistol", 22, 60 },
@@ -793,7 +816,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         auto w = weaponOf(in["weapon"].str());
         if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
         if(c) { world::Remember(*c, "Я напал на " + std::string(WhoName(who))); world::ChangeRelation(*c, who, -10, 0, -10, 0, ""); }
-        EndConversation();
+        if(!g_memberAct) EndConversation();
         return game::TaskAttack(ped, pl) ? "напал" : "не вышло";
     }
     if(n == "aim_weapon")
@@ -958,7 +981,7 @@ static void AimFrame(double now)
     g_aimCheck = now + 0.2;
     bool aimed = false;
     uintptr_t ped = (g_c.active && !g_c.phone) ? CurrentPed() : 0, pl = game::Player();
-    if(ped && pl && script::Ready() && game::Alive(ped))
+    if(ped && pl && script::Ready() && game::Alive(ped) && !game::Vehicle(ped) && !game::IsScriptPed(ped))
     {
         std::vector<script::Arg> a{ script::Arg::I(0), script::Arg::I(game::Ref(ped)) };
         bool f = false;
@@ -970,7 +993,7 @@ static void AimFrame(double now)
         int courage = c ? c->tr.courage : 50;
         bool gang = game::IsGang(game::PedType(ped)) || game::PedType(ped) == game::PT_COP;
         const char* what;
-        if(gang && courage >= 55) { game::TaskAimAt(ped, pl, 8000); what = "навёл ствол в ответ"; }
+        if(gang && courage >= 55) { game::GiveWeapon(ped, 22, 30); game::SetCurrentWeapon(ped, 22); game::TaskAimAt(ped, pl, 8000); what = "навёл ствол в ответ"; }
         else if(courage < 35)     { game::TaskFlee(ped, pl, 60.0f, 20000); what = "бросился бежать"; }
         else                      { game::TaskAnim(ped, "handsup", "ped", false, 6000, true); what = "поднял руки"; }
         LOG_INFO("Ствол на #%d: %s", c ? c->id : 0, what);
@@ -1019,6 +1042,7 @@ void Frame()
     }
 
     AimFrame(Now());
+    if(g_c.active && g_c.reqId == -1 && Now() - g_c.sentAt > 30) { g_c.reqId = 0; Notify("Хост не ответил"); }
 
     // голос: отзвучавшие фразы (конец речи → можно завершить разговор)
     std::string spokenId;

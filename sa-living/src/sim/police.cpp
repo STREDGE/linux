@@ -474,7 +474,7 @@ void StartArrest(uintptr_t cop)
     // в машине: сначала выйти (руки поднимет в Frame, когда будет на ногах — иначе задача выхода перезаписывается)
     g_handsUp = false;
     if(game::Vehicle(pl)) game::TaskLeaveCar(pl);
-    else { game::TaskAnim(pl, "handsup", "ped", false, 0, true); g_handsUp = true; }
+    else { game::TaskAnim(pl, "handsup", "ped", false, 15000, true); g_handsUp = true; }
     game::TaskAimAt(cop, pl, 3000);
     talk::Say(c.nick.empty() ? c.name : c.nick, "Полиция! Руки, чтоб я видел! Не двигаться!", false, c.id, c.pitch, c.rate, true);
     SetStage(ST_HANDS);
@@ -584,7 +584,7 @@ void Frame()
     uintptr_t pl = game::Player();
     uintptr_t cop = Cop();
     if(!pl) return;
-    if(g_st == ST_HANDS && !g_handsUp && !game::Vehicle(pl)) { game::TaskAnim(pl, "handsup", "ped", false, 0, true); g_handsUp = true; }
+    if(g_st == ST_HANDS && !g_handsUp && !game::Vehicle(pl)) { game::TaskAnim(pl, "handsup", "ped", false, 15000, true); g_handsUp = true; }
     switch(g_st)
     {
         case ST_HANDS:

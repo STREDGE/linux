@@ -1,4 +1,5 @@
 #include "game.h"
+#include <set>
 
 #include <mod/amlmod.h>
 #include <mod/logger.h>
@@ -379,7 +380,7 @@ bool TaskAttack(uintptr_t ped, uintptr_t target)
 bool TaskStand(uintptr_t ped, int ms)
 {
     void* t = NewTask(); if(!t) return false;
-    ((void(*)(void*, int, bool, bool, float))ctorStand)(t, ms, true, false, 8.0f);
+    ((void(*)(void*, int, bool, bool, float))ctorStand)(t, ms, false, false, 8.0f);   // bForever=false: иначе ms не действует и пед стоит вечно
     return Assign(ped, t);
 }
 bool TaskTurnTo(uintptr_t ped, uintptr_t target)
@@ -458,9 +459,13 @@ bool TaskAnim(uintptr_t ped, const char* anim, const char* block, bool loop, int
     }
     if(!GetAnim(anim, blk)) { LOG_ERROR("Анимации %s/%s нет в игре", block, anim); return false; }
     void* t = NewTask(); if(!t) return false;
-    int flags = loop ? 0x12 : (holdLast ? 0x10 : 0);
+    // 0x08 — по окончании плавно выйти из анимации (без него пед застывал на последнем кадре, задача не кончалась).
+    // «Держать позу» (руки вверх) — тоже с таймером; holdLast у игры оставляет позу на теле навсегда.
+    if(holdLast && ms <= 0) ms = 8000;
+    bool timed = loop || holdLast;
+    int flags = 0x10 | 0x08 | (timed ? 0x02 : 0);
     ((void(*)(void*, const char*, const char*, int, float, int, bool, bool, bool, bool))ctorNamedAnim)
-        (t, anim, block, flags, 4.0f, loop ? ms : -1, false, false, false, holdLast);
+        (t, anim, block, flags, 4.0f, timed ? ms : -1, false, false, false, false);
     return Assign(ped, t);
 }
 
@@ -501,21 +506,26 @@ uintptr_t SpawnPed(int pedType, int model, const Vec& at)
     }
     RequestModel(model, 2);
     LoadAll(false);
-    uintptr_t ped = AddPed(pedType, (unsigned)model, at, false);
+    uintptr_t ped = AddPed(pedType, (unsigned)model, at, true);   // true — игра ставит обычную прогулку по умолчанию (без неё пед стоял статуей)
     if(ped) KeepPed(ped, true);
     return ped;
 }
 void DeletePed(uintptr_t ped) { if(ped && RemovePed && !IsPlayer(ped)) RemovePed(ped); }
+// Держать педа (игра не удаляет его, пока игрок рядом): ставим ТОЛЬКО байт «создан скриптом».
+// CPed::SetCharCreatedBy(2) заодно ставил «решатель» миссий (-1) и дальность зрения миссий —
+// пед переставал бояться ствола, убегать, звать своих. Чужих педов миссий не трогаем вовсе.
+namespace { std::set<int> g_kept; }
+bool IsScriptPed(uintptr_t ped) { return ped && F<uint8_t>(ped, kPedCreatedBy) == 2 && !g_kept.count(Ref(ped)); }
 void KeepPed(uintptr_t ped, bool keep)
 {
-    if(!ped || !SetCreatedBy) return;
-    uintptr_t intel = F<uintptr_t>(ped, kPedIntel);
-    int dm = intel ? F<int>(intel, 0x160) : -1;              // CPedIntelligence::m_iDecisionMakerType
-    if(dm < 0) { uintptr_t st = F<uintptr_t>(ped, 0x728); if(st) dm = F<int8_t>(st, 0x32); }   // CPedStats::m_iDefaultDecisionMaker
-    SetCreatedBy(ped, keep ? 2 : 1);
-    // SetCharCreatedBy(2) ставит «решатель» -1 (как у педов миссий) — пед перестаёт бояться ствола, убегать, звать своих.
-    // Возвращаем его обычные реакции.
-    if(keep && intel && SetDecisionMaker && dm >= 0) SetDecisionMaker(intel, dm);
+    if(!ped) return;
+    int ref = Ref(ped);
+    if(keep)
+    {
+        if(F<uint8_t>(ped, kPedCreatedBy) == 2 && !g_kept.count(ref)) return;   // пед миссии/скрипта — он не наш
+        F<uint8_t>(ped, kPedCreatedBy) = 2; g_kept.insert(ref);
+    }
+    else if(g_kept.count(ref)) { F<uint8_t>(ped, kPedCreatedBy) = 1; g_kept.erase(ref); }
 }
 
 // ---------------- мир ----------------
@@ -535,6 +545,7 @@ std::string ZoneName()
     for(int i = 0; i < 48 && w[i]; ++i)
     {
         uint16_t c = w[i];
+        if(c >= 0x80 && c <= 0xBF) c = 0x0410 + (c - 0x80);   // русский GXT игры: 0x80–0xBF — А…я
         if(c < 0x80) out += (char)c;
         else if(c < 0x800) { out += (char)(0xC0 | (c >> 6)); out += (char)(0x80 | (c & 0x3F)); }
         else { out += (char)(0xE0 | (c >> 12)); out += (char)(0x80 | ((c >> 6) & 0x3F)); out += (char)(0x80 | (c & 0x3F)); }

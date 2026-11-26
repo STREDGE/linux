@@ -416,6 +416,12 @@ static void RollTraits(Character& c)
 Character& Promote(uintptr_t ped)
 {
     if(Character* ex = FindByPed(ped)) return *ex;
+    {   // сюжетный герой (Свит, Райдер…): в каждой миссии игра создаёт нового педа — это тот же человек, с той же памятью
+        std::string story = game::StoryKey(ped);
+        if(!story.empty())
+            for(auto& ch : g_w.chars)
+                if(ch.story == story) { ch.alive = true; Bind(ch, ped); game::KeepPed(ped, true); return ch; }
+    }
     Character c;
     c.id = g_w.nextId++;
     c.pedType = game::PedType(ped);
