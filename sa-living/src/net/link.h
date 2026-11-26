@@ -12,4 +12,5 @@ namespace coopnet
     bool  Connected();
     bool  Send(const json::Value& msg);
     const char* PeerNick();
+    const char* MyNick();
 }

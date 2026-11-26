@@ -89,7 +89,10 @@ namespace
             {
                 float d = game::Dist(game::Pos(ped), me);
                 // далеко: отпускаем педа игре — она уберёт его сама и правильно (удалять самим нельзя: он может сидеть за рулём)
-                if(d > 160 && !game::OnScreen(ped) && talk::Current() != &c && !police::Arresting()) { game::KeepPed(ped, false); c.pedRef = 0; }
+                // в коопе мир хоста держит и людей вокруг друга (до 210 м): его собеседника и тех, кто рядом с ним, не отпускаем
+                uintptr_t p2 = coopnet::GetRole() == coopnet::HOST ? game::Player2() : 0;
+                float d2 = p2 ? game::Dist(game::Pos(ped), game::Pos(p2)) : 1e9f;
+                if(d > 160 && d2 > 120 && !game::OnScreen(ped) && talk::Current() != &c && talk::FriendConvChar() != c.id && !police::Arresting()) { game::KeepPed(ped, false); c.pedRef = 0; }
                 continue;
             }
             // вывести персонажа «домой», когда игрок рядом
@@ -147,7 +150,11 @@ namespace
             if(s.plan.find("засада") == std::string::npos || f == W.playerGang || s.truce) continue;
             if(!NightTime() || game::OnMission() || police::Arresting() || game::CutsceneRunning() || world::Rand(0, 1000) > 6) continue;
             uintptr_t fr = FriendNearHost();
-            bool onFriend = fr && (s.plan.find(W.friendNick) != std::string::npos || (s.plan.find(W.playerNick) == std::string::npos && world::Rand(0, 1)));
+            // цель засады: если в плане назван друг — на него (ник друга не «CJ» и проверяется первым: «Кореш CJ» содержит «CJ»),
+            // назван CJ — на хоста, не назван никто — на любого из двоих
+            bool namesFriend = !W.friendNick.empty() && W.friendNick != W.playerNick && s.plan.find(W.friendNick) != std::string::npos;
+            bool namesHost = !namesFriend && s.plan.find(W.playerNick) != std::string::npos;
+            bool onFriend = fr && (namesFriend || (!namesHost && world::Rand(0, 1)));
             Ambush(f, world::Rand(3, 4), onFriend ? fr : 0);
             world::News(Fmt("%s устроили засаду на %s!", world::FactionName(f), onFriend ? W.friendNick.c_str() : W.playerNick.c_str()));
             s.plan.clear();

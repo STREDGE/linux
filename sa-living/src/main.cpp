@@ -31,7 +31,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.3.0, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.3.1, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
@@ -146,6 +146,7 @@ void OnMessage(const json::Value& m)
         else if(t == "act") talk::HandleFriendAct(m);
         else if(t == "aimed") talk::HandleFriendAimed(m);
         else if(t == "copcall") police::SpawnCopForFriend();
+        else if(t == "convend") talk::EndFriendConversation();
         else if(t == "hear") talk::HandleHear(m);
         else if(t == "helpers") life::HelpersForFriend(m["fac"].i(), m["n"].i(), m["hostile"].b());
         else if(t == "ai") claude::HandleProxyRequest(m);
@@ -163,6 +164,8 @@ void OnMessage(const json::Value& m)
         if(t == "reply") talk::HandleHostReply(m);
         else if(t == "hear") talk::HandleHear(m);
         else if(t == "note") talk::Notify(m["text"].str());
+        else if(t == "demand") talk::HandleDemand(m);
+        else if(t == "wanted") { int w = game::Wanted(); int a = m["add"].i(1); game::SetWanted(w < 2 ? w + a : w); talk::Notify("Кто-то сообщил о тебе в полицию"); }
         else if(t == "jv") jarvis::OnCoopMessage(m);
         else if(t == "ai_res") claude::HandleProxyResult(m);
         else if(t == "news") { for(auto& n : m["items"].arr()) world::News(n.str()); talk::Notify("Новости города (телефон)"); }
@@ -278,7 +281,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
     bool r = GenericLoad(ok);
     if(g_ok)
     {
-        talk::EndConversation(); jarvis::OnWorldSwitch(false); police::Reset(); crew::Reset(); claude::AbortAll("загрузка игры");
+        talk::EndConversation(); talk::EndFriendConversation(); jarvis::OnWorldSwitch(false); police::Reset(); crew::Reset(); claude::AbortAll("загрузка игры");
         // имя файла, из которого игра реально грузится; ms_ValidSaveName — запасной вариант (его могло перезаписать меню)
         std::string a = g_loadFileName ? g_loadFileName : "", b = g_validSaveName ? g_validSaveName : "";
         std::string n = !a.empty() && (world::HasMemory(a) || b.empty() || !world::HasMemory(b)) ? a : !b.empty() ? b : "default";
@@ -291,7 +294,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
 SDECL_HOOKv(MenuNewGame)
 {
     TRACE("ИГРА", "новая игра");
-    if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); police::Reset(); crew::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
+    if(g_ok) { talk::EndConversation(); talk::EndFriendConversation(); jarvis::OnWorldSwitch(true); police::Reset(); crew::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
     MenuNewGame();
 }
 

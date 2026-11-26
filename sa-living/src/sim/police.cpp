@@ -267,6 +267,8 @@ namespace
         return coopnet::GetRole() == coopnet::CLIENT && pl && p2 && game::Dist(game::Pos(pl), game::Pos(p2)) < 150;
     }
     double g_waitCopUntil = 0;                // друг сдался без копов рядом — ждём копа, которого пришлёт хост
+    bool   g_noHostCop = false;               // хост копа не прислал — дальше своим копом (без повторных просьб)
+    double g_lastCopForFriend = -100;         // хост: не больше одного копа другу за 15 с
     void CopAim(uintptr_t cop, uintptr_t pl, int ms) { json::Value a = json::Value::Object(); a["ms"] = ms; if(!talk::RemoteBody(cop, "aim_player", a)) game::TaskAimAt(cop, pl, ms); }
     void CopSay(world::Character* c, const std::string& text, uintptr_t cop)
     {
@@ -541,10 +543,10 @@ const char* ArrestStage()
 
 void Surrender()
 {
-    if(g_st != ST_NONE) return;
+    if(g_st != ST_NONE || g_waitCopUntil > 0) return;                  // уже сдаёмся / ждём копа от хоста
     if(game::Wanted() == 0) { talk::Notify("Тебя никто не ищет"); return; }
     uintptr_t pl = game::Player(); if(!pl) return;
-    if(SharedWorld() && !FindCop(45.0f) && !game::OnMission() && game::AreaCode(pl) == 0)
+    if(SharedWorld() && !g_noHostCop && !FindCop(45.0f) && !game::OnMission() && game::AreaCode(pl) == 0)
     {   // вы рядом: копа пришлёт хост (в его мире), тогда его видят оба
         json::Value m = json::Value::Object(); m["t"] = "copcall"; coopnet::Send(m);
         g_waitCopUntil = talk::Now() + 15;
@@ -579,6 +581,9 @@ void SpawnCopForFriend()
 {
     if(coopnet::GetRole() != coopnet::HOST) return;
     uintptr_t p2 = game::Player2(); if(!p2) return;
+    double now = talk::Now();
+    if(now - g_lastCopForFriend < 15) return;                          // повторная просьба — коп уже идёт
+    g_lastCopForFriend = now;
     game::Vec p = game::Pos(p2);
     int model = p.x < -1000 ? 281 : (p.y > 500 ? 282 : 280);
     float a = game::Heading(p2) + 3.1416f;
@@ -589,6 +594,7 @@ void SpawnCopForFriend()
     {
         game::GiveWeapon(cop, 22, 60); game::SetCurrentWeapon(cop, 22);
         game::TaskGoTo(cop, p, 4, 3.0f);
+        world::Promote(cop);                                            // персонаж: игра уберёт его, когда он уйдёт далеко (не копится)
         TRACE("АРЕСТ", "друг сдаётся: вызван коп P#%d к второму CJ", game::Ref(cop));
     }
 }
@@ -713,6 +719,7 @@ void Reset()
     if(g_st != ST_NONE) LOG_INFO("Задержание сброшено (загрузка игры)");
     g_st = ST_NONE; g_scene = Scene(); g_rep.active = false; g_jailEpisodes.clear(); g_jailIdx = 0;
     g_handsUp = false; g_passNextArrest = false; g_calledHelp = false;
+    g_waitCopUntil = 0; g_noHostCop = false;
     if(g_courtReq) { claude::Cancel(g_courtReq); g_courtReq = 0; }
     Lock(false);
     PoliceIgnore(false);
@@ -736,8 +743,13 @@ void Frame()
     }
     if(g_waitCopUntil > 0 && g_st == ST_NONE)
     {   // друг: ждём копа от хоста; не пришёл за 15 с — как раньше, свой коп
-        if(uintptr_t cop = FindCop(60.0f)) { g_waitCopUntil = 0; TRACE("АРЕСТ", "коп от хоста пришёл: %s", game::EntName(cop).c_str()); StartArrest(cop); }
-        else if(talk::Now() > g_waitCopUntil) { g_waitCopUntil = 0; TRACE("АРЕСТ", "коп от хоста не пришёл — свой"); Surrender(); }
+        if(game::Wanted() == 0) { g_waitCopUntil = 0; TRACE("АРЕСТ", "ждали копа, но розыска уже нет — отбой"); }
+        else if(uintptr_t cop = FindCop(60.0f)) { g_waitCopUntil = 0; TRACE("АРЕСТ", "коп от хоста пришёл: %s", game::EntName(cop).c_str()); StartArrest(cop); }
+        else if(talk::Now() > g_waitCopUntil)
+        {
+            g_waitCopUntil = 0; TRACE("АРЕСТ", "коп от хоста не пришёл — свой");
+            g_noHostCop = true; Surrender(); g_noHostCop = false;
+        }
     }
     if(g_st == ST_NONE) return;
     if(g_gameState && *g_gameState == 2) *g_gameState = 0;      // игра не должна сама затемнять и переносить, пока идёт наш сценарий

@@ -71,6 +71,9 @@ namespace talk
     void HandleHear(const json::Value& m);
     // Хост: друг навёл ствол на копию педа — рефлекс настоящего педа
     void HandleFriendAimed(const json::Value& m);
+    void EndFriendConversation();         // хост: разговор друга закончен (сообщение «convend», загрузка)
+    int  FriendConvChar();                // хост: с кем сейчас говорит друг (0 — ни с кем)
+    void HandleDemand(const json::Value& m);   // друг: требование денег от хоста (сделка)
     // Сказать вслух для всех рядом: мне — если я рядом с src, второму CJ — если он рядом (кооп)
     void SayNear(world::Character* c, const std::string& who, const std::string& text, uintptr_t src);
     // У друга: пед — копия педа хоста (SA Coop) — тело ему двигает хост (RemoteBody)

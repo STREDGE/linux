@@ -93,6 +93,11 @@ namespace
 
     void Later(double sec, std::function<void()> fn) { g_later.push_back({ Now() + sec, std::move(fn) }); }
 
+    // Имена в коопе: хост — «CJ» (герой игры), друг — его ник в SA Coop. В SA Living у обоих ник «CJ» — ИИ их путал
+    // («CJ говорит» от обоих, засада «на CJ» всегда шла на друга).
+    std::string FriendName(const char* n) { std::string s = n ? n : ""; if(s.empty() || s == "CJ" || s == world::W().playerNick) s = "Кореш CJ"; return s; }
+    std::string MyName() { return coopnet::GetRole() == coopnet::CLIENT ? FriendName(coopnet::MyNick()) : world::W().playerNick; }
+
     const char* WhoName(int who)
     {
         auto& w = world::W();
@@ -146,7 +151,7 @@ namespace
         if(ped && pl)
         {
             float d = game::Dist(game::Pos(ped), game::Pos(pl));
-            s += Fmt(" Собеседник (%s) в %.0f м от тебя", WhoName(who), d);
+            s += Fmt(" Собеседник (%s) в %.0f м от тебя", coopnet::GetRole() == coopnet::CLIENT ? MyName().c_str() : WhoName(who), d);
             if(game::PlayerInVehicle()) s += ", сидит в машине";
             s += ".";
             if(game::Vehicle(ped)) s += " ТЫ СИДИШЬ ЗА РУЛЁМ/В МАШИНЕ (выйти — move get_out).";
@@ -155,8 +160,8 @@ namespace
             else if(at == 933) s += " Ты сейчас держишь его на прицеле.";
             if(game::PlayerTarget() == ped) s += " ОН ЦЕЛИТСЯ В ТЕБЯ ИЗ ОРУЖИЯ.";
             {   // второй игрок: у хоста — друг, у друга — хост
-                const char* peer = coopnet::PeerNick();
-                std::string on = who == world::WHO_CJ ? std::string(WhoName(world::WHO_FRIEND)) : std::string(peer && *peer ? peer : "CJ");
+                // у друга второй — хост, он «CJ» (герой игры); у хоста второй — друг (его ник SA Coop)
+                std::string on = coopnet::GetRole() == coopnet::CLIENT ? world::W().playerNick : std::string(WhoName(world::WHO_FRIEND));
                 std::string ot = OtherText(ped, on);
                 s += ot;
                 if(!ot.empty() && who == world::WHO_CJ && coopnet::GetRole() != coopnet::CLIENT)
@@ -498,7 +503,14 @@ namespace
                 world::News(Fmt("%s ушёл из %s к тебе. Его бывшие будут его искать.", c.name.c_str(), world::FactionName(old)));
             }
             else world::Remember(c, Fmt("Договорились (%s, $%d): %s", k.c_str(), price, in["details"].str().c_str()));
-            if(price > 0 && k != "payroll") { g_c.demand = price; g_c.demandWhy = k; }
+            if(price > 0 && k != "payroll")
+            {
+                if(who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST)
+                {   // требование — у того, кто говорит (друг платит своими деньгами)
+                    json::Value m = json::Value::Object(); m["t"] = "demand"; m["charId"] = c.id; m["amount"] = price; m["why"] = k; coopnet::Send(m);
+                }
+                else { g_c.demand = price; g_c.demandWhy = k; }
+            }
             return "договорились";
         }
         if(n == "end_deal")
@@ -541,14 +553,14 @@ namespace
     }
 
     // ---------- ход ----------
-    void FinishTurn(Character* c, int who, claude::Result& res, bool remoteFriend, json::Value* outActions);
+    void FinishTurn(Character* c, int who, claude::Result& res, bool remoteFriend, json::Value* outActions, bool remotePhone = false);
 
     // Ответ одними инструментами (жест, отношение, «стоять») без слов — для игрока это молчание: человек стоит и ничего
     // не говорит, пока не скажешь ещё что-то (тест 0.2.10: 21 ответ из 28 такие, «никто не отвечает секунд 20»).
     // Тогда сразу второй запрос: результаты инструментов + просьба сказать вслух (cont = true, не больше одного раза).
     const char* const kSayNudge = "[Ты пока ничего не сказал вслух — для него ты молчишь. Скажи коротко, что отвечаешь, от первого лица. Уже сделанное инструментами не повторяй.]";
 
-    bool SendTurn(Character& c, int who, const std::string& userText, bool important, bool remoteFriend, std::function<void(json::Value)> remoteDone = nullptr, bool cont = false)
+    bool SendTurn(Character& c, int who, const std::string& userText, bool important, bool remoteFriend, std::function<void(json::Value)> remoteDone = nullptr, bool cont = false, bool remotePhone = false)
     {
         if(!claude::HasKey()) { if(!remoteFriend) Notify("Нет ключа ИИ: Меню > ИИ > Вставить ключ"); return false; }
         if(claude::LimitReached()) { if(!remoteFriend) Notify("Лимит запросов ИИ на сегодня исчерпан"); return false; }
@@ -596,7 +608,7 @@ namespace
                     g_c.buf.erase(0, e);
                 }
             },
-            [charId, who, userTurn, remoteFriend, remoteDone, cont](claude::Result& r) {
+            [charId, who, userTurn, remoteFriend, remoteDone, cont, remotePhone](claude::Result& r) {
                 Character* ch = world::Find(charId);
                 if(!ch) return;
                 if(!remoteFriend) { if(!g_c.buf.empty()) { SpeakChunk(ch, g_c.buf); g_c.buf.clear(); } g_c.reqId = 0; g_c.lastAt = Now(); }
@@ -612,7 +624,7 @@ namespace
                 if(r.assistantContent.size()) ch->dialog.push(am);
                 ch->lastTalkDay = world::Day(); ch->lastTalkMin = game::Hour() * 60 + game::Minute();
                 json::Value actions = json::Value::Array();
-                FinishTurn(ch, who, r, remoteFriend, &actions);
+                FinishTurn(ch, who, r, remoteFriend, &actions, remotePhone);
                 TrimDialog(ch->dialog);
                 if(remoteDone)
                 {
@@ -627,7 +639,7 @@ namespace
                 {
                     bool still = remoteFriend || (g_c.active && g_c.charId == charId && g_c.reqId == 0 && !Listening() && !Recognizing());   // уже говоришь ему снова — ответит на новое
                     TRACE("РАЗГОВОР", "#%d ответил только действием (%d инстр.)%s", charId, (int)r.tools.size(), still ? " — прошу сказать вслух" : ", разговор уже закончен");
-                    if(still) SendTurn(*ch, who, kSayNudge, false, remoteFriend, remoteDone, true);
+                    if(still) SendTurn(*ch, who, kSayNudge, false, remoteFriend, remoteDone, true, remotePhone);
                 }
             });
         if(!id) { if(!remoteFriend) Notify("ИИ недоступен (нет связи или ключа)"); return false; }
@@ -635,7 +647,7 @@ namespace
         return true;
     }
 
-    void FinishTurn(Character* c, int who, claude::Result& r, bool remoteFriend, json::Value* outActions)
+    void FinishTurn(Character* c, int who, claude::Result& r, bool remoteFriend, json::Value* outActions, bool remotePhone)
     {
         json::Value results = json::Value::Array();
         for(auto& call : r.tools)
@@ -654,7 +666,7 @@ namespace
                         // вы рядом и у хоста есть настоящий пед — тело двигает хост (у друга копия повторит),
                         // деньги, звонки и полиция — у друга (его деньги, его розыск)
                         uintptr_t real = world::PedOf(*c), p2 = game::Player2();
-                        if(coopnet::GetRole() == coopnet::HOST && real && p2 && IsBodyTool(call.name) && game::Dist(game::Pos(real), game::Pos(p2)) < 60)
+                        if(!remotePhone && coopnet::GetRole() == coopnet::HOST && real && p2 && IsBodyTool(call.name) && game::Dist(game::Pos(real), game::Pos(p2)) < 60)
                         {
                             MemberGuard g;
                             res = ExecutePhysical(c, real, who, call.name, call.input);
@@ -684,20 +696,20 @@ namespace
 
     // Хост: ответ ИИ разговору друга. Другу — сообщением (с голосом этого человека, чтобы у обоих звучал одинаково),
     // а если хост рядом — он тоже слышит ответ и видит позу.
-    std::function<void(json::Value)> FriendDone(int cid, int localId)
+    std::function<void(json::Value)> FriendDone(int cid, int localId, bool phone = false)
     {
-        return [cid, localId](json::Value rep) {
+        return [cid, localId, phone](json::Value rep) {
             rep["t"] = "reply"; rep["charId"] = cid; if(localId) rep["localId"] = localId;
             if(Character* ch = world::Find(cid))
             {
                 EnsureVoice(*ch);
                 rep["voice"] = ch->voice; rep["vp"] = ch->vpitch; rep["vr"] = ch->vrate;
                 std::string text = rep["text"].str();
-                uintptr_t real = world::PedOf(*ch), src = real ? real : game::Player2();
-                if(!text.empty() && !rep.has("error") && MeNear(src))
+                uintptr_t real = phone ? 0 : world::PedOf(*ch), src = real ? real : (phone ? 0 : game::Player2());
+                if(!text.empty() && !rep.has("error"))
                 {
-                    Say(NameOf(ch), text, false, ch->id, ch->pitch, ch->rate, true);
-                    if(real) TalkPose(ch, real, text, game::Player2());
+                    if(real && game::Player2()) TalkPose(ch, real, text, game::Player2());       // жестикулирует — копия у друга повернётся
+                    if(src && MeNear(src)) Say(NameOf(ch), text, false, ch->id, ch->pitch, ch->rate, true);   // по телефону собеседника друга не слышно
                 }
             }
             coopnet::Send(rep);
@@ -754,7 +766,11 @@ namespace
             if(p == mainPed || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p) || game::IsScriptPed(p)) return;
             if(game::FightTarget(p)) return;                         // дерётся / целится (напал на CJ, вступился) — не «слушатель»
             float d = game::Dist(game::Pos(p), at); if(d > 10.0f) return;
-            if(world::Character* ex = world::FindByPed(p)) for(int id : cv.group) if(id == ex->id) return;
+            if(world::Character* ex = world::FindByPed(p))
+            {
+                for(int id : cv.group) if(id == ex->id) return;
+                if(&cv == &g_fc && g_c.active) { if(ex->id == g_c.charId) return; for(int id : g_c.group) if(id == ex->id) return; }   // занят разговором хоста
+            }
             int f = world::FactionOfPedType(game::PedType(p));
             near.push_back({ p, d - (f == fac ? 6.0f : 0.0f) });     // свои/коллеги — в первую очередь
         });
@@ -866,6 +882,7 @@ static void ReleaseTask(uintptr_t ped)
 void EndConversation()
 {
     if(!g_c.active) return;
+    if(g_c.remote && !g_c.phone) { json::Value m = json::Value::Object(); m["t"] = "convend"; coopnet::Send(m); }   // хост снимет позы и слушателей
     if(g_c.reqId) claude::Cancel(g_c.reqId);
     if(Character* c = Current())
     {
@@ -963,7 +980,7 @@ static void SendToHost(Character& c, const std::string& text, bool phone, const 
     json::Value m = json::Value::Object();
     m["t"] = "talk"; m["text"] = text; m["situation"] = phone ? std::string("[Телефонный разговор]") : Situation(c, world::WHO_FRIEND, phone);
     m["pedType"] = c.pedType; m["model"] = c.model; m["phone"] = phone; m["hostCharId"] = c.hostId; m["localId"] = c.id;
-    m["nick"] = world::W().playerNick;
+    m["nick"] = MyName();
     m["said"] = said; m["wanted"] = game::Wanted();
     if(!phone)
         if(uintptr_t ped = world::PedOf(c))
@@ -984,13 +1001,13 @@ static void OnPlayerSaid(const std::string& text)
     Character* c = Current();
     if(!c) return;
     if(text.empty()) { Notify("Не расслышал — попробуй ещё раз"); return; }
-    Say(world::W().playerNick, text, true, 0, 1, 1, false);
-    if(!g_c.phone && OtherNear(game::Player())) SendHear(world::W().playerNick, text, true, nullptr);   // второй CJ рядом — видит, что я сказал
+    Say(MyName(), text, true, 0, 1, 1, false);
+    if(!g_c.phone && OtherNear(game::Player())) SendHear(MyName(), text, true, nullptr);   // второй CJ рядом — видит, что я сказал
     if(text.size() > 12)
         for(int id : g_c.group)
-            if(Character* m = world::Find(id)) world::Remember(*m, Fmt("Слышал, как %s говорил %s: «%s»", world::W().playerNick.c_str(), c->name.c_str(), text.substr(0, 160).c_str()));
+            if(Character* m = world::Find(id)) world::Remember(*m, Fmt("Слышал, как %s говорил %s: «%s»", MyName().c_str(), c->name.c_str(), text.substr(0, 160).c_str()));
     c = Current(); if(!c) return;
-    std::string line = Fmt("%s говорит: «%s»", world::W().playerNick.c_str(), text.c_str());
+    std::string line = Fmt("%s говорит: «%s»", MyName().c_str(), text.c_str());
     if(g_c.offer) line += Fmt("\n(Он протягивает тебе $%d.)", g_c.offer);
     if(g_c.remote) { SendToHost(*c, line, g_c.phone, text); return; }
     SendTurn(*c, world::WHO_CJ, line, g_c.offer > 0, false);
@@ -1002,8 +1019,8 @@ void OfferMoney(int amount)
     if(!c || amount <= 0) return;
     if(game::Money() < amount) { Notify("У тебя нет столько денег"); return; }
     g_c.offer = amount;
-    std::string line = Fmt("(%s молча протягивает тебе $%d.)", world::W().playerNick.c_str(), amount);
-    Say(world::W().playerNick, Fmt("[протягивает $%d]", amount), true, 0, 1, 1, false);
+    std::string line = Fmt("(%s молча протягивает тебе $%d.)", MyName().c_str(), amount);
+    Say(MyName(), Fmt("[протягивает $%d]", amount), true, 0, 1, 1, false);
     if(g_c.remote) { SendToHost(*c, line, g_c.phone); return; }
     SendTurn(*c, world::WHO_CJ, line, true, false);
 }
@@ -1020,14 +1037,22 @@ void PayDemand()
     world::Remember(*c, Fmt("Получил от игрока $%d (%s)", amt, g_c.demandWhy.c_str()));
     world::ChangeRelation(*c, world::WHO_CJ, 4, 2, 3, 0, "заплатил");
     g_c.demand = 0;
-    Say(world::W().playerNick, Fmt("[платит $%d]", amt), true, 0, 1, 1, false);
-    std::string paid = Fmt("(%s заплатил тебе $%d, как ты просил.)", world::W().playerNick.c_str(), amt);
+    Say(MyName(), Fmt("[платит $%d]", amt), true, 0, 1, 1, false);
+    std::string paid = Fmt("(%s заплатил тебе $%d, как ты просил.)", MyName().c_str(), amt);
     if(g_c.remote) SendToHost(*c, paid, g_c.phone); else SendTurn(*c, world::WHO_CJ, paid, false, false);
 }
 
 bool React(Character& c, int who, const std::string& eventText, bool important)
 {
     if(coopnet::GetRole() == coopnet::CLIENT) { SendToHost(c, "[Событие: " + eventText + "]", false); return true; }   // решает хост, исполняем у себя
+    if(who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST)
+    {   // событие в мире друга: мешает только ЕГО разговор с другим человеком, разговор хоста ни при чём
+        if(g_fc.active && g_fc.charId != c.id) return false;
+        double now = Now();
+        if(now - g_fc.sentAt < 2.0) return false;                          // не пачкой
+        g_fc.sentAt = now;
+        return SendTurn(c, who, "[Событие: " + eventText + "]", important, true, FriendDone(c.id, 0));
+    }
     if(g_c.active && g_c.reqId) return false;
     if(g_c.active && g_c.charId != c.id) return false;
     if(!g_c.active && who == world::WHO_CJ)
@@ -1036,8 +1061,6 @@ bool React(Character& c, int who, const std::string& eventText, bool important)
         if(!ped) return false;
         g_c = Conv(); g_c.active = true; g_c.charId = c.id; g_c.who = who;
     }
-    if(who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST)
-        return SendTurn(c, who, "[Событие: " + eventText + "]", important, true, FriendDone(c.id, 0));   // решает хост, ответ — другу
     return SendTurn(c, who, "[Событие: " + eventText + "]", important, who != world::WHO_CJ);
 }
 
@@ -1202,7 +1225,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         if(!c) return "?";
         int a = world::Clamp(in["amount"].i(), 0, c->money);
         if(a <= 0) return "у тебя нет денег";
-        if(!needPed() && !phone) return "ты не рядом";
+        if(!needPed() && !phone && !CoopCopy(ped)) return "ты не рядом";
         if(phone) return "по телефону деньги не передашь — договорись о встрече";
         c->money -= a; game::AddMoney(a);
         Say(c->nick.empty() ? c->name : c->nick, Fmt("[отдаёт $%d]", a), false, c->id, 1, 1, false);
@@ -1263,11 +1286,12 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
                 if(ch && p && game::Health(p) < hp0 - 1.0f)
                 {   // ударили / ранили во время звонка — звонок сорвался
                     TRACE("ЗВОНОК", "#%d не дозвонился: его ударили во время звонка", cid);
-                    world::Remember(*ch, std::string("Пытался вызвать полицию, но ") + world::W().playerNick + " не дал — ударил");
+                    world::Remember(*ch, std::string("Пытался вызвать полицию, но ") + (who == world::WHO_CJ ? MyName() : std::string(WhoName(who))) + " не дал — ударил");
                     Notify(radio ? "Коп не успел договорить по рации" : "Он не успел дозвониться — ты помешал");
                     return;
                 }
                 if(who == world::WHO_CJ) { int w = game::Wanted(); game::SetWanted(w < 2 ? w + 1 : w); }
+                else if(coopnet::GetRole() == coopnet::HOST) { json::Value m = json::Value::Object(); m["t"] = "wanted"; m["add"] = 1; coopnet::Send(m); }   // звонили на друга — розыск у него
                 world::W().pcase[who].heat = world::Clamp(world::W().pcase[who].heat + 10, 0, 100);
                 Notify(radio ? "Коп вызвал подмогу по рации" : "Кто-то сообщил о тебе в полицию");
                 TRACE("ЗВОНОК", "#%d дозвонился: розыск %d", cid, game::Wanted());
@@ -1284,8 +1308,11 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
             }
             else
             {
-                uintptr_t tgt = (who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST) ? game::Player2() : 0;
-                Later(9.0, [fac, hostile, tgt]() { life::SpawnHelpers(fac, world::Rand(2, 3), hostile, tgt); });
+                bool forFriend = who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST;
+                Later(9.0, [fac, hostile, forFriend]() {                       // второго CJ берём в момент приезда (мог пропасть)
+                    if(forFriend) life::HelpersForFriend(fac, world::Rand(2, 3), hostile);
+                    else life::SpawnHelpers(fac, world::Rand(2, 3), hostile);
+                });
             }
             return "свои едут (около 10 секунд)";
         }
@@ -1332,13 +1359,21 @@ void HandleFriendTalk(const json::Value& req)
         coopnet::Send(e); return;
     }
     auto& W = world::W();
-    if(req["nick"].isString()) W.friendNick = req["nick"].str();
+    if(req["nick"].isString()) W.friendNick = FriendName(req["nick"].str().c_str());
     bool phone = req["phone"].b();
     uintptr_t p2 = game::Player2();
     // Вы рядом: у друга копия, у хоста — настоящий пед. Это один и тот же человек — один персонаж, одна память
     // на двоих (раньше хост заводил «двойника без педа», и пед не помнил, что говорил с другим CJ).
     uintptr_t real = 0;
-    if(!phone && req["copy"].b()) real = RealPed(req["model"].i(), game::Vec{ (float)req["x"].num(), (float)req["y"].num(), (float)req["z"].num() });
+    if(!phone && req["copy"].b())
+    {
+        game::Vec at{ (float)req["x"].num(), (float)req["y"].num(), (float)req["z"].num() };
+        // сначала тот, с кем друг уже говорил (в группе одинаковых бандитов не перепутать собеседника)
+        if(Character* hc = world::Find(req["hostCharId"].i()))
+            if(uintptr_t hp = world::PedOf(*hc))
+                if(game::Model(hp) == req["model"].i() && game::Dist(game::Pos(hp), at) < 6.0f) real = hp;
+        if(!real) real = RealPed(req["model"].i(), at);
+    }
     int cid = 0;
     if(real) { Character& rc = world::Promote(real); cid = rc.id; if(!rc.aiProfile) life::RequestProfile(rc); }
     if(!cid) { int id = req["hostCharId"].i(); if(id && world::Find(id)) cid = id; }
@@ -1355,7 +1390,9 @@ void HandleFriendTalk(const json::Value& req)
         life::RequestProfile(W.chars.back());
     }
     int wanted = req["wanted"].i();
-    if(real && p2)
+    bool spoke = !req["said"].str().empty();                               // друг сказал (а не событие «[Событие: …]»)
+    if(real && p2 && !spoke && g_fc.active && g_fc.charId == cid) g_fc.lastAt = Now();
+    if(real && p2 && spoke)
     {   // разговор друга у хоста — как свой: слушатели рядом, позы, удары, «ствол»
         if(!(g_fc.active && g_fc.charId == cid))
         {
@@ -1365,7 +1402,8 @@ void HandleFriendTalk(const json::Value& req)
         g_fc.lastAt = Now();
         if(Character* c0 = world::Find(cid)) c0->rel[world::WHO_FRIEND].met = true;
         ScanListeners(g_fc, real, p2);                                   // может сдвинуть массив персонажей
-        if(Character* c1 = world::Find(cid)) ListenPose(c1, real, 20000, p2, wanted);
+        bool hostTalks = g_c.active && g_c.charId == cid;                  // с ним говорит и хост — позу держит разговор хоста
+        if(!hostTalks) if(Character* c1 = world::Find(cid)) ListenPose(c1, real, 20000, p2, wanted);
         for(int gid : g_fc.group) if(Character* m = world::Find(gid)) ListenPose(m, world::PedOf(*m), 12000, p2, wanted);
         std::string said = req["said"].str();
         if(said.size() > 12)
@@ -1388,7 +1426,29 @@ void HandleFriendTalk(const json::Value& req)
     }
     std::string text = sit + "\n" + req["text"].str();
     int localId = req["localId"].i();
-    SendTurn(*c, world::WHO_FRIEND, text, false, true, FriendDone(cid, localId));
+    SendTurn(*c, world::WHO_FRIEND, text, false, true, FriendDone(cid, localId, phone), false, phone);
+}
+
+// Хост: друг закончил разговор (или загрузка/новая игра) — разговор друга здесь тоже закончен
+void EndFriendConversation()
+{
+    if(!g_fc.active) return;
+    TRACE("РАЗГОВОР", "разговор друга с #%d закончен", g_fc.charId);
+    auto release = [](uintptr_t p) { if(p && !game::Vehicle(p) && !game::IsScriptPed(p)) { int t = game::ActiveTaskType(p); if(t == 203 || t == 401 || t == 920 || t == 933) game::TaskWander(p); } };
+    if(Character* c = world::Find(g_fc.charId)) if(!(g_c.active && g_c.charId == c->id)) release(world::PedOf(*c));
+    for(int id : g_fc.group) if(Character* m = world::Find(id)) release(world::PedOf(*m));
+    g_fc = Conv();
+}
+int FriendConvChar() { return g_fc.active ? g_fc.charId : 0; }
+
+// Друг: хост прислал требование денег (договорились о сделке)
+void HandleDemand(const json::Value& m)
+{
+    int hostId = m["charId"].i();
+    if(!(g_c.active)) return;
+    Character* c = world::Find(g_c.charId);
+    if(!c || c->hostId != hostId) return;
+    g_c.demand = world::Clamp(m["amount"].i(), 1, 10000000); g_c.demandWhy = m["why"].str();
 }
 
 void HandleHostReply(const json::Value& rep)
@@ -1414,10 +1474,19 @@ void HandleHostReply(const json::Value& rep)
     }
     if(!text.empty()) Say(name.empty() ? c->name : name, text, false, c->id, c->pitch, c->rate, true);
     uintptr_t ped = world::PedOf(*c);
+    bool current = g_c.active && g_c.charId == c->id;           // ответ про моего собеседника, а не про кого-то рядом
     for(auto& a : rep["actions"].arr())
     {
-        if(a["done"].b()) { ConvEffects(c->id, a["name"].str(), a["input"]); continue; }   // тело уже двинул хост
-        ExecutePhysical(c, ped, world::WHO_CJ, a["name"].str(), a["input"]);
+        const std::string& n = a["name"].str();
+        if(a["done"].b()) { ConvEffects(c->id, n, a["input"]); continue; }   // тело уже двинул хост
+        if(!current)
+        {   // другой человек: его требования/штрафы/«конец разговора» к моему разговору не относятся
+            if(n == "end_conversation" || n == "demand_money" || n == "answer_offer" || n == "give_money" || (n == "police_action" && a["input"]["action"].str() == "fine")) continue;
+            MemberGuard g;
+            ExecutePhysical(c, ped, world::WHO_CJ, n, a["input"]);
+            continue;
+        }
+        ExecutePhysical(c, ped, world::WHO_CJ, n, a["input"]);
     }
     if(g_c.active && g_c.charId == c->id) g_c.lastAt = Now();
 }
@@ -1447,11 +1516,14 @@ void HandleFriendAct(const json::Value& m)
     game::Vec at{ (float)m["x"].num(), (float)m["y"].num(), (float)m["z"].num() };
     int model = m["model"].i();
     uintptr_t p2 = game::Player2();
-    uintptr_t ped = RealPed(model, at);
+    uintptr_t ped = 0;
+    if(Character* hc = world::Find(m["hostCharId"].i()))
+        if(uintptr_t hp = world::PedOf(*hc)) if(game::Model(hp) == model && game::Dist(game::Pos(hp), at) < 6.0f) ped = hp;
+    if(!ped) ped = RealPed(model, at);
     const std::string& n = m["name"].str();
     if(!ped || !p2) { TRACE("КООП", "действие друга %s: педа m=%d у (%.1f,%.1f,%.1f) не нашёл", n.c_str(), model, at.x, at.y, at.z); return; }
-    Character* c = world::Find(m["hostCharId"].i());
-    if(!c) c = world::FindByPed(ped);
+    Character* c = world::FindByPed(ped);
+    if(!c) c = world::Find(m["hostCharId"].i());
     MemberGuard scope;
     std::string res = ExecutePhysical(c, ped, world::WHO_FRIEND, n, m["input"]);
     TRACE("КООП", "действие друга %s %s на %s: %s", n.c_str(), m["input"].dump().c_str(), game::EntName(ped).c_str(), res.c_str());
@@ -1471,6 +1543,11 @@ static void HitFrameFor(Conv& cv, HitState& hs, uintptr_t speaker)
     std::vector<int> ids{ cv.charId }; for(int id : cv.group) ids.push_back(id);
     for(int id : ids)
     {
+        if(&cv == &g_fc && g_c.active)
+        {   // этот человек есть и в разговоре хоста — удар уже засчитан там (иначе двойная обида и два запроса)
+            bool dup = id == g_c.charId; for(int g : g_c.group) if(g == id) dup = true;
+            if(dup) continue;
+        }
         Character* m = world::Find(id); uintptr_t p = m ? world::PedOf(*m) : 0;
         if(!p) continue;
         if(CoopCopy(p)) continue;     // у друга копия: удары по ней считает хост (настоящий пед), иначе сработало бы дважды
@@ -1502,7 +1579,8 @@ static void HitFrameFor(Conv& cv, HitState& hs, uintptr_t speaker)
                 hs.cool[id] = tnow + 4.0;
                 bool main = id == cv.charId;
                 int hitter = byMe ? world::WHO_CJ : world::WHO_FRIEND;              // у каждого телефона «я» — WHO_CJ его мира
-                const char* hn = byMe ? world::W().playerNick.c_str() : WhoName(world::WHO_FRIEND);
+                std::string hns = byMe ? MyName() : (coopnet::GetRole() == coopnet::CLIENT ? world::W().playerNick : std::string(WhoName(world::WHO_FRIEND)));
+                const char* hn = hns.c_str();
                 TRACE("РАЗГОВОР", "удар по #%d %s (%s) во время разговора от %s: %.0f → %.0f", id, m->name.c_str(), main ? "собеседник" : "слушатель", hn, it->second, hp);
                 world::Remember(*m, std::string(hn) + (wpn >= 22 ? " ранил меня" : " ударил меня") + " посреди разговора");
                 world::ChangeRelation(*m, hitter, -10, -2, -15, 12, "ударил посреди разговора");
@@ -1526,16 +1604,17 @@ static void HitFrame()
 // Хост: разговор друга с настоящим педом заканчивается, когда друг отошёл или замолчал надолго — снять позы
 static void FriendConvFrame()
 {
+    if(coopnet::GetRole() == coopnet::HOST)
+    {   // имя друга для ИИ — его ник SA Coop (в SA Living у обоих «CJ»)
+        auto& W = world::W();
+        if(W.friendNick.empty() || W.friendNick == W.playerNick) W.friendNick = FriendName(coopnet::PeerNick());
+    }
     if(!g_fc.active) return;
     Character* c = world::Find(g_fc.charId);
     uintptr_t ped = c ? world::PedOf(*c) : 0, p2 = game::Player2();
     bool end = !ped || !p2 || coopnet::GetRole() != coopnet::HOST || Now() - g_fc.lastAt > 90 || game::Dist(game::Pos(ped), game::Pos(p2)) > 25;
     if(!end) return;
-    TRACE("РАЗГОВОР", "разговор друга с #%d закончен (отошёл/замолчал)", g_fc.charId);
-    auto release = [](uintptr_t p) { if(p && !game::Vehicle(p) && !game::IsScriptPed(p)) { int t = game::ActiveTaskType(p); if(t == 203 || t == 401 || t == 920 || t == 933) game::TaskWander(p); } };
-    release(ped);
-    for(int id : g_fc.group) if(Character* m = world::Find(id)) release(world::PedOf(*m));
-    g_fc = Conv();
+    EndFriendConversation();
 }
 
 // На CJ напал кто-то другой посреди разговора: собеседник не «договаривает», а реагирует делом.
@@ -1551,7 +1630,7 @@ void OnPlayerAttacked(uintptr_t attacker, const std::string& who, int weapon)
     g_attackedCool = now + 8;
     if(g_c.reqId > 0) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
     StopVoice();
-    std::string ev = "На " + world::W().playerNick + " прямо сейчас напал " + who + (weapon >= 22 ? " со стволом" : weapon > 0 ? " с оружием" : " с кулаками") +
+    std::string ev = "На " + MyName() + " прямо сейчас напал " + who + (weapon >= 22 ? " со стволом" : weapon > 0 ? " с оружием" : " с кулаками") +
                      ". Реагируй делом сразу: свой — вступись (attack target his_attacker), чужой — как сам решишь (убежать, звонить копам, стоять в стороне)";
     TRACE("РАЗГОВОР", "на CJ напал %s посреди разговора с #%d — событие собеседнику", who.c_str(), c->id);
     int cid = c->id;
@@ -1633,11 +1712,16 @@ static void AimFrame(double now)
 }
 
 // Хост: друг навёл ствол на копию — рефлекс настоящего педа против второго CJ
+static std::map<int, double> g_friendAimCool;
 void HandleFriendAimed(const json::Value& m)
 {
     uintptr_t p2 = game::Player2();
     uintptr_t ped = RealPed(m["model"].i(), game::Vec{ (float)m["x"].num(), (float)m["y"].num(), (float)m["z"].num() });
     if(!ped || !p2 || !game::Alive(ped) || game::Vehicle(ped) || game::IsScriptPed(ped)) { TRACE("КООП", "ствол друга: настоящего педа не нашёл"); return; }
+    double now = Now();
+    double& cool = g_friendAimCool[game::Ref(ped)];
+    if(now < cool) return;                                                   // одно «навёл ствол» на серию наведений
+    cool = now + 5.0;
     Character* c = world::FindByPed(ped);
     if(!c) c = world::Find(m["hostCharId"].i());
     AimReflex(c, ped, p2, world::WHO_FRIEND);

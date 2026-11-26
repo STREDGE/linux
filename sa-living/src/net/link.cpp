@@ -95,6 +95,7 @@ Role GetRole()
 
 bool Connected() { return GetRole() != NONE; }
 const char* PeerNick() { return g_api ? g_api->PeerNick() : ""; }
+const char* MyNick() { return g_api && g_api->MyNick ? g_api->MyNick() : ""; }
 
 bool Send(const json::Value& msg)
 {
