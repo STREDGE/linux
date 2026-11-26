@@ -580,7 +580,12 @@ namespace
         for(size_t i = 0; i < g_c.group.size();)
         {
             Character* m = world::Find(g_c.group[i]); uintptr_t mp = m ? world::PedOf(*m) : 0;
-            if(!mp || !game::Alive(mp) || game::Dist(game::Pos(mp), at) > 15.0f) g_c.group.erase(g_c.group.begin() + i); else ++i;
+            if(!mp || !game::Alive(mp) || game::Dist(game::Pos(mp), at) > 15.0f)
+            {   // выбыл из разговора — наша поза на нём не остаётся
+                if(mp && game::Alive(mp) && !game::Vehicle(mp)) { int t = game::ActiveTaskType(mp); if(t == 401 || t == 203 || t == 920 || t == 933) game::ClearTask(mp); }
+                g_c.group.erase(g_c.group.begin() + i);
+            }
+            else ++i;
         }
         struct N { uintptr_t p; float score; };
         std::vector<N> near;
@@ -785,7 +790,7 @@ void PttDown()
         c = Current();                                                  // массив персонажей мог сдвинуться
         if(c && !g_c.phone) ListenPose(c, world::PedOf(*c), 20000);    // слушает в своей позе (если не занят своим)
     }
-    for(int id : g_c.group) if(Character* m = world::Find(id)) ListenPose(m, world::PedOf(*m), 20000);
+    for(int id : g_c.group) if(Character* m = world::Find(id)) ListenPose(m, world::PedOf(*m), 12000);
     BeginListen();
 }
 
@@ -1107,33 +1112,48 @@ void HandleHostReply(const json::Value& rep)
 // ---------- кадр ----------
 // Удар во время разговора: оборвать ответ и голос, снять нашу позу (чтобы сработала настоящая реакция игры —
 // дать сдачи / убежать), запомнить, а через 0,8 с ИИ решает, что дальше. Раньше человек «договаривал» и стоял.
-static std::map<int, float> g_hpSeen; static int g_hpConv = 0;
+static std::map<int, float> g_hpSeen; static std::map<int, double> g_hitCool; static int g_hpConv = 0;
 static void HitFrame()
 {
     if(!g_c.active || g_c.phone) { g_hpSeen.clear(); g_hpConv = 0; return; }
-    if(g_hpConv != g_c.charId) { g_hpSeen.clear(); g_hpConv = g_c.charId; }
+    if(g_hpConv != g_c.charId) { g_hpSeen.clear(); g_hitCool.clear(); g_hpConv = g_c.charId; }
     uintptr_t pl = game::Player(), p2 = game::Player2();
     std::vector<int> ids{ g_c.charId }; for(int id : g_c.group) ids.push_back(id);
     for(int id : ids)
     {
         Character* m = world::Find(id); uintptr_t p = m ? world::PedOf(*m) : 0;
         if(!p) continue;
+        // Пед занят ответом игры (драка, бегство, падение) — наша поза снимается сразу: две анимации вперемешку
+        // давали кривые позы (тест 0.2.10, скриншот) и вылет в FrameUpdateCallBackWithVelocityExtractionSkinned.
+        {
+            int at = game::ActiveTaskType(p), st = game::SimplestTaskType(p);
+            bool busy = (st >= 1000 && st < 1100)                 // бьют / дерётся / стреляет
+                     || (st >= 700 && st < 800)                    // садится в машину / едет
+                     || st == 205 || st == 206                     // падает / встаёт
+                     || ((at == 401 || at == 203) && st == 900);   // наша поза «стоять», а он куда-то идёт (убегает)
+            if((at == 401 || at == 203 || at == 920) && busy)
+            { TRACE("РАЗГОВОР", "#%d занят своим (тело %d) — снимаю нашу позу %d", id, st, at); game::ClearTask(p); }
+        }
         float hp = game::Health(p);
         auto it = g_hpSeen.find(id);
         if(it != g_hpSeen.end() && hp < it->second - 0.5f)
         {
+            int at = game::ActiveTaskType(p);
+            if(at == 401 || at == 203 || at == 920) game::ClearTask(p);         // ранили кто угодно — поза долой
             int wpn = 0; uint32_t tm = 0; uintptr_t by = game::LastDamager(p, wpn, tm);
-            bool byCJ = by && (by == pl || (p2 && by == p2) || (game::Vehicle(pl) && by == game::Vehicle(pl)));
-            if(byCJ)
+            uint32_t now = game::TimeMs();
+            bool fresh = tm && now >= tm && now - tm < 600;                    // удар именно сейчас, а не старый «последний обидчик»
+            bool byCJ = fresh && by && (by == pl || (p2 && by == p2) || (game::Vehicle(pl) && by == game::Vehicle(pl)));
+            double tnow = Now();
+            if(byCJ && tnow >= g_hitCool[id])                                   // одна реакция на серию ударов (раньше — сотни за секунду)
             {
+                g_hitCool[id] = tnow + 4.0;
                 bool main = id == g_c.charId;
                 TRACE("РАЗГОВОР", "удар по #%d %s (%s) во время разговора: %.0f → %.0f", id, m->name.c_str(), main ? "собеседник" : "слушатель", it->second, hp);
                 world::Remember(*m, world::W().playerNick + (wpn >= 22 ? " ранил меня" : " ударил меня") + " посреди разговора");
                 world::ChangeRelation(*m, g_c.who, -10, -2, -15, 12, "ударил посреди разговора");
                 if(g_c.reqId > 0) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
                 StopVoice();
-                int at = game::ActiveTaskType(p);
-                if(at == 401 || at == 203 || at == 920) game::ClearTask(p);     // наша поза не мешает настоящей реакции
                 int cid = g_c.charId, who = g_c.who; std::string victim = main ? std::string("тебя") : m->name;
                 std::string ev = world::W().playerNick + (wpn >= 22 ? " ранил " : " ударил ") + victim + " (здоровье " + std::to_string((int)hp) + "). Реагируй делом сразу: дать сдачи, убежать, позвать своих или копов";
                 Later(0.8, [cid, who, ev]() { if(Character* cc = world::Find(cid)) if(g_c.active && g_c.charId == cid) React(*cc, who, ev, true); });
