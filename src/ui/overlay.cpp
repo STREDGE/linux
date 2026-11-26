@@ -316,10 +316,10 @@ namespace
     struct ModeInfo { net::Role role; const char* title; const char* sub; };
     const ModeInfo kModes[] = {
         { net::Role::Off,    "Выключено",       "Обычная игра" },
-        { net::Role::Echo,   "Тест в одиночку", "Двойник повторяет тебя" },
         { net::Role::Host,   "Создать игру",    "Твоя точка: друг входит по коду" },
         { net::Role::Client, "Подключиться",    "По коду от друга" },
-    };
+    };   // «Тест в одиночку» убран из меню (1.3.0, игрок: «больше не нужен»)
+    const int kModeCount = (int)(sizeof(kModes) / sizeof(kModes[0]));
 
     float StatusPill(ImVec2 rightTop, float h)
     {
@@ -446,7 +446,9 @@ namespace
                 char* p = text; while(*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') ++p;
                 char* e = p; while(*e && *e != '\n' && *e != '\r') ++e; *e = 0;
                 while(e > p && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
-                if(*p)
+                if(strstr(p, "SACOOP-") || strstr(p, "tskey-"))
+                    Toast("Это код приглашения, а не ник. Его вставляют выше — кнопкой «Вставить код»");
+                else if(*p)
                 {
                     snprintf(g_settings.net.nick, sizeof(g_settings.net.nick), "%s", p);
                     settings::Save(g_settings);
@@ -500,60 +502,6 @@ namespace
         {
             float cx = p.x + (text[0] ? TextSize(F_MONO, text).x : 0) + U(0.4f);
             DL()->AddRectFilled(ImVec2(cx, p.y + ts.y * 0.12f), ImVec2(cx + U(0.6f), p.y + ts.y * 0.9f), C(kGrove));
-        }
-    }
-
-    void Keypad(ImVec2 a, float width)
-    {
-        static const char* keys[12] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "←" };
-        float gap = U(1.2f), kw = (width - gap * 2) / 3, kh = U(9);
-        for(int i = 0; i < 12; ++i)
-        {
-            int r = i / 3, c = i % 3;
-            ImVec2 ka(a.x + c * (kw + gap), a.y + r * (kh + gap)), kb(ka.x + kw, ka.y + kh);
-            bool held = Held(ka, kb);
-            float dy = held ? U(0.4f) : 0;
-            ImVec2 pa(ka.x, ka.y + dy), pb(kb.x, kb.y + dy);
-            DL()->AddRectFilled(ImVec2(pa.x, pa.y + U(0.6f)), ImVec2(pb.x, pb.y + U(0.6f) - dy), C(kBlack, 0.4f), U(1.4f));
-            DL()->AddRectFilled(pa, pb, C(Rgb{ 27, 36, 49 }), U(1.4f));
-            DL()->AddRectFilled(pa, ImVec2(pb.x, pa.y + kh * 0.5f), C(kWhite, 0.03f), U(1.4f), ImDrawFlags_RoundCornersTop);
-            DL()->AddRect(pa, pb, C(held ? kGrove : kLine), U(1.4f), 0, U(0.3f));
-            bool fn = (i == 9 || i == 11);
-            FontId f = F_KEY;
-            ImVec2 ts = TextSize(f, keys[i]);
-            Text(f, ImVec2((pa.x + pb.x - ts.x) * 0.5f, (pa.y + pb.y - ts.y) * 0.5f), C(fn ? kGold : kInk), keys[i]);
-            ImVec2 at;
-            if(PressedIn(ka, kb, &at)) g_ripples.push_back({ at, g_now, ka, kb });
-            if(Clicked(ka, kb))
-            {
-                std::string k = keys[i];
-                if(i == 11) { if(!g_ip.empty()) g_ip.pop_back(); }
-                else if(i == 9)
-                {
-                    int dots = 0; for(char ch : g_ip) dots += ch == '.';
-                    if(!g_ip.empty() && g_ip.back() != '.' && dots < 3 && (dots > 0 || g_ip.size() <= 3)) g_ip += '.';
-                    else g_ipShakeAt = g_now;
-                }
-                else
-                {
-                    size_t dot = g_ip.rfind('.');
-                    std::string last = dot == std::string::npos ? g_ip : g_ip.substr(dot + 1);
-                    if(dot == std::string::npos) { if(g_ip.size() < 6) g_ip += k; else g_ipShakeAt = g_now; }   // ID точки (6 цифр)
-                    else if(last.size() < 3 && atoi((last + k).c_str()) <= 255) g_ip += k;
-                    else g_ipShakeAt = g_now;
-                }
-            }
-        }
-        // волны от нажатий (не выходят за клавишу)
-        for(size_t i = 0; i < g_ripples.size();)
-        {
-            float t = (float)(g_now - g_ripples[i].t) / 0.5f;
-            if(t >= 1) { g_ripples.erase(g_ripples.begin() + i); continue; }
-            ImVec2 ka = g_ripples[i].a, kb = g_ripples[i].b;
-            float maxR = fminf(kb.x - ka.x, kb.y - ka.y) * 0.5f;
-            ImVec2 c(fminf(fmaxf(g_ripples[i].c.x, ka.x + maxR), kb.x - maxR), fminf(fmaxf(g_ripples[i].c.y, ka.y + maxR), kb.y - maxR));
-            DL()->AddCircleFilled(c, maxR * EaseOut(t), C(kGrove, 0.35f * (1 - t)), 24);
-            ++i;
         }
     }
 
@@ -905,44 +853,37 @@ namespace
     {
         coop::Status st = coop::GetStatus();
         bool active = st.role == net::Role::Client && !st.pending;
-        float keysW = U(34);
-        float lw = pw - keysW - U(3);
-        bool codeIn = g_settings.net.tsKey[0] && g_ip.size() == 6;
-        Text(F_SMALL, ImVec2(px, y), C(codeIn ? kGrove : kGold), codeIn ? "КОД ВСТАВЛЕН · ТОЧКА ДРУГА, КЛЮЧ СОХРАНЁН" : "КОД ДРУГА (ИЛИ ID ТОЧКИ, 6 ЦИФР)"); float ly = y + U(3.8f);
-        IpReadout(ImVec2(px, ly), ImVec2(px + lw, ly + U(11)), g_ip.c_str(), true, false);
-        ly += U(11) + U(2.0f);
-        bool paste = false, clear = false;
-        const char* l1 = "Вставить"; const char* l2 = "Стереть";
-        float w1 = ChipWidth(l1), w2 = ChipWidth(l2);
-        Chip(ImVec2(px, ly), ImVec2(px + w1, ly + U(6.4f)), l1, &paste);
-        Chip(ImVec2(px + w1 + U(1.6f), ly), ImVec2(px + w1 + U(1.6f) + w2, ly + U(6.4f)), l2, &clear);
-        ly += U(6.4f) + U(1.6f);
-        ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
-        ly = TsStatusRow(ImVec2(px, ly), lw, active) + U(1.4f);
+        bool codeIn = g_settings.net.tsKey[0] && RoomCode(g_ip);
+        Text(F_SMALL, ImVec2(px, y), C(codeIn ? kGrove : kGold), codeIn ? "КОД ОТ ДРУГА ВСТАВЛЕН · НОМЕР ЕГО ТОЧКИ" : "КОД ОТ ДРУГА"); y += U(3.8f);
+        const char* pl = codeIn ? "Вставить другой" : "Вставить код";
+        float cw = ChipWidth(pl);
+        ImVec2 ra(px, y), rb(px + pw, y + U(11));
+        char shown[16] = "";
+        if(RoomCode(g_ip)) snprintf(shown, sizeof(shown), "%.3s %.3s", g_ip.c_str(), g_ip.c_str() + 3);
+        IpReadout(ra, ImVec2(rb.x - cw - U(2.4f), rb.y), shown, false, false);
+        bool paste = false;
+        Chip(ImVec2(rb.x - cw, y + U(2.2f)), ImVec2(rb.x, rb.y - U(2.2f)), pl, &paste);
+        y = rb.y + U(1.6f);
+        y = NickRow(ImVec2(px, y), pw) + U(1.6f);
+        y = TsStatusRow(ImVec2(px, y), pw, active) + U(1.6f);
         if(!active)
-            Text(F_SMALL, ImVec2(px, ly), C(kDim), codeIn ? "6 цифр — это номер точки друга, ключ из кода спрятан и сохранён. Жми «Подключиться» — аккаунт Tailscale не нужен."
-                                                          : "Скопируй код приглашения, который прислал друг (кнопка «Копировать» у него), и нажми «Вставить». Аккаунт Tailscale не нужен.", lw);
-        Keypad(ImVec2(px + pw - keysW, y), keysW);
+        {
+            const char* h = codeIn ? "Всё готово — жми «Подключиться». Аккаунт Tailscale не нужен: ключ из кода сохранён."
+                                   : "Друг жмёт у себя «Создать игру», потом «Копировать» и присылает код (SACOOP-…). Скопируй его и нажми «Вставить код». Аккаунт Tailscale не нужен.";
+            Text(F_SMALL, ImVec2(px, y), C(kDim), h, pw);
+        }
         if(paste)
         {
-            char text[512] = "", ip[32], id[8], key[128];
+            char text[512] = "", id[8], key[128];
             if(platform::ClipboardGetText(text, sizeof(text)) && ParseInvite(text, id, sizeof(id), key, sizeof(key)))
             {
                 g_ip = id;
                 SaveTsKey(key);
-                char t[200]; snprintf(t, sizeof(t), "Код вставлен: точка друга %s, ключ сохранён. Жми «Подключиться»", id); Toast(t);
+                char t[200]; snprintf(t, sizeof(t), "Код вставлен (точка друга %s). Жми «Подключиться»", id); Toast(t);
             }
-            else if(text[0])
-            {
-                std::string digits;
-                for(const char* c = text; *c; ++c) if(*c >= '0' && *c <= '9') digits += *c; else if(*c != ' ' && !digits.empty()) break;
-                if(platform::ExtractIPv4(text, ip, sizeof(ip))) { g_ip = ip; char t[96]; snprintf(t, sizeof(t), "Вставлено: %s", ip); Toast(t); }
-                else if(digits.size() == 6) { g_ip = digits; char t[96]; snprintf(t, sizeof(t), "Вставлен ID %s", digits.c_str()); Toast(t); }
-                else Toast("В буфере нет ID");
-            }
-            else Toast("В буфере пусто");
+            else if(!text[0]) Toast("В буфере пусто — скопируй код, который прислал друг");
+            else Toast("В буфере нет кода приглашения. Код начинается с SACOOP- — пусть друг нажмёт «Копировать» и пришлёт его");
         }
-        if(clear) g_ip.clear();
     }
 
     void FmtDate(time_t t, char* out, size_t len)
@@ -1038,7 +979,7 @@ namespace
         if(g_lobbyPage < 0) g_lobbyPage = 0;
         if(rows.empty())
         {
-            const char* e = "Сохранений пока нет. Нажми «Из файла телефона» или положи файлы .b в папку SA/SACoop/Сохранения.";
+            const char* e = "Новая игра: закрой это меню, в игре нажми «Начать игру», «Новая игра», дождись CJ и снова открой CO-OP — здесь появится «Текущая игра». Или выбери сохранение: «Из файла телефона».";
             Text(F_BODY, ImVec2(px, y), C(kDim), e, pw); y += TextSize(F_BODY, e, pw).y;
         }
         for(int k = g_lobbyPage * rowsFit; k < (int)rows.size() && k < (g_lobbyPage + 1) * rowsFit; ++k)
@@ -1127,8 +1068,8 @@ namespace
         // --- режимы слева ---
         {
             float gap = U(1.6f);
-            float ch = (bodyY1 - bodyY0 - gap * 3) / 4;
-            for(int i = 0; i < 4; ++i)
+            float ch = (bodyY1 - bodyY0 - gap * (kModeCount - 1)) / kModeCount;
+            for(int i = 0; i < kModeCount; ++i)
             {
                 float k = anim(0.06f * i);
                 const ModeInfo& m = kModes[i];
@@ -1233,7 +1174,7 @@ namespace
             float bw = TextSize(F_HEAD, label).x + U(12);
             ImVec2 ba(x1 - bw, y1 - barH + U(1) + dy), bb(x1, y1 + dy);
             const char* hint = lobby ? (g_sel == net::Role::Host ? "Выбери, во что играем, и нажми «Запуск»" : "Хост выбирает сохранение")
-                             : enabled ? "Выбери режим и нажми кнопку справа" : "Введи ID точки друга: 6 цифр";
+                             : enabled ? "Выбери режим и нажми кнопку справа" : "Вставь код от друга (кнопка «Вставить код»)";
             ImVec2 hs = TextSize(F_SMALL, hint);
             float hx = x0;
             if(g_sel == net::Role::Client && coop::CanSaveHostWorld())
@@ -1934,7 +1875,7 @@ void Open()
     g_settings = settings::Load();
     g_sel = coop::GetConfig().role;
     g_ip = coop::GetConfig().hostAddress;
-    if(!ValidIp(g_ip) && !RoomCode(g_ip)) g_ip = g_settings.net.relay[0] ? "" : "100.";
+    if(!RoomCode(g_ip)) g_ip.clear();   // теперь только код от друга (ID точки + ключ); адреса 100.x вручную не вводим
     g_ffKnob = g_settings.friendlyFire ? 1.0f : 0.0f;
     g_swKnob = g_settings.sharedWanted ? 1.0f : 0.0f;
     g_now = NowSec();

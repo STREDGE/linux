@@ -42,11 +42,14 @@ Data Load()
     char role[16];
     cfg->GetString(role, sizeof(role), "Role", "off", "Network"); // off | echo | host | client
     d.net.role = RoleFromString(role);
+    if(d.net.role == net::Role::Echo) d.net.role = net::Role::Off;   // «Тест в одиночку» убран из меню (1.3.0)
     cfg->GetString(d.net.hostAddress, sizeof(d.net.hostAddress), "HostAddress", "100.64.0.1", "Network");
     d.net.port = (uint16_t)cfg->GetInt("Port", 7777, "Network");
     char model[net::kNickLen] = "Player";
     platform::DeviceModel(model, sizeof(model));
     cfg->GetString(d.net.nick, sizeof(d.net.nick), "Nick", model, "Network");
+    if(strstr(d.net.nick, "SACOOP-") || strstr(d.net.nick, "tskey"))   // в ник по ошибке вставили код приглашения (1.2.1)
+        snprintf(d.net.nick, sizeof(d.net.nick), "%s", model);
     cfg->GetString(d.net.relay, sizeof(d.net.relay), "Relay", "", "Network");   // сервер-посредник (адрес:порт), пусто — Tailscale
     // Свой ID точки: 6 цифр, создаётся один раз (друг вводит его, чтобы подключиться)
     cfg->GetString(d.net.myId, sizeof(d.net.myId), "MyId", "", "Network");

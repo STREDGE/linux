@@ -99,7 +99,7 @@ namespace voice {
 }
 namespace platform {
     bool FindTailscaleIPv4(char* o, size_t l) { snprintf(o, l, "100.101.24.7"); return true; }
-    bool ClipboardGetText(char* o, size_t l) { snprintf(o, l, "вот адрес 100.87.12.40"); return true; }
+    bool ClipboardGetText(char* o, size_t l) { snprintf(o, l, "держи SACOOP-428960-tskey-auth-kPREVIEW0CNTRL-0000000000000000000000"); return true; }
     bool ClipboardSetText(const char*) { return true; }
     bool ExtractIPv4(const char*, char* o, size_t l) { snprintf(o, l, "100.87.12.40"); return true; }
     bool DeviceModel(char* o, size_t l) { snprintf(o, l, "SM-X710"); return true; }
@@ -216,18 +216,18 @@ int main(int argc, char** argv)
 
     // карточки режимов: x0=3%W, ширина 34%W; тело от y0+12u+2.4u до H-4u-11u-2.4u
     float u = H / 100.0f, bodyY0 = 4 * u + 12 * u + 2.4f * u, bodyY1 = H - 4 * u - 11 * u - 2.4f * u;
-    float ch = (bodyY1 - bodyY0 - 1.6f * u * 3) / 4, cx = W * 0.03f + W * 0.17f;
+    float ch = (bodyY1 - bodyY0 - 1.6f * u * 2) / 3, cx = W * 0.03f + W * 0.17f;   // 3 карточки (без «Теста в одиночку»)
     auto card = [&](int i) { return bodyY0 + i * (ch + 1.6f * u) + ch * 0.5f; };
-    Tap(cx, card(3)); Frames(0.3); Save("join.ppm");
+    Tap(cx, card(2)); Frames(0.3); Save("join.ppm");
+    Tap(W * 0.896f, H * 0.307f); Frames(0.6); Save("join_code.ppm");   // «Вставить код»
     Tap(cx, card(0)); Frames(0.9); Save("off.ppm");
-    Tap(cx, card(1)); Frames(0.9); Save("solo.ppm");
-    Tap(cx, card(2)); Frames(0.9); Save("host.ppm");
+    Tap(cx, card(1)); Frames(0.9); Save("host.ppm");
     Tap(W * 0.803f, H * 0.307f); Frames(0.6); Save("host_keytoast.ppm");   // «Ключ для друга»: подсказка в две строки
     coop::g_lobbyDemo = true; g_connected = true; Frames(0.5);
     Tap(W * 0.55f, H * 0.52f); Frames(0.3); Save("lobby_host.ppm");
-    g_role = net::Role::Client; Tap(cx, card(3)); Frames(0.6); Save("lobby_client.ppm");
+    g_role = net::Role::Client; Tap(cx, card(2)); Frames(0.6); Save("lobby_client.ppm");
     coop::g_lobbyDemo = false; g_connected = false; g_role = net::Role::Host;
-    Tap(cx, card(2)); Frames(0.6);
+    Tap(cx, card(1)); Frames(0.6);
     Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.6); Save("weapons.ppm");   // «Оружие» у хоста
     Tap(W * 0.03f + 5 * u, H - 4 * u - 5 * u); Frames(0.4);
     coop::g_joinDemo = true; Frames(0.6); Save("joining.ppm"); coop::g_joinDemo = false;
