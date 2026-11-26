@@ -519,6 +519,26 @@ void Surrender()
 {
     if(g_st != ST_NONE) return;
     if(game::Wanted() == 0) { talk::Notify("Тебя никто не ищет"); return; }
+    uintptr_t pl = game::Player(); if(!pl) return;
+    if(!game::OnMission() && !game::CutsceneRunning() && game::AreaCode(pl) == 0 && !FindCop(45.0f))
+    {   // Копов рядом нет: игровой «Busted» тут не годится (появлялся коп — и всё). Вызываем пешего копа своего
+        // города в 15–20 м, он подходит — дальше обычный сценарий ареста.
+        game::Vec p = game::Pos(pl);
+        int model = p.x < -1000 ? 281 : (p.y > 500 ? 282 : 280);       // SFPD / LVPD / LAPD
+        float a = game::Heading(pl) + 3.1416f;                           // за спиной
+        game::Vec at{ p.x - sinf(a) * 17.0f, p.y + cosf(a) * 17.0f, p.z };
+        at.z = game::GroundZ(at.x, at.y, p.z + 2.0f) + 1.0f;
+        WHERE("полиция: вызов копа на сдачу");
+        if(uintptr_t cop = game::SpawnPed(game::PT_COP, model, at))
+        {
+            game::GiveWeapon(cop, 22, 60); game::SetCurrentWeapon(cop, 22);
+            TRACE("АРЕСТ", "сдача без копов: вызван коп P#%d (модель %d)", game::Ref(cop), model);
+            talk::Notify("Ты сдаёшься — к тебе идёт полицейский");
+            StartArrest(cop);
+            return;
+        }
+        LOG_ERROR("Сдача: коп не создался — обычный «Busted»");
+    }
     StartArrest(0);
 }
 

@@ -24,7 +24,8 @@ namespace settings
         float talkX = 0.80f, talkY = 0.40f, talkS = 1.0f;     // кнопка «Говорить»
         float phoneX = 0.80f, phoneY = 0.22f, phoneS = 1.0f;  // кнопка «Телефон»
         int   engine = 0;                   // речь: 0 — своя (GigaAM + xVibe, без Google), 1 — Google (Android)
-        int   forgetDays = 7;               // неважных персонажей забывать через N игровых дней
+        int   forgetDays = 7;
+        int   voiceLoud = 2;                // громкость голосов: 0 тише, 1 обычно, 2 громче, 3 очень громко               // неважных персонажей забывать через N игровых дней
         // Джарвис
         bool  jarvis = true;
         bool  jarvisButton = true;          // кнопка на экране (ещё есть пункт в меню CLEO)

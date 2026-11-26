@@ -63,7 +63,8 @@ namespace speech
     bool TtsReady();
     // Фраза в очередь. voiceKey — из Voices(); id придёт в PollSpoken, когда фраза отзвучала (или сорвалась).
     void Speak(const std::string& text, const std::string& voiceKey, float pitch, float speed, const std::string& id);
-    void StopSpeaking();                           // замолчать и очистить очередь
+    void StopSpeaking();
+    void SetLoudness(int level);                   // 0 тише, 1 обычно, 2 громче, 3 очень громко                           // замолчать и очистить очередь
     bool Speaking();                               // что-то синтезируется или звучит
     bool PollSpoken(std::string& id);
 

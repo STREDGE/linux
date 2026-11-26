@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <math.h>
+#include <algorithm>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -212,6 +213,7 @@ namespace
     std::thread g_asrThread, g_ttsThread;
     bool g_threads = false;
     std::mutex g_playMx;                    // запуск звука и «замолчи» — по очереди (берётся раньше g_ttsMx и g_mx)
+    std::atomic<int> g_loud{ 2 };           // громкость голосов 0..3
     std::atomic<int> g_gen{ 0 };            // растёт при StopSpeaking — старые фразы бросаем
     std::atomic<int> g_pending{ 0 };        // фраз в очереди / звучит
     std::atomic<uint64_t> g_seq{ 0 };
@@ -298,6 +300,15 @@ namespace
                 }
                 { std::lock_guard<std::mutex> l(g_mx); g_st.lastRtf = len > 0 ? (float)(dt / len) : 0; g_playing["x" + std::to_string(j.seq)] = { j.gen, j.id }; }
                 LOG_INFO("Речь: озвучено %.1f с звука за %.2f с (x%.2f), голос %s", len, dt, len > 0 ? dt / len : 0.0, j.voice.c_str());
+                // Громкость: голос xVibe выходит тихим (пик ~0,3). Выравниваем пик и мягко поджимаем (tanh) —
+                // тихие слоги становятся громче, без хрипа. Уровень — из настроек («Громкость голосов»).
+                {
+                    float peak = 1e-4f; for(float v : all) peak = std::max(peak, fabsf(v));
+                    static const float kDrive[] = { 1.0f, 1.6f, 2.4f, 3.4f };
+                    float drive = kDrive[std::min(3, std::max(0, g_loud.load()))];
+                    float norm = 0.95f / peak, k = tanhf(drive);
+                    for(float& v : all) v = tanhf(v * norm * drive) / k * (g_loud.load() == 0 ? 0.7f : 0.98f);
+                }
                 // мягкий вход и выход, чтобы не щёлкало
                 int fade = 24000 / 100;
                 for(int i = 0; i < fade && i < (int)all.size(); ++i) { all[i] *= (float)i / fade; all[all.size() - 1 - i] *= (float)i / fade; }
@@ -648,6 +659,8 @@ void StopSpeaking()
     { std::lock_guard<std::mutex> l(g_mx); g_playing.clear(); }
     bridge::PlayStop();
 }
+
+void SetLoudness(int level) { g_loud = level; }
 
 bool Speaking() { return g_pending.load() > 0; }
 bool PollSpoken(std::string& id) { std::lock_guard<std::mutex> l(g_mx); if(g_spoken.empty()) return false; id = std::move(g_spoken.front()); g_spoken.pop_front(); return true; }

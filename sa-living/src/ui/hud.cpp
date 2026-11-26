@@ -358,6 +358,11 @@ namespace
         int ne = Chips(y, x0, x1, "Речь (распознавание и голоса)", engines, 2, s.engine);
         if(ne != s.engine) { s.engine = ne; if(ne == 1) bridge::TtsInit(s.lang.c_str()); }
         Toggle(y, x0, x1, "Голоса педов", s.voices);
+        {
+            static const char* loud[] = { "Тише", "Обычно", "Громче", "Очень громко" };
+            int nl = Chips(y, x0, x1, "Громкость голосов", loud, 4, s.voiceLoud);
+            if(nl != s.voiceLoud) { s.voiceLoud = nl; speech::SetLoudness(nl); settings::Save(); }
+        }
         Toggle(y, x0, x1, "Субтитры", s.subtitles);
         Tx(F_SMALL, ImVec2(x0, y), C(kGold), "ГОЛОСА"); y += U(4);
         auto vs = speech::Voices();

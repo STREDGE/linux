@@ -34,6 +34,7 @@ void Load()
     d.phoneX = cfg->GetInt("PhoneX", 8000, "Layout") / 10000.0f; d.phoneY = cfg->GetInt("PhoneY", 2200, "Layout") / 10000.0f;
     d.phoneS = cfg->GetInt("PhoneScale", 100, "Layout") / 100.0f;
     d.engine     = cfg->GetInt("SpeechEngine", 0, "AI");
+    d.voiceLoud  = cfg->GetInt("VoiceLoudness", 2, "AI");
     d.forgetDays = cfg->GetInt("ForgetDays", 7, "AI");
     d.jarvis        = cfg->GetBool("Enabled", true, "Jarvis");
     d.jarvisButton  = cfg->GetBool("Button", true, "Jarvis");
@@ -58,6 +59,7 @@ void Save()
     #define SETS(k, v, s) e = cfg->Bind(k, "", s); e->SetString((v).c_str()); delete e
     SETB("Enabled", d.enabled, "General");
     SETS("ApiKey", d.key, "AI"); SETS("Model", d.model, "AI"); SETS("Effort", d.effort, "AI");
+    SETI("VoiceLoudness", d.voiceLoud, "AI");
     SETB("Voices", d.voices, "AI"); SETB("Subtitles", d.subtitles, "AI"); SETS("Language", d.lang, "AI");
     SETI("Initiative", d.initiative, "AI"); SETI("DailyLimit", d.dailyLimit, "AI");
     SETB("FriendUsesMyKey", d.shareKeyWithFriend, "AI"); SETB("Director", d.director, "AI");

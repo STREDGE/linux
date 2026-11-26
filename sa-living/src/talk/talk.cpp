@@ -102,20 +102,30 @@ namespace
             int money = game::Money();
             if(money > 20000) s += " Выглядит очень при деньгах."; else if(money > 3000) s += " Похоже, при деньгах.";
             // кто рядом
-            int same = 0, cops = 0, people = 0;
+            // Свидетели — только те, кто реально рядом (до 12 м) и не сидит в машине: прохожие в 25 м
+            // ничего не слышат, а коп «при свидетелях» отказывался от любой взятки (тест 0.2.7).
+            int same = 0, cops = 0, people = 0, far = 0;
             game::Vec me = game::Pos(ped);
+            uintptr_t myCar = game::Vehicle(ped);
+            bool together = myCar && myCar == game::Vehicle(pl);
             game::ForEachPed([&](uintptr_t p) {
                 if(p == ped || game::IsPlayer(p) || !game::Alive(p)) return;
-                if(game::Dist(game::Pos(p), me) > 25) return;
+                float d = game::Dist(game::Pos(p), me);
+                if(d > 30) return;
+                if(d > 12 || game::Vehicle(p)) { far++; return; }
                 int t = game::PedType(p);
                 if(t == game::PT_COP) cops++;
                 else if(world::FactionOfPedType(t) == c.faction && c.faction != world::F_CIVIL) same++;
                 else people++;
             });
-            if(same) s += Fmt(" Рядом твоих (%s): %d.", world::FactionName(c.faction), same);
-            if(cops) s += Fmt(" Рядом полицейских: %d.", cops);
-            if(people) s += Fmt(" Рядом посторонних: %d.", people);
-            if(!same && !cops && !people) s += " Свидетелей вокруг нет.";
+            if(together) s += " Вы ВДВОЁМ в машине — вас никто не слышит и не видит.";
+            else
+            {
+                if(same) s += Fmt(" Рядом (слышат вас) твоих (%s): %d.", world::FactionName(c.faction), same);
+                if(cops) s += Fmt(" Рядом (слышат вас) полицейских: %d.", cops);
+                if(people) s += Fmt(" Рядом (слышат вас) посторонних: %d.", people);
+                if(!same && !cops && !people) s += far ? Fmt(" Рядом никого — люди только вдалеке (%d), разговор никто не слышит.", far) : " Свидетелей вокруг нет.";
+            }
         }
         if(g_c.active && g_c.charId == c.id && !g_c.group.empty())
         {
@@ -195,6 +205,50 @@ namespace
 
     // ---------- озвучка по фразам ----------
     void SubAppend(Character* c, const std::string& delta);
+
+    // Поза собеседника на время разговора (раньше все стояли «смирно» — TaskStand):
+    //  слушает: коп — держит на прицеле, если игрок в розыске, иначе полицейская стойка; бандит/барыга — уличная стойка;
+    //           женщина, пожилой — свои стойки; остальные — обычная;
+    //  говорит: жестикулирует (IDLE_chat) по длине фразы.
+    // Не трогаем, если пед занят своим (идёт за CJ, бежит, дерётся, целится), сидит в машине или он из миссии.
+    bool CanPose(uintptr_t ped)
+    {
+        if(!ped || !game::Alive(ped) || game::Vehicle(ped) || game::IsScriptPed(ped)) return false;
+        int at = game::ActiveTaskType(ped);
+        return at == -1 || at == 203 || at == 912 || at == 401 || at == 920;   // нет задачи / стоит / гуляет / анимация / поворот
+    }
+    void FaceCJ(uintptr_t ped)
+    {
+        game::Vec a = game::Pos(ped), b = game::Pos(game::Player());
+        game::SetHeading(ped, atan2f(-(b.x - a.x), b.y - a.y));
+    }
+    void ListenPose(Character* c, uintptr_t ped, int ms)
+    {
+        if(!CanPose(ped)) return;
+        FaceCJ(ped);
+        int t = game::PedType(ped);
+        if(t == game::PT_COP)
+        {
+            if(game::Wanted() > 0) { game::TaskAimAt(ped, game::Player(), ms); return; }        // в розыске — на прицеле
+            if(game::TaskAnim(ped, "Coplook_loop", "COP_AMBIENT", true, ms)) return;
+            game::TaskAnim(ped, "IDLE_stance", "ped", true, ms); return;
+        }
+        if(game::IsGang(t) || t == game::PT_DEALER || t == game::PT_CRIMINAL) { if(game::TaskAnim(ped, "Idle_Gang1", "ped", true, ms)) return; }
+        else if(c && c->female) { if(game::TaskAnim(ped, "woman_idlestance", "ped", true, ms)) return; }
+        else if(c && c->age >= 55) { if(game::TaskAnim(ped, "idlestance_old", "ped", true, ms)) return; }
+        if(!game::TaskAnim(ped, "IDLE_stance", "ped", true, ms)) game::TaskStand(ped, ms);
+    }
+    void TalkPose(Character* c, uintptr_t ped, const std::string& text)
+    {
+        if(!CanPose(ped) || game::ActiveTaskType(ped) == 933) return;
+        int ms = 1200 + (int)text.size() * 45;                         // примерно по длине фразы (байты UTF-8 ≈ 2 на букву)
+        if(ms > 9000) ms = 9000;
+        FaceCJ(ped);
+        if(game::PedType(ped) == game::PT_COP && game::Wanted() > 0) return;   // коп с пистолетом наготове не машет руками
+        game::TaskAnim(ped, "IDLE_chat", "ped", true, ms);
+        (void)c;
+    }
+
     // Фраза — это ремарка/рассуждение, а не прямая речь? («Чен замирает и оглядывается…», «CJ — брат по Grove?»)
     // Такое модель иногда пишет в ответ — вслух и в субтитры не пускаем.
     bool IsNarration(Character* c, const std::string& raw)
@@ -215,6 +269,7 @@ namespace
         if(IsNarration(c, text)) { TRACE("РЕМАРКА", "не озвучено (ремарка/рассуждение): %s", text.c_str()); return; }
         SubAppend(c, text);
         SpeakAs(c, c ? c->name : "", text);
+        if(c && !g_c.phone) TalkPose(c, world::PedOf(*c), text);
     }
 
     size_t SentenceEnd(const std::string& s)
@@ -707,17 +762,9 @@ void PttDown()
     if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
     if(Character* c = Current())
     {
-        uintptr_t ped = world::PedOf(*c);
-        int at = ped ? game::ActiveTaskType(ped) : -1;
-        bool idle = at == -1 || at == 203 || at == 912 || at == 401 || at == 920;   // нет задачи / стоит / гуляет / жест / поворот
-        if(ped && idle && !g_c.phone && !game::Vehicle(ped) && !game::IsScriptPed(ped))
-        {   // стоять и смотреть на CJ (если он идёт за CJ, бежит или целится — не сбиваем: раньше «пошли со мной» ломалось) (поворот задаём сразу — задача «повернуться» перезаписалась бы стоянием)
-            game::Vec a = game::Pos(ped), b = game::Pos(game::Player());
-            game::SetHeading(ped, atan2f(-(b.x - a.x), b.y - a.y));
-            game::TaskStand(ped, 15000);
-        }
+        if(!g_c.phone) ListenPose(c, world::PedOf(*c), 20000);        // слушает в своей позе (если не занят своим)
     }
-    for(int id : g_c.group) if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); int mt = mp ? game::ActiveTaskType(mp) : 0; if(mp && !game::Vehicle(mp) && (mt == -1 || mt == 203 || mt == 912)) game::TaskStand(mp, 15000); }
+    for(int id : g_c.group) if(Character* m = world::Find(id)) ListenPose(m, world::PedOf(*m), 20000);
     BeginListen();
 }
 

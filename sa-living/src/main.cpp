@@ -30,7 +30,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.2.7, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.2.8, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
@@ -98,6 +98,7 @@ static void InitSpeechOnce()
     std::string base = world::BaseDir();
     const char* data = aml->GetDataPath();
     speech::Init(base + "/speech", std::string(data ? data : base.c_str()) + "/saliving_lib");
+    speech::SetLoudness(settings::Get().voiceLoud);
     std::vector<std::string> dirs;
     const char* root = aml->GetInternalPath();
     std::string r = root && root[0] ? root : "/storage/emulated/0";
