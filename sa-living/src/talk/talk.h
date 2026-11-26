@@ -50,7 +50,7 @@ namespace talk
     bool React(world::Character& c, int who, const std::string& eventText, bool important);
 
     // Субтитры
-    struct Sub { std::string who, text; double until; bool player; int charId; };
+    struct Sub { std::string who, text; double until; bool player; int charId; double from = 0; };   // from — когда показать (длинная речь — по частям)
     const std::deque<Sub>& Subs();
     void Say(const std::string& who, const std::string& text, bool player, int charId, float pitch, float rate, bool voice);
 

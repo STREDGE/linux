@@ -247,7 +247,8 @@ namespace
         json::Value sys = json::Value::Object(); sys["type"] = "text";
         sys["text"] = "Ты — судья округа Лос-Сантос (начало 90-х, GTA San Andreas). Ведёшь короткое заседание по делу Карла Джонсона. "
                       "Решай реалистично: улики, тяжесть, свидетели, речь обвиняемого, работа адвоката, прошлые сроки. Говори по-русски, сухо и по делу. "
-                      "Срок — в игровых днях (1–30), штраф — в долларах.";
+                      "Срок — в игровых днях (1–30), штраф — в долларах. "
+                      "speech — 2–3 коротких предложения (её озвучивают вслух), без перечисления статей.";
         r.system = json::Value::Array(); r.system.push(sys);
         std::string facts = Fmt("Статьи: %s. Улики: %d/100. Интерес полиции к нему: %d/100. Розыск при задержании: %d зв. Раньше сидел: %d дн. "
                                 "Есть ли адвокат/связи: %s. Речь обвиняемого: %s",
@@ -546,19 +547,19 @@ void Frame()
         case ST_CUFF:
             if(InStage() > 3.0)
             {
+                game::ClearTask(pl);                  // опустить руки: дальше игрока ведут к машине
                 g_car = game::NearestVehicle(game::Pos(pl), 40.0f);
-                if(g_car)
-                {
-                    game::TaskEnterCar(cop, g_car, true);
-                    game::TaskEnterCar(pl, g_car, false, 1);
-                }
+                if(!g_car) { BeginStation(); break; }  // машины нет — сразу в участок (не стоять с поднятыми руками)
+                game::TaskEnterCar(cop, g_car, true);
+                game::TaskEnterCar(pl, g_car, false, 1);
                 SetStage(ST_ESCORT);
             }
             break;
         case ST_ESCORT:
             if(!g_car || InStage() > 16 || (game::Vehicle(pl) && game::Vehicle(cop)))
             {
-                if(game::Vehicle(cop) && game::Vehicle(pl)) game::TaskDriveTo(cop, game::Vehicle(cop), NearestStation(), 14.0f);
+                if(!game::Vehicle(pl)) { game::ClearTask(pl); BeginStation(); break; }   // не сел — не держим игрока, сразу участок
+                if(game::Vehicle(cop)) game::TaskDriveTo(cop, game::Vehicle(cop), NearestStation(), 14.0f);
                 SetStage(ST_RIDE);
                 if(cop) { world::Character& c = world::Promote(cop); talk::Notify(Fmt("В машине с копом %s. Можно попробовать договориться.", c.name.c_str())); }
             }

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "game/game.h"
+#include "jarvis/script.h"
 #include "net/link.h"
 #include "platform/bridge.h"
 #include "settings.h"
@@ -197,6 +198,9 @@ namespace
         return s.size() > 160 ? s.size() : std::string::npos;
     }
 
+    int Cps(const std::string& s) { int n = 0; for(unsigned char ch : s) if((ch & 0xC0) != 0x80) ++n; return n; }   // символов (не байтов)
+    double SubDur(const std::string& s) { double d = 2.5 + Cps(s) / 14.0; return d < 3 ? 3 : d > 10 ? 10 : d; }
+
     void SubAppend(Character* c, const std::string& delta)
     {
         if(!settings::Get().subtitles) return;
@@ -206,8 +210,8 @@ namespace
             g_subs.push_back(s);
         }
         g_subs.back().text += delta;
-        g_subs.back().until = Now() + 6 + g_subs.back().text.size() * 0.04;
-        while(g_subs.size() > 4) g_subs.pop_front();
+        g_subs.back().until = Now() + SubDur(g_subs.back().text);
+        while(g_subs.size() > 12) g_subs.pop_front();
     }
 
     // ---------- исполнение «мировых» инструментов (у хоста / в одиночке) ----------
@@ -359,9 +363,12 @@ namespace
         req.system = json::Value::Array(); req.system.push(rules); req.system.push(card);
         req.tools = Tools();
         req.messages = dialog;
-        req.maxTokens = 700;
+        req.maxTokens = 1200;
         req.tag = "разговор";
-        if(important || c.faction == world::F_POLICE || c.rank >= 2) req.effort = settings::Get().effort == "low" ? "medium" : settings::Get().effort;
+        // Живой разговор: ответ нужен за секунду-две. «Быстро» — без размышления; «Умнее» — с коротким размышлением.
+        req.effort = "low";
+        req.noThinking = settings::Get().effort != "medium";
+        (void)important;
 
         int charId = c.id;
         std::string userTurn = turn;
@@ -533,8 +540,24 @@ bool PopNotify(std::string& out) { if(g_notes.empty()) return false; out = g_not
 
 void Say(const std::string& who, const std::string& text, bool player, int charId, float pitch, float rate, bool voice)
 {
-    Sub s; s.who = who; s.text = text; s.player = player; s.charId = charId; s.until = Now() + 5 + text.size() * 0.04;
-    g_subs.push_back(s); while(g_subs.size() > 4) g_subs.pop_front();
+    // длинную речь (судья) показываем по частям, по предложениям, одна за другой — а не стеной текста на минуту
+    std::vector<std::string> parts; std::string cur;
+    for(size_t i = 0; i < text.size(); ++i)
+    {
+        cur += text[i];
+        bool end = (text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n') && (i + 1 >= text.size() || text[i + 1] == ' ' || text[i + 1] == '\n');
+        if((end && Cps(cur) >= 60) || Cps(cur) >= 160) { while(!cur.empty() && (cur[0] == ' ' || cur[0] == '\n')) cur.erase(0, 1); if(!cur.empty()) parts.push_back(cur); cur.clear(); }
+    }
+    while(!cur.empty() && (cur[0] == ' ' || cur[0] == '\n')) cur.erase(0, 1);
+    if(!cur.empty()) parts.push_back(cur);
+    double t = Now();
+    for(auto& p : parts)
+    {
+        Sub s; s.who = who; s.text = p; s.player = player; s.charId = charId; s.from = t; s.until = t + SubDur(p);
+        t = s.until;
+        g_subs.push_back(s);
+    }
+    while(g_subs.size() > 12) g_subs.pop_front();
     (void)pitch; (void)rate;
     if(voice) SpeakAs(world::Find(charId), who, text);
 }
@@ -727,15 +750,15 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
         if(!needPed()) return "ты не рядом";
         struct G { const char* k; const char* block; const char* anim; const char* fbBlock; const char* fbAnim; bool loop; int ms; };
         static const G kG[] = {
-            { "talk", "GANGS", "prtial_gngtlkA", "ped", "IDLE_chat", false, 0 }, { "agree", "COP_AMBIENT", "Coplook_nod", "ped", "IDLE_chat", false, 0 },
+            { "talk", "ped", "IDLE_chat", nullptr, nullptr, false, 0 }, { "agree", "COP_AMBIENT", "Coplook_nod", "ped", "IDLE_chat", false, 0 },
             { "disagree", "MISC", "plyr_shkhead", "ped", "endchat_02", false, 0 }, { "angry", "RIOT", "RIOT_ANGRY", "ped", "IDLE_chat", false, 0 },
             { "threaten", "RIOT", "RIOT_challenge", "ped", "fucku", false, 0 }, { "scared", "ped", "handscower", nullptr, nullptr, true, 3000 },
-            { "laugh", "GANGS", "prtial_gngtlkE", "ped", "endchat_01", false, 0 }, { "wave", "ON_LOOKERS", "wave_loop", "ped", "endchat_03", true, 2500 },
+            { "laugh", "ped", "endchat_01", nullptr, nullptr, false, 0 }, { "wave", "ON_LOOKERS", "wave_loop", "ped", "endchat_03", true, 2500 },
             { "shrug", "ped", "XPRESSscratch", nullptr, nullptr, false, 0 }, { "point", "ON_LOOKERS", "point_loop", "ped", "IDLE_chat", true, 2500 },
             { "cross_arms", "COP_AMBIENT", "Coplook_loop", "ped", "IDLE_stance", true, 5000 }, { "fuck_you", "ped", "fucku", nullptr, nullptr, false, 0 },
             { "hands_up", "ped", "handsup", nullptr, nullptr, false, 0 }, { "cower", "ped", "cower", nullptr, nullptr, true, 4000 },
             { "think", "COP_AMBIENT", "Coplook_think", "ped", "IDLE_tired", false, 0 }, { "celebrate", "ON_LOOKERS", "shout_01", "ped", "IDLE_chat", false, 0 },
-            { "smoke", "GANGS", "smkcig_prtl", "ped", "IDLE_stance", false, 0 }, { "sit", "BEACH", "ParkSit_M_loop", "ped", "SEAT_idle", true, 15000 },
+            { "smoke", "ped", "IDLE_stance", nullptr, nullptr, false, 0 }, { "sit", "ped", "IDLE_tired", nullptr, nullptr, false, 0 },   // prtial_* — анимации только для верха тела (ноги «ломались»); сидеть на улице не на чем
             { "dance", "DANCING", "dance_loop", "ped", "IDLE_chat", true, 8000 },
         };
         const std::string& k = in["kind"].str();
@@ -927,6 +950,40 @@ void HandleHostReply(const json::Value& rep)
 }
 
 // ---------- кадр ----------
+// Игрок навёл ствол на собеседника: пед замечает сразу (рефлекс без ИИ), а ИИ потом решает, что сказать
+static double g_aimCheck = 0; static bool g_aimed = false;
+static void AimFrame(double now)
+{
+    if(now < g_aimCheck) return;
+    g_aimCheck = now + 0.2;
+    bool aimed = false;
+    uintptr_t ped = (g_c.active && !g_c.phone) ? CurrentPed() : 0, pl = game::Player();
+    if(ped && pl && script::Ready() && game::Alive(ped))
+    {
+        std::vector<script::Arg> a{ script::Arg::I(0), script::Arg::I(game::Ref(ped)) };
+        bool f = false;
+        if(script::Run(0x0457, a, &f)) aimed = f;          // IS_PLAYER_TARGETTING_CHAR
+    }
+    if(aimed && !g_aimed)
+    {
+        Character* c = Current();
+        int courage = c ? c->tr.courage : 50;
+        bool gang = game::IsGang(game::PedType(ped)) || game::PedType(ped) == game::PT_COP;
+        const char* what;
+        if(gang && courage >= 55) { game::TaskAimAt(ped, pl, 8000); what = "навёл ствол в ответ"; }
+        else if(courage < 35)     { game::TaskFlee(ped, pl, 60.0f, 20000); what = "бросился бежать"; }
+        else                      { game::TaskAnim(ped, "handsup", "ped", false, 6000, true); what = "поднял руки"; }
+        LOG_INFO("Ствол на #%d: %s", c ? c->id : 0, what);
+        if(c)
+        {
+            if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
+            world::ChangeRelation(*c, g_c.who, 0, 0, 0, 8, "");
+            React(*c, g_c.who, std::string("CJ навёл на тебя оружие. Ты уже ") + what + ". Скажи коротко, как реагируешь", true);
+        }
+    }
+    g_aimed = aimed;
+}
+
 void Frame()
 {
     // распознавание
@@ -960,6 +1017,8 @@ void Frame()
         if(g_captureActive && g_partial.empty()) { auto fn = std::move(g_capture); g_capture = nullptr; g_captureActive = false; if(fn) fn(""); }
         else if(!g_partial.empty()) OnPlayerSaid(g_partial);
     }
+
+    AimFrame(Now());
 
     // голос: отзвучавшие фразы (конец речи → можно завершить разговор)
     std::string spokenId;

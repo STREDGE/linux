@@ -173,7 +173,7 @@ static json::Value ReqToJ(const Request& r)
 {
     json::Value v = json::Value::Object();
     v["system"] = r.system; v["tools"] = r.tools; v["messages"] = r.messages; v["maxTokens"] = r.maxTokens;
-    v["effort"] = r.effort; v["format"] = r.format; v["cache"] = r.cache; v["tag"] = r.tag;
+    v["effort"] = r.effort; v["format"] = r.format; v["cache"] = r.cache; v["tag"] = r.tag; v["noThinking"] = r.noThinking;
     return v;
 }
 
@@ -199,7 +199,9 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
     if(req.tools.size()) body["tools"] = req.tools;
     body["messages"] = req.messages;
     json::Value oc = json::Value::Object();
-    oc["effort"] = req.effort.empty() ? g_s.effort : req.effort;
+    std::string eff = req.effort.empty() ? g_s.effort : req.effort;
+    oc["effort"] = eff;
+    if(req.noThinking && (eff == "low" || eff == "medium" || eff == "high")) { json::Value th = json::Value::Object(); th["type"] = "disabled"; body["thinking"] = th; }
     if(!req.format.isNull()) oc["format"] = req.format;
     body["output_config"] = oc;
     if(req.cache) { json::Value cc = json::Value::Object(); cc["type"] = "ephemeral"; body["cache_control"] = cc; }
@@ -253,7 +255,7 @@ void HandleProxyRequest(const json::Value& m)
     const json::Value& j = m["req"];
     Request r;
     r.system = j["system"]; r.tools = j["tools"]; r.messages = j["messages"]; r.maxTokens = j["maxTokens"].i(600);
-    r.effort = j["effort"].str(); r.format = j["format"]; r.cache = j["cache"].b(true);
+    r.effort = j["effort"].str(); r.format = j["format"]; r.cache = j["cache"].b(true); r.noThinking = j["noThinking"].b(false);
     static std::string tagBuf; tagBuf = "друг: " + j["tag"].str(); r.tag = tagBuf.c_str();
     int id = Send(r, nullptr, [reply](Result& res) {
         json::Value o = json::Value::Object();

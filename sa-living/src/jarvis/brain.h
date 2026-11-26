@@ -47,4 +47,5 @@ namespace jbrain
     struct Compiled { uint16_t opcode = 0; std::vector<script::Arg> args; std::vector<std::string> outNames; bool condition = false; bool risky = false; std::string name; };
     struct Context { int playerChar = -1, car = -1; std::vector<double> prev; };   // $me, $car, $1…$N (выходы прошлых команд)
     bool Compile(const std::string& name, const json::Value& args, const Context& ctx, Compiled& out, std::string& err);
+    void Ban(const std::string& name);                     // команда уронила игру — больше не давать
 }

@@ -814,8 +814,10 @@ namespace
             y -= ts.y + U(1);
         }
         const auto& subs = talk::Subs();
+        double nowS = talk::Now();
         for(auto it = subs.rbegin(); it != subs.rend(); ++it)
         {
+            if(it->from > nowS) continue;          // эта часть длинной речи ещё впереди
             std::string s = it->who + ": " + it->text;
             ImVec2 ts = TS(F_BODY, s.c_str(), wrap);
             y -= ts.y;

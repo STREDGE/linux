@@ -23,6 +23,9 @@ namespace script
     bool Ready();
     // Выполнить команду. Выходные параметры (OUT_*) заполняются в args. flag — результат условия.
     bool Run(uint16_t opcode, std::vector<Arg>& args, bool* flag = nullptr);
+    // То же, но с защитой: если команда уронит игру (обращение не туда), ловим сигнал и возвращаемся.
+    // Для «свободных» команд Джарвиса (их параметры придумывает ИИ). crashed=true — команда упала.
+    bool RunGuarded(uint16_t opcode, std::vector<Arg>& args, bool* flag, bool& crashed);
     // Коротко: без выходных
     bool Do(uint16_t opcode, std::vector<Arg> args);
 

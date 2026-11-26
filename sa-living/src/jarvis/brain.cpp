@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 
 namespace jbrain
 {
@@ -512,6 +513,7 @@ namespace
     struct LibCmd { uint16_t id = 0; std::string name, desc, cls, member, search; std::vector<Param> params; bool cond = false, bad = false; };
     std::vector<LibCmd> g_lib;
     std::map<std::string, size_t> g_byName;
+    std::set<std::string> g_banned;          // команды, уронившие игру в этой игре (поймано защитой)
 
     bool RiskyName(const std::string& n)
     {
@@ -526,6 +528,8 @@ namespace
         return false;
     }
 }
+
+void Ban(const std::string& name) { g_banned.insert(name); }
 
 bool LoadLibrary(const std::string& path, std::string& err)
 {
@@ -607,6 +611,7 @@ bool Compile(const std::string& name, const json::Value& args, const Context& ct
     std::string up; for(char c : name) up += (char)toupper((unsigned char)c);
     auto it = g_byName.find(up);
     if(it == g_byName.end()) { err = "нет команды " + up + " (найди через find_commands)"; return false; }
+    if(g_banned.count(up)) { err = up + " ломает игру — не используй её, сделай иначе"; return false; }
     const LibCmd& c = g_lib[it->second];
     out = Compiled(); out.opcode = c.id; out.condition = c.cond; out.name = c.name; out.risky = RiskyName(c.name);
     size_t ai = 0, nin = 0;

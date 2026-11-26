@@ -438,8 +438,13 @@ namespace
                 if(!jbrain::Compile(c["name"].str(), c["args"], ctx, k, err)) { res += "ОШИБКА: " + err + "; дальше не выполнял. "; break; }
                 if(k.risky && settings::Get().jarvisConfirm != 2 && !in["confirmed"].b())
                 { res += k.name + ": опасная команда — сначала спроси игрока «Подтверждаете?», после его «да» повтори вызов с confirmed=true. "; break; }
-                bool flag = false;
-                if(!script::Run(k.opcode, k.args, &flag)) { res += k.name + ": не выполнилась. "; break; }
+                bool flag = false, crashed = false;
+                LOG_INFO("[ДЖАРВИС] выполняю %04X %s %s", k.opcode, k.name.c_str(), c["args"].dump().c_str());
+                WHERE("Джарвис: команда игры");
+                bool okRun = script::RunGuarded(k.opcode, k.args, &flag, crashed);
+                WHERE("кадр: ответы ИИ");
+                if(crashed) { jbrain::Ban(k.name); res += k.name + ": команда сломалась (неверные параметры) — больше её не используй, сделай иначе. "; break; }
+                if(!okRun) { res += k.name + ": не выполнилась. "; break; }
                 ++ran;
                 std::string line = k.name + ": ok";
                 if(k.condition) line += flag ? " (да)" : " (нет)";

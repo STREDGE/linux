@@ -264,7 +264,7 @@ void RequestProfile(Character& c)
     r.messages = json::Value::Array(); r.messages.push(msg);
     json::Value fmt; json::Parse(R"({"type":"json_schema","schema":{"type":"object","additionalProperties":false,"required":["nick","backstory","dream","fear","speech","role"],
       "properties":{"nick":{"type":"string"},"backstory":{"type":"string"},"dream":{"type":"string"},"fear":{"type":"string"},"speech":{"type":"string"},"role":{"type":"string"}}}})", fmt);
-    r.format = fmt; r.maxTokens = 500; r.cache = false; r.tag = "профиль";
+    r.format = fmt; r.maxTokens = 1500; r.effort = "low"; r.noThinking = true; r.cache = false; r.tag = "профиль";   // 500 не хватало: ответ обрывался
     int id = c.id;
     claude::Send(r, nullptr, [id](claude::Result& res) {
         Character* ch = world::Find(id);
