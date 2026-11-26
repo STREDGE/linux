@@ -40,6 +40,7 @@ var (
 	srv      *tsnet.Server
 	lc       *local.Client
 	started  bool
+	failed   bool // tsnet не запустился — в меню «ошибка», а не вечное «подключается»
 	lastErr  string
 	logFile  *os.File
 	logBytes int64
@@ -81,6 +82,19 @@ func logf(format string, args ...any) {
 	}
 	n, _ := logFile.WriteString(line)
 	logBytes += int64(n)
+}
+
+// Переменная окружения → папка (создать). force — даже если уже задана.
+func setDirEnv(key, path string, force bool) {
+	if !force && os.Getenv(key) != "" {
+		return
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		logf("папка %s (%s): %v", path, key, err)
+		return
+	}
+	os.Setenv(key, path)
+	logf("%s=%s", key, path)
 }
 
 // Паника в нашем коде не должна ронять игру: записать в журнал и жить дальше.
@@ -165,6 +179,12 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.i
 		return -1
 	}
 	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true") // не отправлять журналы Tailscale в интернет
+	// Android: у приложения нет /var/lib, $HOME и записываемого /data/local/tmp — logpolicy.LogsDir
+	// паниковал «no safe place found to store log state» (тест игрока, 1.1.2). Даём свои папки.
+	setDirEnv("TS_LOGS_DIR", filepath.Join(dir, "logs"), true)
+	setDirEnv("TMPDIR", filepath.Join(dir, "tmp"), false)
+	setDirEnv("XDG_CACHE_HOME", filepath.Join(dir, "cache"), false)
+	setDirEnv("XDG_CONFIG_HOME", filepath.Join(dir, "config"), false)
 	srv = &tsnet.Server{
 		Dir:      dir,
 		Hostname: name,
@@ -175,11 +195,18 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.i
 	stName = name
 	logf("старт: имя %s, папка %s", name, dir)
 	go func() {
-		defer guard("запуск tsnet", nil)
+		defer func() {
+			if r := recover(); r != nil {
+				logf("ПАНИКА в запуск tsnet: %v\n%s", r, debug.Stack())
+				mu.Lock()
+				failed, lastErr = true, fmt.Sprintf("сбой запуска: %v", r)
+				mu.Unlock()
+			}
+		}()
 		logf("tsnet: Start…")
 		if err := srv.Start(); err != nil {
 			mu.Lock()
-			lastErr = err.Error()
+			failed, lastErr = true, err.Error()
 			mu.Unlock()
 			logf("Start: %v", err)
 			return
@@ -187,7 +214,7 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.i
 		c, err := srv.LocalClient()
 		if err != nil {
 			mu.Lock()
-			lastErr = err.Error()
+			failed, lastErr = true, err.Error()
 			mu.Unlock()
 			logf("LocalClient: %v", err)
 			return
@@ -265,6 +292,8 @@ func sacoop_ts_status(buf *C.char, n C.int) (rc C.int) {
 	state := stState
 	if !started {
 		state = "Off"
+	} else if failed {
+		state = "Error"
 	} else if state == "" {
 		state = "Starting"
 	}

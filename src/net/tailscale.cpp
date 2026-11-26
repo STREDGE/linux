@@ -7,6 +7,7 @@
 
 #include <stdarg.h>
 
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdio.h>
@@ -118,7 +119,21 @@ namespace
         chmod(tmp, 0700);
         if(rename(tmp, outPath) != 0) { unlink(tmp); Fail("не могу переименовать %s", tmp); return false; }
         Note(false, "шаг 1: распакован (%u КБ)", (unsigned)(total / 1024));
-        // старые версии — убрать
+        // старые версии (по ~21 МБ) — убрать, иначе копятся с каждым обновлением мода
+        const char* mine = strrchr(outPath, '/');
+        mine = mine ? mine + 1 : outPath;
+        if(DIR* d = opendir(dir))
+        {
+            while(dirent* e = readdir(d))
+            {
+                const char* n = e->d_name;
+                size_t l = strlen(n);
+                if(strncmp(n, "sacoop_ts_", 10) || l < 4 || strcmp(n + l - 3, ".so") || !strcmp(n, mine)) continue;
+                char old[600]; snprintf(old, sizeof(old), "%s/%s", dir, n);
+                if(unlink(old) == 0) Note(false, "убрал старую версию: %s", n);
+            }
+            closedir(d);
+        }
         return true;
     }
 
@@ -178,6 +193,7 @@ Status GetStatus()
     else if(!strcmp(st, "NeedsLogin"))       s.state = State::NeedsLogin;
     else if(!strcmp(st, "NeedsMachineAuth")) s.state = State::NeedsApproval;
     else if(!strcmp(st, "Stopped"))          s.state = State::Stopped;
+    else if(!strcmp(st, "Error"))            s.state = State::Error;
     else                                     s.state = State::Starting;
     if(n > 1) snprintf(s.loginUrl, sizeof(s.loginUrl), "%s", parts[1]);
     if(n > 2) snprintf(s.ip, sizeof(s.ip), "%s", parts[2]);
