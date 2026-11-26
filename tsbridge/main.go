@@ -23,6 +23,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,7 @@ import (
 )
 
 var (
+	logMu    sync.Mutex
 	mu       sync.Mutex
 	srv      *tsnet.Server
 	lc       *local.Client
@@ -62,6 +65,8 @@ type peerInfo struct {
 }
 
 func logf(format string, args ...any) {
+	logMu.Lock()
+	defer logMu.Unlock()
 	if logFile == nil {
 		return
 	}
@@ -76,6 +81,45 @@ func logf(format string, args ...any) {
 	}
 	n, _ := logFile.WriteString(line)
 	logBytes += int64(n)
+}
+
+// Паника в нашем коде не должна ронять игру: записать в журнал и жить дальше.
+// (Падения внутри tsnet ловит SetCrashOutput — текст в tailscale_crash.txt.)
+func guard(where string, rc *C.int) {
+	if r := recover(); r != nil {
+		logf("ПАНИКА в %s: %v\n%s", where, r, debug.Stack())
+		if rc != nil {
+			*rc = -1
+		}
+	}
+}
+
+// Журналы — рядом с подробным логом коопа (игрок может их прислать); прошлый — в *_prev.txt
+func openLogs(dir string) {
+	if dir == "" {
+		return
+	}
+	os.MkdirAll(dir, 0o777)
+	p := filepath.Join(dir, "tailscale_log.txt")
+	if st, err := os.Stat(p); err == nil && st.Size() > 0 {
+		os.Rename(p, filepath.Join(dir, "tailscale_log_prev.txt"))
+	}
+	logMu.Lock()
+	logFile, _ = os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+	logBytes = 0
+	logMu.Unlock()
+	cp := filepath.Join(dir, "tailscale_crash.txt")
+	if st, err := os.Stat(cp); err == nil && st.Size() > 1<<20 {
+		os.Remove(cp)
+	}
+	if cf, err := os.OpenFile(cp, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666); err == nil {
+		cf.WriteString("\n===== запуск Tailscale " + time.Now().Format("2006-01-02 15:04:05") + " =====\n")
+		debug.SetTraceback("all")
+		if err := debug.SetCrashOutput(cf, debug.CrashOptions{}); err != nil {
+			logf("SetCrashOutput: %v", err)
+		}
+		cf.Close() // SetCrashOutput держит свою копию
+	}
 }
 
 func cstr(p *C.char) string {
@@ -100,7 +144,8 @@ func put(buf *C.char, n C.int, s string) C.int {
 }
 
 //export sacoop_ts_start
-func sacoop_ts_start(stateDir *C.char, hostname *C.char) C.int {
+func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.int) {
+	defer guard("start", &rc)
 	mu.Lock()
 	defer mu.Unlock()
 	if started {
@@ -108,11 +153,17 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char) C.int {
 	}
 	dir := cstr(stateDir)
 	name := strings.ToLower(cstr(hostname))
+	ld := cstr(logDir)
+	if ld == "" {
+		ld = dir
+	}
+	openLogs(ld)
+	logf("Go %s %s/%s, Tailscale-библиотека загружена", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		lastErr = "папка: " + err.Error()
+		logf("папка %s: %v", dir, err)
 		return -1
 	}
-	logFile, _ = os.OpenFile(filepath.Join(dir, "tailscale_log.txt"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true") // не отправлять журналы Tailscale в интернет
 	srv = &tsnet.Server{
 		Dir:      dir,
@@ -124,6 +175,8 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char) C.int {
 	stName = name
 	logf("старт: имя %s, папка %s", name, dir)
 	go func() {
+		defer guard("запуск tsnet", nil)
+		logf("tsnet: Start…")
 		if err := srv.Start(); err != nil {
 			mu.Lock()
 			lastErr = err.Error()
@@ -142,6 +195,7 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char) C.int {
 		mu.Lock()
 		lc = c
 		mu.Unlock()
+		logf("tsnet: запущен, жду состояния")
 		statusLoop()
 	}()
 	return 0
@@ -204,7 +258,8 @@ func statusLoop() {
 // Состояния Tailscale: NoState, NeedsLogin, NeedsMachineAuth, Stopped, Starting, Running.
 //
 //export sacoop_ts_status
-func sacoop_ts_status(buf *C.char, n C.int) C.int {
+func sacoop_ts_status(buf *C.char, n C.int) (rc C.int) {
+	defer guard("status", &rc)
 	mu.Lock()
 	defer mu.Unlock()
 	state := stState
@@ -219,7 +274,8 @@ func sacoop_ts_status(buf *C.char, n C.int) C.int {
 // Найти устройство по имени (sacoop-<ID>). 1 — в сети, 2 — есть, но не в сети, 0 — нет, -1 — сеть не готова.
 //
 //export sacoop_ts_find_peer
-func sacoop_ts_find_peer(hostname *C.char, ipOut *C.char, n C.int) C.int {
+func sacoop_ts_find_peer(hostname *C.char, ipOut *C.char, n C.int) (rc C.int) {
+	defer guard("find_peer", &rc)
 	mu.Lock()
 	defer mu.Unlock()
 	if stState != "Running" {
@@ -241,7 +297,8 @@ func sacoop_ts_find_peer(hostname *C.char, ipOut *C.char, n C.int) C.int {
 // Список других телефонов с модом (для подсказки в меню): «имя:адрес:1/0;…»
 //
 //export sacoop_ts_peers
-func sacoop_ts_peers(buf *C.char, n C.int) C.int {
+func sacoop_ts_peers(buf *C.char, n C.int) (rc C.int) {
+	defer guard("peers", &rc)
 	mu.Lock()
 	defer mu.Unlock()
 	var parts []string
@@ -262,7 +319,8 @@ func sacoop_ts_peers(buf *C.char, n C.int) C.int {
 // Возвращает порт моста на 127.0.0.1; 0 — сеть ещё не готова; -1 — ошибка.
 //
 //export sacoop_ts_bridge
-func sacoop_ts_bridge(tsPort C.int, gamePort C.int) C.int {
+func sacoop_ts_bridge(tsPort C.int, gamePort C.int) (rc C.int) {
+	defer guard("bridge", &rc)
 	mu.Lock()
 	defer mu.Unlock()
 	if srv == nil || stState != "Running" || stIP == "" {
@@ -299,6 +357,7 @@ func sacoop_ts_bridge(tsPort C.int, gamePort C.int) C.int {
 }
 
 func fromTailnet(pc net.PacketConn, l *net.UDPConn, gen int) {
+	defer guard("мост из сети", nil)
 	buf := make([]byte, 2048)
 	for {
 		n, from, err := pc.ReadFrom(buf)
@@ -326,6 +385,7 @@ func fromTailnet(pc net.PacketConn, l *net.UDPConn, gen int) {
 }
 
 func fromGame(pc net.PacketConn, l *net.UDPConn, gen int) {
+	defer guard("мост от игры", nil)
 	buf := make([]byte, 2048)
 	for {
 		n, from, err := l.ReadFromUDP(buf)
@@ -365,7 +425,8 @@ func closeBridgeLocked() {
 // Друг: куда слать (адрес хоста в сети Tailscale).
 //
 //export sacoop_ts_set_peer
-func sacoop_ts_set_peer(ip *C.char, port C.int) C.int {
+func sacoop_ts_set_peer(ip *C.char, port C.int) (rc C.int) {
+	defer guard("set_peer", &rc)
 	a, err := netip.ParseAddr(cstr(ip))
 	if err != nil {
 		return -1
@@ -379,6 +440,7 @@ func sacoop_ts_set_peer(ip *C.char, port C.int) C.int {
 
 //export sacoop_ts_close_bridge
 func sacoop_ts_close_bridge() {
+	defer guard("close_bridge", nil)
 	mu.Lock()
 	defer mu.Unlock()
 	closeBridgeLocked()
@@ -388,7 +450,8 @@ func sacoop_ts_close_bridge() {
 // Выйти из аккаунта (сменить аккаунт)
 //
 //export sacoop_ts_logout
-func sacoop_ts_logout() C.int {
+func sacoop_ts_logout() (rc C.int) {
+	defer guard("logout", &rc)
 	mu.Lock()
 	c := lc
 	mu.Unlock()

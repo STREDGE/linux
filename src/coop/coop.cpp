@@ -1012,6 +1012,7 @@ static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
 bool Install(void* h, FLogger* log)
 {
     g_log = log;
+    ts::SetLogSink([](bool e, const char* s) { Log(e, "%s", s); });   // шаги запуска Tailscale — в sacoop.txt
 
     g_userPause = (uint8_t*)aml->GetSym(h, "_ZN6CTimer11m_UserPauseE");
     g_cutsceneRunning = (uint8_t*)aml->GetSym(h, "_ZN12CCutsceneMgr10ms_runningE");

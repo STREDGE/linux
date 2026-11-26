@@ -1,7 +1,11 @@
 #include "tailscale.h"
 
+#include "../trace/ctrace.h"
+
 #include <mod/amlmod.h>
 #include <mod/logger.h>
+
+#include <stdarg.h>
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -28,7 +32,7 @@ namespace
     std::atomic<int>  g_phase{ 0 };      // 0 — не включали, 1 — распаковка, 2 — загружено, -1 — ошибка
     char              g_err[256] = "";
 
-    int  (*f_start)(char*, char*) = nullptr;
+    int  (*f_start)(char*, char*, char*) = nullptr;
     int  (*f_status)(char*, int) = nullptr;
     int  (*f_find)(char*, char*, int) = nullptr;
     int  (*f_bridge)(int, int) = nullptr;
@@ -36,12 +40,41 @@ namespace
     void (*f_close)() = nullptr;
     int  (*f_logout)() = nullptr;
 
+    void (*g_sink)(bool, const char*) = nullptr;
+
+    // Шаг запуска — в sacoop.txt (пишется сразу, с fflush): если игра закроется, видно, на каком шаге
+    void Note(bool error, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+    void Note(bool error, const char* fmt, ...)
+    {
+        char body[400], line[440];
+        va_list a; va_start(a, fmt); vsnprintf(body, sizeof(body), fmt, a); va_end(a);
+        snprintf(line, sizeof(line), "[TAILSCALE] %s", body);
+        if(g_sink) g_sink(error, line);
+        else if(error) logger->Error("%s", line);
+        else logger->Info("%s", line);
+    }
+
     void Fail(const char* fmt, const char* a = "", const char* b = "")
     {
-        std::lock_guard<std::mutex> l(g_mu);
-        snprintf(g_err, sizeof(g_err), fmt, a, b);
-        logger->Error("[TAILSCALE] %s", g_err);
-        g_phase = -1;
+        char msg[256];
+        snprintf(msg, sizeof(msg), fmt, a, b);
+        {
+            std::lock_guard<std::mutex> l(g_mu);
+            snprintf(g_err, sizeof(g_err), "%s", msg);
+            g_phase = -1;
+        }
+        Note(true, "%s", msg);
+    }
+
+    // Папка подробного лога коопа (Documents/AMLModLogs/net.sacoop.mod/trace) — туда же журнал и вылеты Tailscale
+    void LogDir(char* out, size_t len)
+    {
+        out[0] = 0;
+        const char* p = ctrace::Path();
+        if(!p || !p[0]) return;
+        snprintf(out, len, "%s", p);
+        char* slash = strrchr(out, '/');
+        if(slash) *slash = 0; else out[0] = 0;
     }
 
     // Распаковать вшитую библиотеку в личную папку игры (там можно загружать .so)
@@ -54,7 +87,12 @@ namespace
         if(!dir || !dir[0]) { Fail("нет личной папки игры"); return false; }
         snprintf(outPath, len, "%s/sacoop_ts_%08x.so", dir, crc);
         struct stat st;
-        if(stat(outPath, &st) == 0 && st.st_size > 1000000) return true;    // уже распакована эта версия
+        if(stat(outPath, &st) == 0 && st.st_size > 1000000)
+        {
+            Note(false, "шаг 1: уже распакован (%ld КБ)", (long)(st.st_size / 1024));
+            return true;    // уже распакована эта версия
+        }
+        Note(false, "шаг 1: распаковываю (%u КБ сжато) в %s", (unsigned)(blobSize / 1024), outPath);
 
         char tmp[600]; snprintf(tmp, sizeof(tmp), "%s.tmp", outPath);
         FILE* f = fopen(tmp, "wb");
@@ -79,7 +117,7 @@ namespace
         if(r != Z_STREAM_END) { unlink(tmp); Fail("распаковка не удалась (мало места?)"); return false; }
         chmod(tmp, 0700);
         if(rename(tmp, outPath) != 0) { unlink(tmp); Fail("не могу переименовать %s", tmp); return false; }
-        logger->Info("[TAILSCALE] Распакован: %s (%u КБ)", outPath, (unsigned)(total / 1024));
+        Note(false, "шаг 1: распакован (%u КБ)", (unsigned)(total / 1024));
         // старые версии — убрать
         return true;
     }
@@ -87,10 +125,13 @@ namespace
     void Worker(std::string id)
     {
         char path[600];
+        Note(false, "включаю (мой ID %s)", id.c_str());
         if(!Extract(path, sizeof(path))) return;
+        Note(false, "шаг 2: загружаю библиотеку (если игра закроется сейчас — не запустился Go)");
         void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         if(!h) { Fail("не загрузился: %s", dlerror()); return; }
-        f_start   = (int(*)(char*, char*))dlsym(h, "sacoop_ts_start");
+        Note(false, "шаг 2: библиотека загружена");
+        f_start   = (int(*)(char*, char*, char*))dlsym(h, "sacoop_ts_start");
         f_status  = (int(*)(char*, int))dlsym(h, "sacoop_ts_status");
         f_find    = (int(*)(char*, char*, int))dlsym(h, "sacoop_ts_find_peer");
         f_bridge  = (int(*)(int, int))dlsym(h, "sacoop_ts_bridge");
@@ -100,13 +141,16 @@ namespace
         if(!f_start || !f_status || !f_find || !f_bridge || !f_setPeer || !f_close || !f_logout) { Fail("в библиотеке нет нужных функций"); return; }
         char dir[600]; snprintf(dir, sizeof(dir), "%s/sacoop_tailscale", aml->GetDataPath());
         char name[64]; NodeName(id.c_str(), name, sizeof(name));
-        if(f_start(dir, name) != 0) { Fail("не запустился (папка %s)", dir); return; }
-        logger->Info("[TAILSCALE] Запущен как «%s» (журнал: %s/tailscale_log.txt)", name, dir);
+        char logDir[600]; LogDir(logDir, sizeof(logDir));
+        Note(false, "шаг 3: запускаю «%s» (журнал и вылеты: %s/tailscale_log.txt, tailscale_crash.txt)", name, logDir[0] ? logDir : dir);
+        if(f_start(dir, name, logDir) != 0) { Fail("не запустился (папка %s)", dir); return; }
+        Note(false, "шаг 3: запущен, подключаюсь к серверам Tailscale");
         g_phase = 2;
     }
 }
 
 void NodeName(const char* id, char* out, size_t len) { snprintf(out, len, "sacoop-%s", id ? id : ""); }
+void SetLogSink(void (*fn)(bool, const char*)) { g_sink = fn; }
 
 void Start(const char* myId)
 {

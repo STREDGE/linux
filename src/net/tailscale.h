@@ -35,4 +35,7 @@ namespace ts
 
     // Своё имя в сети: «sacoop-<id>»
     void NodeName(const char* id, char* out, size_t len);
+
+    // Куда писать шаги запуска (sacoop.txt + подробный лог). Строки уже с «[TAILSCALE] ». Зовётся из фонового потока.
+    void SetLogSink(void (*fn)(bool error, const char* line));
 }
