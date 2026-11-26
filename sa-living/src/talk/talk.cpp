@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <algorithm>
 #include <functional>
 #include <vector>
 
@@ -129,12 +130,13 @@ namespace
         }
         if(g_c.active && g_c.charId == c.id && !g_c.group.empty())
         {
-            s += " РЯДОМ С ТОБОЙ ТВОЯ КОМПАНИЯ, они слышат разговор и могут вмешиваться (group_say / group_act):";
+            s += " РЯДОМ СТОЯТ И СЛЫШАТ РАЗГОВОР (могут вмешаться: group_say / group_act):";
             for(int id : g_c.group)
                 if(Character* m = world::Find(id))
                 {
                     const char* temper = m->tr.aggression > 65 ? "вспыльчивый" : m->tr.courage < 35 ? "трусоватый" : m->tr.greed > 65 ? "жадный" : m->tr.talkative > 65 ? "болтливый" : "спокойный";
-                    s += Fmt(" [#%d %s%s, %s, симпатия к собеседнику %d]", m->id, m->nick.empty() ? m->name.c_str() : m->nick.c_str(),
+                    const char* role = m->faction == c.faction && c.faction != world::F_CIVIL ? (c.faction == world::F_POLICE ? "твой коллега" : "свой") : game::PedTypeName(m->pedType);
+                    s += Fmt(" [#%d %s — %s%s, %s, симпатия к собеседнику %d]", m->id, m->nick.empty() ? m->name.c_str() : m->nick.c_str(), role,
                              m->rank >= 2 ? " (старший)" : "", temper, m->rel[who].liking);
                 }
         }
@@ -322,6 +324,7 @@ namespace
             struct MemberScope { MemberScope() { g_memberAct = true; } ~MemberScope() { g_memberAct = false; } } scope;   // действие одного из компании не обрывает весь разговор
             const std::string& a = in["action"].str();
             json::Value arg = json::Value::Object();
+            if(a == "call_police") { json::Value cp = json::Value::Object(); cp["who"] = "police"; cp["message"] = ""; return ExecutePhysical(m, mped, who, "call", cp); }
             static const char* moves[] = { "follow_player", "come_closer", "go_away", "flee", "wait_here" };
             for(const char* mv : moves) if(a == mv) { arg["mode"] = a; arg["run"] = a == "flee"; return ExecutePhysical(m, mped, who, "move", arg); }
             if(a == "attack" || a == "aim_weapon") { arg["weapon"] = in["weapon"].s(a == "attack" ? "fists" : "pistol"); return ExecutePhysical(m, mped, who, a, arg); }
@@ -564,6 +567,45 @@ namespace
         return best;
     }
 
+    // Кто рядом слышит разговор (до 4 человек в 10 м, пешком): свои и коллеги — первыми, потом остальные.
+    // Раньше слышали только «свои» той же банды и только двое — в участке другие копы даже не поворачивались.
+    // Вызывается при начале разговора и при каждом нажатии «Говорить»: кто отошёл — выбывает, кто подошёл — слышит.
+    void ScanListeners(uintptr_t mainPed)
+    {
+        Character* mc = Current(); if(!mc || !mainPed) return;
+        int mainId = mc->id, fac = mc->faction;
+        game::Vec at = game::Pos(mainPed);
+        // выбывшие
+        for(size_t i = 0; i < g_c.group.size();)
+        {
+            Character* m = world::Find(g_c.group[i]); uintptr_t mp = m ? world::PedOf(*m) : 0;
+            if(!mp || !game::Alive(mp) || game::Dist(game::Pos(mp), at) > 15.0f) g_c.group.erase(g_c.group.begin() + i); else ++i;
+        }
+        struct N { uintptr_t p; float score; };
+        std::vector<N> near;
+        game::ForEachPed([&](uintptr_t p) {
+            if(p == mainPed || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p) || game::IsScriptPed(p)) return;
+            float d = game::Dist(game::Pos(p), at); if(d > 10.0f) return;
+            if(world::Character* ex = world::FindByPed(p)) for(int id : g_c.group) if(id == ex->id) return;
+            int f = world::FactionOfPedType(game::PedType(p));
+            near.push_back({ p, d - (f == fac ? 6.0f : 0.0f) });     // свои/коллеги — в первую очередь
+        });
+        std::sort(near.begin(), near.end(), [](const N& a, const N& b) { return a.score < b.score; });
+        std::vector<std::string> used; if(Character* m0 = world::Find(mainId)) used.push_back(m0->voice);
+        for(int id : g_c.group) if(Character* m = world::Find(id)) used.push_back(m->voice);
+        for(auto& n : near)
+        {
+            if(g_c.group.size() >= 4) break;
+            Character& m = world::Promote(n.p);
+            if(m.id == mainId) continue;
+            EnsureVoice(m, used); used.push_back(m.voice);
+            m.rel[world::WHO_CJ].met = true;
+            g_c.group.push_back(m.id);
+            game::TaskTurnTo(n.p, game::Player());
+            TRACE("РАЗГОВОР", "слышит: #%d %s (%s)", m.id, m.name.c_str(), game::PedTypeName(m.pedType));
+        }
+    }
+
     void StartWith(uintptr_t ped)
     {
         Character& c = world::Promote(ped);
@@ -575,34 +617,10 @@ namespace
             if(!game::Vehicle(ped)) { game::TaskTurnTo(ped, game::Player()); }
             c.rel[world::WHO_CJ].met = true;
             EnsureVoice(c);
-            // компания: свои рядом (банда, копы) — до двух человек, у каждого свой голос
-            if(!g_c.remote && c.faction != world::F_CIVIL && c.faction != world::F_NONE)
-            {
-                std::vector<std::string> used{ c.voice };
-                game::Vec at = game::Pos(ped);
-                int fac = c.faction, mainId = c.id;
-                std::vector<uintptr_t> near;
-                game::ForEachPed([&](uintptr_t p) {
-                    if(p == ped || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p) || game::IsScriptPed(p)) return;
-                    if(world::FactionOfPedType(game::PedType(p)) != fac || game::Dist(game::Pos(p), at) > 7.0f) return;
-                    near.push_back(p);
-                });
-                for(uintptr_t p : near)
-                {
-                    if(g_c.group.size() >= 2) break;
-                    Character& m = world::Promote(p);             // может сдвинуть массив персонажей — c больше не трогаем
-                    if(m.id == mainId) continue;
-                    EnsureVoice(m, used); used.push_back(m.voice);
-                    m.rel[world::WHO_CJ].met = true;
-                    g_c.group.push_back(m.id);
-                    game::TaskTurnTo(p, game::Player());
-                }
-                Character* mc = world::Find(mainId);
-                LOG_INFO("Разговор с #%d %s (%s), компания: %d чел.", mainId, mc ? mc->name.c_str() : "?", mc ? game::PedTypeName(mc->pedType) : "?", (int)g_c.group.size());
-                g_c.lastAt = Now();
-                return;
-            }
-            LOG_INFO("Разговор с #%d %s (%s)", c.id, c.name.c_str(), game::PedTypeName(c.pedType));
+            int mainId = c.id;
+            if(!g_c.remote) ScanListeners(ped);                       // может сдвинуть массив персонажей — c больше не трогаем
+            Character* mc = world::Find(mainId);
+            LOG_INFO("Разговор с #%d %s (%s), рядом слышат: %d чел.", mainId, mc ? mc->name.c_str() : "?", mc ? game::PedTypeName(mc->pedType) : "?", (int)g_c.group.size());
         }
         g_c.lastAt = Now();
     }
@@ -762,7 +780,9 @@ void PttDown()
     if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
     if(Character* c = Current())
     {
-        if(!g_c.phone) ListenPose(c, world::PedOf(*c), 20000);        // слушает в своей позе (если не занят своим)
+        if(!g_c.phone && !g_c.remote) ScanListeners(world::PedOf(*c));
+        c = Current();                                                  // массив персонажей мог сдвинуться
+        if(c && !g_c.phone) ListenPose(c, world::PedOf(*c), 20000);    // слушает в своей позе (если не занят своим)
     }
     for(int id : g_c.group) if(Character* m = world::Find(id)) ListenPose(m, world::PedOf(*m), 20000);
     BeginListen();
@@ -790,6 +810,10 @@ static void OnPlayerSaid(const std::string& text)
     if(!c) return;
     if(text.empty()) { Notify("Не расслышал — попробуй ещё раз"); return; }
     Say(world::W().playerNick, text, true, 0, 1, 1, false);
+    if(text.size() > 12)
+        for(int id : g_c.group)
+            if(Character* m = world::Find(id)) world::Remember(*m, Fmt("Слышал, как %s говорил %s: «%s»", world::W().playerNick.c_str(), c->name.c_str(), text.substr(0, 160).c_str()));
+    c = Current(); if(!c) return;
     std::string line = Fmt("%s говорит: «%s»", world::W().playerNick.c_str(), text.c_str());
     if(g_c.offer) line += Fmt("\n(Он протягивает тебе $%d.)", g_c.offer);
     if(g_c.remote) { SendToHost(*c, line, g_c.phone); return; }
