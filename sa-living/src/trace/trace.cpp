@@ -123,6 +123,7 @@ namespace
         int wt, wa; if(game::CurWeapon(p, wt, wa) && wt) s += world::Fmt(" w=%d/%d", wt, wa);
         s += world::Fmt(" тело=%d", game::SimplestTaskType(p));
         if(uintptr_t lo = game::LockOn(p)) s += " целится=" + game::EntName(lo);
+        else if(uintptr_t ft = game::FightTarget(p)) s += " цель=" + game::EntName(ft);     // у педов цель — в их задачах (драка, прицел)
         if(world::Character* c = world::FindByPed(p)) s += world::Fmt(" [наш#%d %s]", c->id, c->name.c_str());
         if(game::IsScriptPed(p)) s += " [скрипт]";
         if(game::IsPlayer(p)) s += p == game::Player() ? " [ИГРОК]" : " [ИГРОК2]";
@@ -216,11 +217,11 @@ namespace
             if(f.ammo >= 0 && wt == f.wtype && wa < f.ammo && wt >= 22) { f.shots += f.ammo - wa; if(f.shotsAt == 0) f.shotsAt = now; }
             if(f.shots && now - f.shotsAt > 0.5)
             {
-                uintptr_t lo = game::LockOn(p);
+                uintptr_t lo = game::LockOn(p); if(!lo) lo = game::FightTarget(p);
                 Line("ВЫСТРЕЛЫ", "%s: %d выстр. из оружия %d, целится в %s", who.c_str(), f.shots, wt, game::EntName(lo).c_str());
                 f.shots = 0; f.shotsAt = 0;
             }
-            uintptr_t lo = game::LockOn(p);
+            uintptr_t lo = game::LockOn(p); if(!lo && p != pl) lo = game::FightTarget(p);   // у педов — цель из задач драки/прицела
             if(lo != f.lock && f.hp >= 0) Line("ПРИЦЕЛ", "%s → %s", who.c_str(), game::EntName(lo).c_str());
             f.hp = hp; f.ammo = wa; f.wtype = wt; f.lock = lo; f.alive = alive;
             next[ref] = f;

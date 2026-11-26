@@ -308,6 +308,38 @@ int   SimplestTaskType(uintptr_t ped)
     return fn ? fn(t) : -1;
 }
 uintptr_t LockOn(uintptr_t ped) { return ped ? F<uintptr_t>(ped, 0x8E0) : 0; }                 // CPed::m_pEntLockOnTarget
+// Кого пед сейчас бьёт / убивает / держит на прицеле. У педов захват прицела (+0x8E0) пустой — цель лежит
+// в его задачах. Идём от активной задачи (первый непустой слот: физ. ответ → ответ на событие → основная →
+// по умолчанию) вниз по подзадачам и берём цель из первой «боевой».
+uintptr_t FightTarget(uintptr_t ped)
+{
+    void* m = Mgr(ped); if(!m) return 0;
+    uintptr_t t = 0;
+    for(int s = 0; s < 5 && !t; ++s) t = F<uintptr_t>((uintptr_t)m, s * 8);
+    typedef int (*GetType_t)(uintptr_t);
+    typedef uintptr_t (*GetSub_t)(uintptr_t);
+    for(int depth = 0; t && depth < 12; ++depth)
+    {
+        uintptr_t vt = F<uintptr_t>(t, 0); if(!vt) return 0;
+        GetType_t gt = F<GetType_t>(vt, 0x28);                 // GetTaskType (слот 5)
+        int type = gt ? gt(t) : -1;
+        int off = 0;
+        switch(type)
+        {
+            case 1000: case 1028: off = 0x20; break;            // KILL_PED_ON_FOOT(_STEALTH)::m_pTargetPed
+            case 1001: case 1002: off = 0x18; break;            // KILL_PED_ON_FOOT_MELEE / _ARMED
+            case 1016:            off = 0x20; break;            // SIMPLE_FIGHT::m_pTargetEntity
+            case 1017:            off = 0x28; break;            // SIMPLE_USE_GUN::m_pTargetEntity
+            case 1019:            off = 0x18; break;            // SIMPLE_FIGHT_CTRL::m_pTargetEntity
+            case 933:             off = 0x18; break;            // SEEK_ENTITY_AIMING (наш «держать на прицеле»)
+        }
+        if(off) { uintptr_t e = F<uintptr_t>(t, off); if(e) return e; }
+        GetSub_t gs = F<GetSub_t>(vt, 0x18);                    // GetSubTask (слот 3; у простых задач — 0)
+        t = gs ? gs(t) : 0;
+    }
+    return 0;
+}
+bool IsPedEntity(uintptr_t e) { return e && (F<uint8_t>(e, kEntTypeByte) & 7) == 3; }
 uintptr_t LastDamager(uintptr_t ped, int& weapon, uint32_t& timeMs)
 {
     if(!ped) return 0;
@@ -318,7 +350,7 @@ std::string EntName(uintptr_t e)
 {
     if(!e) return "-";
     int type = F<uint8_t>(e, kEntTypeByte) & 7;
-    char b[32];
+    char b[64];
     if(type == 3) { if(e == Player()) return "игрок"; if(e == Player2()) return "друг"; snprintf(b, sizeof(b), "P#%d", Ref(e)); return b; }
     if(type == 2) { snprintf(b, sizeof(b), "V#%d", VehRef(e)); return b; }
     snprintf(b, sizeof(b), "объект(тип %d, модель %d)", type, Model(e)); return b;

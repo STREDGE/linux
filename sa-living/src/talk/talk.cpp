@@ -15,6 +15,7 @@
 #include "platform/bridge.h"
 #include "settings.h"
 #include "sim/life.h"
+#include "sim/crew.h"
 #include "sim/police.h"
 #include "speech/speech.h"
 #include "util/log.h"
@@ -99,6 +100,7 @@ namespace
             if(at == 936) s += " Ты сейчас идёшь за ним.";
             else if(at == 933) s += " Ты сейчас держишь его на прицеле.";
             if(game::PlayerTarget() == ped) s += " ОН ЦЕЛИТСЯ В ТЕБЯ ИЗ ОРУЖИЯ.";
+            s += crew::Describe(pl, ped);                                   // кто сейчас бьёт собеседника (чтобы вступиться — а не бить его самого)
             int w = game::Wanted();
             if(w > 0) s += Fmt(" Его разыскивает полиция: %d зв.", w);
             int money = game::Money();
@@ -217,6 +219,7 @@ namespace
     bool CanPose(uintptr_t ped)
     {
         if(!ped || !game::Alive(ped) || game::Vehicle(ped) || game::IsScriptPed(ped)) return false;
+        if(game::FightTarget(ped)) return false;                               // дерётся / целится — позы поверх драки ломали анимацию
         int at = game::ActiveTaskType(ped);
         return at == -1 || at == 203 || at == 912 || at == 401 || at == 920;   // нет задачи / стоит / гуляет / анимация / поворот
     }
@@ -328,7 +331,7 @@ namespace
             if(a == "call_police") { json::Value cp = json::Value::Object(); cp["who"] = "police"; cp["message"] = ""; return ExecutePhysical(m, mped, who, "call", cp); }
             static const char* moves[] = { "follow_player", "come_closer", "go_away", "flee", "wait_here" };
             for(const char* mv : moves) if(a == mv) { arg["mode"] = a; arg["run"] = a == "flee"; return ExecutePhysical(m, mped, who, "move", arg); }
-            if(a == "attack" || a == "aim_weapon") { arg["weapon"] = in["weapon"].s(a == "attack" ? "fists" : "pistol"); return ExecutePhysical(m, mped, who, a, arg); }
+            if(a == "attack" || a == "aim_weapon") { arg["weapon"] = in["weapon"].s(a == "attack" ? "fists" : "pistol"); arg["target"] = in["target"].s("him"); return ExecutePhysical(m, mped, who, a, arg); }
             if(a == "holster") return ExecutePhysical(m, mped, who, "holster", arg);
             arg["kind"] = a;
             return ExecutePhysical(m, mped, who, "gesture", arg);
@@ -591,6 +594,7 @@ namespace
         std::vector<N> near;
         game::ForEachPed([&](uintptr_t p) {
             if(p == mainPed || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p) || game::IsScriptPed(p)) return;
+            if(game::FightTarget(p)) return;                         // дерётся / целится (напал на CJ, вступился) — не «слушатель»
             float d = game::Dist(game::Pos(p), at); if(d > 10.0f) return;
             if(world::Character* ex = world::FindByPed(p)) for(int id : g_c.group) if(id == ex->id) return;
             int f = world::FactionOfPedType(game::PedType(p));
@@ -880,6 +884,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
     if(n == "gesture")
     {
         if(!needPed()) return "ты не рядом";
+        if(crew::Defending(ped)) return "ты сейчас в драке за него — не до жестов";
         struct G { const char* k; const char* block; const char* anim; const char* fbBlock; const char* fbAnim; bool loop; int ms; };
         static const G kG[] = {
             { "talk", "ped", "IDLE_chat", nullptr, nullptr, false, 0 }, { "agree", "COP_AMBIENT", "Coplook_nod", "ped", "IDLE_chat", false, 0 },
@@ -922,6 +927,7 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
     if(n == "move")
     {
         if(!needPed()) return "ты не рядом";
+        if(crew::Defending(ped) && in["mode"].str() != "flee" && in["mode"].str() != "go_away") return "ты сейчас в драке за него";
         const std::string& m = in["mode"].str(); bool run = in["run"].b();
         int ms = run ? 6 : 4;
         if(m == "get_out") return "ты и так не в машине";
@@ -936,21 +942,54 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
     static const struct { const char* n; int w; int ammo; } kW[] = { { "fists", 0, 0 }, { "knife", 4, 1 }, { "bat", 5, 1 }, { "pistol", 22, 60 },
         { "uzi", 28, 200 }, { "shotgun", 25, 30 }, { "ak47", 30, 150 } };
     auto weaponOf = [&](const std::string& s) { for(auto& w : kW) if(s == w.n) return w; return kW[0]; };
+    // Цель: him — сам собеседник; his_attacker — тот, кто сейчас нападает на собеседника (вступиться за него)
+    auto attackerOf = [&]() -> uintptr_t {
+        std::vector<uintptr_t> att = crew::AttackersOf(pl);
+        for(uintptr_t a : att) if(a != ped) return a;
+        return 0;
+    };
+    // Свой из банды на CJ за слова оружие не поднимает (тест 0.2.10: обиделся на «индюка» — и стрелять).
+    // Оружие против CJ — только если CJ сам недавно ранил своих оружием (кулак — кулаком).
+    auto ownVsCJ = [&]() { return c && c->faction == world::W().playerGang && c->faction != world::F_CIVIL && !crew::PlayerArmedVsOwn(ped); };
     if(n == "attack")
     {
         if(!needPed()) return "ты не рядом";
         auto w = weaponOf(in["weapon"].str());
+        if(in["target"].str() == "his_attacker")
+        {
+            uintptr_t a = attackerOf();
+            if(!a) return "на него сейчас никто не нападает";
+            if(crew::Defending(ped) && game::FightTarget(ped) == a) return "ты уже дерёшься с ним";
+            if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
+            if(!crew::Defend(ped, a, w.w, "ИИ: вступился за собеседника")) return "не вышло";
+            if(c) { world::Remember(*c, "Вступился за " + std::string(WhoName(who)) + ", когда на него напали"); world::ChangeRelation(*c, who, 3, 2, 3, 0, ""); }
+            return "бросился на того, кто на него напал";
+        }
+        if(ownVsCJ() && w.w)
+        {
+            TRACE("СВОИ", "#%d хотел напасть на CJ с оружием %d — свой за слова только кулаками", c->id, w.w);
+            w = kW[0];
+        }
         if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
+        else game::SetCurrentWeapon(ped, 0);
         if(c) { world::Remember(*c, "Я напал на " + std::string(WhoName(who))); world::ChangeRelation(*c, who, -10, 0, -10, 0, ""); }
         if(!g_memberAct) EndConversation();
-        return game::TaskAttack(ped, pl) ? "напал" : "не вышло";
+        return game::TaskAttack(ped, pl) ? (w.w ? "напал" : "полез драться на кулаках") : "не вышло";
     }
     if(n == "aim_weapon")
     {
         if(!needPed()) return "ты не рядом";
         auto w = weaponOf(in["weapon"].str());
+        uintptr_t target = pl;
+        if(in["target"].str() == "his_attacker") { target = attackerOf(); if(!target) return "на него сейчас никто не нападает"; }
+        else if(ownVsCJ())
+        {   // на брата ствол не наводят — злость показывают телом
+            TRACE("СВОИ", "#%d хотел навести ствол на CJ — свой: только жест", c->id);
+            game::TaskAnim(ped, "RIOT_challenge", "RIOT", false, 0);
+            return "на своего ствол не наводишь — показал, что злой";
+        }
         if(w.w) { game::GiveWeapon(ped, w.w, w.ammo); game::SetCurrentWeapon(ped, w.w); }
-        return game::TaskAimAt(ped, pl, 8000) ? "держишь на прицеле" : "не вышло";
+        return game::TaskAimAt(ped, target, 8000) ? (target == pl ? "держишь на прицеле" : "держишь на прицеле того, кто на него напал") : "не вышло";
     }
     if(n == "holster") { if(needPed()) { game::SetCurrentWeapon(ped, 0); game::TaskStand(ped, 4000); } return "ок"; }
     if(n == "give_money")
@@ -1161,6 +1200,26 @@ static void HitFrame()
         }
         g_hpSeen[id] = hp;
     }
+}
+
+// На CJ напал кто-то другой посреди разговора: собеседник не «договаривает», а реагирует делом.
+// Свой из Grove к этому моменту уже вступился сам (crew), ИИ добавляет слова; чужой решает: убежать, звонить, стоять в стороне.
+static double g_attackedCool = 0;
+void OnPlayerAttacked(uintptr_t attacker, const std::string& who, int weapon)
+{
+    if(!g_c.active || g_c.phone || g_c.who != world::WHO_CJ) return;
+    Character* c = Current(); uintptr_t ped = CurrentPed();
+    if(!c || !ped || attacker == ped || !game::Alive(ped)) return;      // бьёт сам собеседник — это его ход, а не событие
+    if(game::Dist(game::Pos(ped), game::Pos(game::Player())) > 25) return;
+    double now = Now(); if(now < g_attackedCool) return;
+    g_attackedCool = now + 8;
+    if(g_c.reqId > 0) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
+    StopVoice();
+    std::string ev = "На " + world::W().playerNick + " прямо сейчас напал " + who + (weapon >= 22 ? " со стволом" : weapon > 0 ? " с оружием" : " с кулаками") +
+                     ". Реагируй делом сразу: свой — вступись (attack target his_attacker), чужой — как сам решишь (убежать, звонить копам, стоять в стороне)";
+    TRACE("РАЗГОВОР", "на CJ напал %s посреди разговора с #%d — событие собеседнику", who.c_str(), c->id);
+    int cid = c->id;
+    Later(0.3, [cid, ev]() { if(Character* cc = world::Find(cid)) if(g_c.active && g_c.charId == cid) React(*cc, world::WHO_CJ, ev, true); });
 }
 
 // Прогрев кэша правил педов: первый ответ нового разговора без него шёл 7 с (запись 6–7 тыс. токенов в кэш),

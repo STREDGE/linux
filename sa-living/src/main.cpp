@@ -23,6 +23,7 @@
 #include "platform/bridge.h"
 #include "settings.h"
 #include "sim/life.h"
+#include "sim/crew.h"
 #include "sim/police.h"
 #include "talk/talk.h"
 #include "ui/hud.h"
@@ -30,7 +31,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.2.11, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.2.12, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
@@ -229,6 +230,7 @@ static void Frame()
     WHERE("кадр: Джарвис"); jarvis::Frame();
     WHERE("кадр: полиция"); police::Frame();
     WHERE("кадр: жизнь города"); life::Frame();
+    WHERE("кадр: свои за своего"); crew::Frame();
     WHERE("кадр: прочее");
     { std::string n; while(speech::PopNotice(n)) talk::Notify(n); }
     if(coopnet::GetRole() == coopnet::HOST && now >= g_nextSync) { g_nextSync = now + 15; HostSync(); }
@@ -269,7 +271,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
     bool r = GenericLoad(ok);
     if(g_ok)
     {
-        talk::EndConversation(); jarvis::OnWorldSwitch(false); police::Reset(); claude::AbortAll("загрузка игры");
+        talk::EndConversation(); jarvis::OnWorldSwitch(false); police::Reset(); crew::Reset(); claude::AbortAll("загрузка игры");
         // имя файла, из которого игра реально грузится; ms_ValidSaveName — запасной вариант (его могло перезаписать меню)
         std::string a = g_loadFileName ? g_loadFileName : "", b = g_validSaveName ? g_validSaveName : "";
         std::string n = !a.empty() && (world::HasMemory(a) || b.empty() || !world::HasMemory(b)) ? a : !b.empty() ? b : "default";
@@ -282,7 +284,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
 SDECL_HOOKv(MenuNewGame)
 {
     TRACE("ИГРА", "новая игра");
-    if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); police::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
+    if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); police::Reset(); crew::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
     MenuNewGame();
 }
 

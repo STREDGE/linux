@@ -48,6 +48,8 @@ namespace talk
 
     // Реакция персонажа на событие без слов игрока (инициатива). Возвращает false, если не отправлено.
     bool React(world::Character& c, int who, const std::string& eventText, bool important);
+    // На CJ напал кто-то посреди разговора (не сам собеседник) — собеседник реагирует (crew)
+    void OnPlayerAttacked(uintptr_t attacker, const std::string& who, int weapon);
 
     // Субтитры
     struct Sub { std::string who, text; double until; bool player; int charId; double from = 0; };   // from — когда показать (длинная речь — по частям)
