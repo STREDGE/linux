@@ -78,6 +78,8 @@ namespace talk
     void SayNear(world::Character* c, const std::string& who, const std::string& text, uintptr_t src);
     // У друга: пед — копия педа хоста (SA Coop) — тело ему двигает хост (RemoteBody)
     bool CoopCopy(uintptr_t ped);
+    std::string MyName();                 // как зовут игрока этого телефона (у друга — его ник SA Coop)
+    std::string NameFor(int who);         // имя CJ/друга с точки зрения этого телефона
     // Действие телом педа: у друга с копией — отправить хосту (true), иначе false (делай сам)
     bool RemoteBody(uintptr_t ped, const std::string& kind, const json::Value& args);
 

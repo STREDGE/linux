@@ -181,7 +181,7 @@ namespace
             {
                 Character& c = world::Promote(t);
                 if(!c.aiProfile) RequestProfile(c);
-                talk::React(c, world::WHO_CJ, world::W().playerNick + " навёл на тебя пистолет и держит на прицеле", true);
+                talk::React(c, world::WHO_CJ, talk::NameFor(world::WHO_CJ) + " навёл на тебя пистолет и держит на прицеле", true);
                 g_nextInit = now + cooldown; g_aimRef = 0;
                 return;
             }
@@ -200,7 +200,7 @@ namespace
             if(!strong) continue;
             int sinceMin = (world::Day() - c.lastTalkDay) * 1440 + (game::Hour() * 60 + game::Minute() - c.lastTalkMin);
             if(c.lastTalkDay >= 0 && sinceMin < 180) continue;
-            talk::React(c, world::WHO_CJ, Fmt("Ты снова видишь %s рядом с собой (вы знакомы). Отреагируй, как сделал бы на самом деле.", world::W().playerNick.c_str()), false);
+            talk::React(c, world::WHO_CJ, Fmt("Ты снова видишь %s рядом с собой (вы знакомы). Отреагируй, как сделал бы на самом деле.", talk::NameFor(world::WHO_CJ).c_str()), false);
             g_nextInit = now + cooldown;
             return;
         }

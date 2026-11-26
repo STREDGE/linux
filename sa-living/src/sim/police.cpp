@@ -594,7 +594,7 @@ void SpawnCopForFriend()
     {
         game::GiveWeapon(cop, 22, 60); game::SetCurrentWeapon(cop, 22);
         game::TaskGoTo(cop, p, 4, 3.0f);
-        world::Promote(cop);                                            // персонаж: игра уберёт его, когда он уйдёт далеко (не копится)
+        world::Promote(cop).home = game::Vec{};                         // персонаж: уберётся, когда уйдёт далеко; «домой» на место ареста не выводится
         TRACE("АРЕСТ", "друг сдаётся: вызван коп P#%d к второму CJ", game::Ref(cop));
     }
 }
