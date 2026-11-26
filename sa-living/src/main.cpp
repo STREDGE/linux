@@ -31,7 +31,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.4.0, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.4.1, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
@@ -318,10 +318,11 @@ ON_MOD_LOAD()
     const settings::Data& s = settings::Get();
     if(!s.enabled) { LogInfo("Мод выключен в настройках (Enabled = 0)"); return; }
 
-    claude::Settings cs; cs.key = s.key; cs.model = s.model; cs.effort = s.effort;
+    claude::Settings cs; cs.key = s.key; cs.model = s.model; cs.effort = s.effort; cs.tier = s.tier;
     claude::Configure(cs);
     claude::SetDailyLimit(s.dailyLimit);
-    LogInfo("ИИ: ключ %s, модель %s, режим %s", claude::HasKey() ? "есть" : "нет (вставь в Настройки > AI)", s.model.c_str(), s.effort.c_str());
+    LogInfo("ИИ: ключ %s, модель разговоров %s (реакции — %s), режим %s, лимит %s", claude::HasKey() ? "есть" : "нет (вставь в Настройки > AI)",
+            claude::ModelFor(claude::ROLE_TALK).c_str(), claude::ModelFor(claude::ROLE_REACT).c_str(), s.effort.c_str(), s.dailyLimit > 0 ? std::to_string(s.dailyLimit).c_str() : "нет");
 
     world::Reset();
     world::g_forgetDays = s.forgetDays;

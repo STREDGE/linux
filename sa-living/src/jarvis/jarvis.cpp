@@ -620,8 +620,10 @@ namespace
         req.system = json::Value::Array(); req.system.push(sys);
         req.tools = Tools();
         req.messages = g_hist;
-        req.maxTokens = 4000;
+        req.maxTokens = 6000;
         req.tag = "джарвис";
+        req.role = claude::ROLE_JARVIS;
+        req.effort = "low";                      // Sonnet 5.5 и на low точнее прежнего Haiku medium, а отвечает быстрее
         Show(THINKING);
         g_req = claude::Send(req, OnAiText, OnAiDone);
         if(!g_req) { g_hist = json::Value::Array(); Reply(Fmt("ИИ сейчас недоступен, %s.", Sir())); }

@@ -1893,6 +1893,12 @@ bool IsOpen() { return g_open; }
 void DebugRequestEdit() { g_editRequested = true; }   // только для превью на компьютере
 #endif
 
+// Долгое удержание пальца — в игре «оглянуться назад» (CPad::GetLookBehindForPed/ForCar → IsHeldDown):
+// пока держишь кнопку микрофона, камера разворачивалась к лицу CJ. Касание у игры не забираем (сломались бы
+// кнопки других модов) — просто не даём «оглянуться», пока палец на нашей кнопке.
+DECL_HOOKb(LookBehindPed, uintptr_t self) { if(g_micHeld) return false; return LookBehindPed(self); }
+DECL_HOOKb(LookBehindCar, uintptr_t self) { if(g_micHeld) return false; return LookBehindCar(self); }
+
 bool Init(void* h, FLogger* log)
 {
     g_log = log;
@@ -1929,6 +1935,8 @@ bool Init(void* h, FLogger* log)
         aml->Hook(adjUpd,  (void*)HookOf_AdjustableHudUpdate, (void**)&AdjustableHudUpdate);
     }
     else logger->Error("Нет CAdjustableHUD — кнопки CO-OP не появятся в «Настройке сенсоров»");
+    if(void* lp = (void*)aml->GetSym(h, "_ZN4CPad19GetLookBehindForPedEv")) aml->Hook(lp, (void*)HookOf_LookBehindPed, (void**)&LookBehindPed);
+    if(void* lc = (void*)aml->GetSym(h, "_ZN4CPad19GetLookBehindForCarEv")) aml->Hook(lc, (void*)HookOf_LookBehindCar, (void**)&LookBehindCar);
     void* camProcess = (void*)aml->GetSym(h, "_ZN7CCamera7ProcessEv");
     if(camProcess) aml->Hook(camProcess, (void*)HookOf_CameraProcess, (void**)&CameraProcess);
     void* r2d = (void*)aml->GetSym(h, "_Z13Render2dStuffv");

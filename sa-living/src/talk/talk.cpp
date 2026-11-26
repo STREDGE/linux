@@ -212,7 +212,7 @@ namespace
     {
         if(!d.isArray()) { d = json::Value::Array(); return; }
         auto& a = d.arr();
-        while(a.size() > 18)
+        while(a.size() > 40)                       // длинная память разговора (было 18 — экономили)
         {
             a.erase(a.begin());
             // первым должно идти сообщение пользователя без «висящих» tool_result
@@ -581,11 +581,13 @@ namespace
         req.system = json::Value::Array(); req.system.push(rules); req.system.push(card);
         req.tools = Tools();
         req.messages = dialog;
-        req.maxTokens = 1200;
+        req.maxTokens = 2500;
         req.tag = "разговор";
+        // мгновенная реакция на событие (ударили, ствол, напали) — быстрая модель: важнее успеть; разговор — Sonnet 5.5
+        req.role = userText.find("[Событие:") != std::string::npos ? claude::ROLE_REACT : claude::ROLE_TALK;
         // Живой разговор: ответ нужен за секунду-две. «Быстро» — без размышления; «Умнее» — с коротким размышлением.
         g_lastTalkReq = Now();
-        req.effort = "low";
+        req.effort = settings::Get().effort.empty() ? "low" : settings::Get().effort;   // «Быстро» — low, «Умнее» — medium
         // С коротким размышлением: без него модель вслух проговаривала ремарки и свои рассуждения (тест 0.2.6).
         // Задержка с размышлением на low по логам 1,2–2 с — разница с «без» небольшая.
         req.noThinking = false;
@@ -775,7 +777,7 @@ namespace
         game::ForEachPed([&](uintptr_t p) {
             if(p == mainPed || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p) || game::IsScriptPed(p)) return;
             if(game::FightTarget(p)) return;                         // дерётся / целится (напал на CJ, вступился) — не «слушатель»
-            float d = game::Dist(game::Pos(p), at); if(d > 10.0f) return;
+            float d = game::Dist(game::Pos(p), at); if(d > 14.0f) return;
             if(world::Character* ex = world::FindByPed(p))
             {
                 for(int id : cv.group) if(id == ex->id) return;
@@ -790,7 +792,7 @@ namespace
         for(int id : cv.group) if(Character* m = world::Find(id)) used.push_back(m->voice);
         for(auto& n : near)
         {
-            if(cv.group.size() >= 4) break;
+            if(cv.group.size() >= 6) break;
             Character& m = world::Promote(n.p);
             if(m.id == mainId) continue;
             EnsureVoice(m, used); used.push_back(m.voice);
@@ -1721,16 +1723,25 @@ static void WarmFrame(double now)
     g_nextWarm = now + 30;                                       // повторная проверка через 30 с
     if(!claude::HasKey() || claude::LimitReached() || game::GamePaused() || !game::Player()) return;
     if(coopnet::GetRole() == coopnet::CLIENT) return;            // у друга разговоры идут через хоста
-    if(now - g_lastTalkReq < 240) return;                        // недавно говорили — кэш и так тёплый
-    claude::Request req;
-    json::Value rules = json::Value::Object(); rules["type"] = "text"; rules["text"] = WorldRules();
-    json::Value cc = json::Value::Object(); cc["type"] = "ephemeral"; rules["cache_control"] = cc;
-    req.system = json::Value::Array(); req.system.push(rules);
-    req.tools = Tools();
-    json::Value m = json::Value::Object(); m["role"] = "user"; m["content"] = "warmup";
-    req.messages = json::Value::Array(); req.messages.push(m);
-    req.effort = "low"; req.noThinking = false; req.cache = false; req.warmOnly = true; req.tag = "прогрев кэша";
-    if(claude::Send(req, nullptr, nullptr)) { g_lastTalkReq = now; g_nextWarm = now + 240; }
+    if(now - g_lastTalkReq < 150) return;                        // недавно говорили — кэш и так тёплый (живёт 5 мин)
+    // Греем обе модели: разговоры (Sonnet) и мгновенные реакции (Haiku) — у каждой свой кэш
+    bool sent = false;
+    for(int role : { (int)claude::ROLE_TALK, (int)claude::ROLE_REACT })
+    {
+        claude::Request req;
+        json::Value rules = json::Value::Object(); rules["type"] = "text"; rules["text"] = WorldRules();
+        json::Value cc = json::Value::Object(); cc["type"] = "ephemeral"; rules["cache_control"] = cc;
+        req.system = json::Value::Array(); req.system.push(rules);
+        req.tools = Tools();
+        json::Value m = json::Value::Object(); m["role"] = "user"; m["content"] = "warmup";
+        req.messages = json::Value::Array(); req.messages.push(m);
+        req.role = role;
+        req.effort = settings::Get().effort.empty() ? "low" : settings::Get().effort;   // те же параметры, что у настоящего запроса
+        req.noThinking = false; req.cache = false; req.warmOnly = true; req.tag = "прогрев кэша";
+        if(claude::Send(req, nullptr, nullptr)) sent = true;
+        if(claude::ModelFor(claude::ROLE_TALK) == claude::ModelFor(claude::ROLE_REACT)) break;   // «Быстрее»: модель одна
+    }
+    if(sent) { g_lastTalkReq = now; g_nextWarm = now + 150; }
 }
 
 // Рефлекс на ствол без ИИ, потом ИИ решает, что сказать. aimer — кто целится, who — он в мире SA Living (у хоста: CJ / друг)

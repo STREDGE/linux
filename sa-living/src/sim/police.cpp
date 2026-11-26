@@ -380,7 +380,7 @@ namespace
         json::Value fmt; json::Parse(R"({"type":"json_schema","schema":{"type":"object","additionalProperties":false,
             "required":["speech","verdict","fine","days"],"properties":{"speech":{"type":"string"},
             "verdict":{"type":"string","enum":["acquit","fine","probation","jail"]},"fine":{"type":"integer"},"days":{"type":"integer"}}}})", fmt);
-        r.format = fmt; r.maxTokens = 600; r.cache = false; r.tag = "суд"; r.effort = "medium";
+        r.format = fmt; r.maxTokens = 4000; r.cache = false; r.tag = "суд"; r.effort = "medium"; r.role = claude::ROLE_WORLD;   // запас под размышление
         g_scene.waitingAi = true;
         g_courtReq = claude::Send(r, nullptr, [](claude::Result& res) {
             g_courtReq = 0; g_scene.waitingAi = false;
@@ -442,7 +442,7 @@ namespace
             "properties":{"episodes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","text","effect","person"],
             "properties":{"title":{"type":"string"},"text":{"type":"string"},"effect":{"type":"string","enum":["none","enemy","contact","deal","beaten"]},
             "person":{"type":"string"}}}}}}})", fmt);
-        r.format = fmt; r.maxTokens = 900; r.cache = false; r.tag = "тюрьма";
+        r.format = fmt; r.maxTokens = 4000; r.cache = false; r.tag = "тюрьма"; r.effort = "low"; r.role = claude::ROLE_WORLD;
         g_scene.waitingAi = true;
         int id = claude::Send(r, nullptr, [](claude::Result& res) {
             g_scene.waitingAi = false;

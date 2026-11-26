@@ -16,7 +16,8 @@ namespace settings
         bool  subtitles = true;
         std::string lang = "ru-RU";
         int   initiative = 1;               // 0 выкл, 1 редко, 2 часто — педы сами заговаривают
-        int   dailyLimit = 400;             // запросов в день
+        int   dailyLimit = 0;               // запросов в день (0 — без лимита)
+        int   tier = 1;                     // ИИ: 0 — быстрее всего (Haiku), 1 — максимум (Sonnet 5.5)
         bool  realArrest = true;            // задержание по шагам вместо «Busted»
         bool  witnesses = true;             // розыск только по свидетелям
         bool  shareKeyWithFriend = true;    // в коопе друг говорит через мой ключ

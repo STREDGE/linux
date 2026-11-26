@@ -24,7 +24,8 @@ void Load()
     d.subtitles  = cfg->GetBool("Subtitles", true, "AI");
     d.lang       = Str("Language", "ru-RU", "AI");
     d.initiative = cfg->GetInt("Initiative", 1, "AI");
-    d.dailyLimit = cfg->GetInt("DailyLimit", 400, "AI");
+    d.dailyLimit = cfg->GetInt("DailyLimit", 0, "AI2");      // новый раздел: по умолчанию без лимита (старое «400» не тянем)
+    d.tier       = cfg->GetInt("Tier", 1, "AI2");            // по умолчанию — Sonnet 5.5
     d.shareKeyWithFriend = cfg->GetBool("FriendUsesMyKey", true, "AI");
     d.director   = cfg->GetBool("Director", true, "AI");
     d.realArrest = cfg->GetBool("RealisticArrest", true, "Realism");
@@ -61,7 +62,7 @@ void Save()
     SETS("ApiKey", d.key, "AI"); SETS("Model", d.model, "AI"); SETS("Effort", d.effort, "AI");
     SETI("VoiceLoudness", d.voiceLoud, "AI");
     SETB("Voices", d.voices, "AI"); SETB("Subtitles", d.subtitles, "AI"); SETS("Language", d.lang, "AI");
-    SETI("Initiative", d.initiative, "AI"); SETI("DailyLimit", d.dailyLimit, "AI");
+    SETI("Initiative", d.initiative, "AI"); SETI("DailyLimit", d.dailyLimit, "AI2"); SETI("Tier", d.tier, "AI2");
     SETB("FriendUsesMyKey", d.shareKeyWithFriend, "AI"); SETB("Director", d.director, "AI");
     SETB("RealisticArrest", d.realArrest, "Realism"); SETB("WantedByWitnesses", d.witnesses, "Realism");
     SETI("TalkX", (int)(d.talkX * 10000), "Layout"); SETI("TalkY", (int)(d.talkY * 10000), "Layout"); SETI("TalkScale", (int)(d.talkS * 100), "Layout");

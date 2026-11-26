@@ -30,7 +30,12 @@ namespace
         bool gotStop = false;
         double sentAt = 0;
         bool warm = false;
+        std::string model;            // для цены и лога
+        std::string body;             // тело (только с fallbacks — на случай повтора без них)
+        int  timeoutMs = 45000;
     };
+    bool g_noFallbacks = false;       // сервер не принял fallbacks — дальше без них
+    std::map<int, int> g_alias;       // номер для вызывающего ← номер повторного запроса в мосту
     std::map<int, Pending> g_pending;
     struct Proxied { TextFn onText; DoneFn onDone; std::string tag; double at = 0; };
     double Mono() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
@@ -48,13 +53,22 @@ namespace
     }
     void RollDay() { int d = Today_(); if(d != g_day) { g_day = d; g_today = Usage(); } }
 
-    void AddUsage(const Result& r, bool err)
+    // Цена за 1 млн токенов: вход, выход, чтение кэша, запись кэша (примерно — для счётчика в меню)
+    void Price(const std::string& model, double& in, double& out, double& cr, double& cw)
+    {
+        if(model.find("sonnet") != std::string::npos) { in = 2; out = 10; cr = 0.10; cw = 2.5; }
+        else                                           { in = 0.10; out = 0.50; cr = 0.01; cw = 0.125; }
+    }
+    void AddUsage(const Result& r, bool err, const std::string& model)
     {
         RollDay();
+        double pi, po, pr, pw; Price(model, pi, po, pr, pw);
+        double usd = (r.inTok * pi + r.outTok * po + r.cacheRead * pr + r.cacheWrite * pw) / 1e6;
         for(Usage* u : { &g_today, &g_total })
         {
             u->requests++; if(err) u->errors++;
             u->inTok += r.inTok; u->outTok += r.outTok; u->cacheRead += r.cacheRead; u->cacheWrite += r.cacheWrite;
+            u->usd += usd;
         }
     }
 
@@ -105,14 +119,15 @@ namespace
             // thinking-блоки (если вернутся) в историю не кладём: каждый ход — новый запрос
         }
         if(r.status == 200 && r.stopReason == "refusal") { r.ok = false; r.error = "Модель отказалась отвечать"; }
-        AddUsage(r, !r.ok);
+        AddUsage(r, !r.ok, p.model);
         LOG_INFO("[ИИ] %s: %s, ток. вход %d (кэш %d/%d), выход %d, инстр. %d, стоп %s",
                  p.tag.c_str(), r.ok ? "ok" : r.error.c_str(), r.inTok, r.cacheRead, r.cacheWrite, r.outTok,
                  (int)r.tools.size(), r.stopReason.c_str());
         {
             std::string tools;
             for(auto& t : r.tools) { std::string in = t.input.dump(); if(in.size() > 600) in = in.substr(0, 600) + "…"; tools += " " + t.name + in; }
-            TRACE("ИИ<", "#%d %s: %s за %.2f с, вход %d (кэш %d/%d), выход %d, стоп %s%s | текст: %s | инструменты:%s", id, p.tag.c_str(),
+            TRACE("ИИ<", "#%d %s [%s]: %s за %.2f с, вход %d (кэш %d/%d), выход %d, стоп %s%s | текст: %s | инструменты:%s", id, p.tag.c_str(),
+                  p.model.c_str(),
                   r.ok ? "ok" : r.error.c_str(), p.sentAt > 0 ? Mono() - p.sentAt : 0.0, r.inTok, r.cacheRead, r.cacheWrite, r.outTok,
                   r.stopReason.c_str(), p.cancelled ? " (отменён)" : "", r.text.c_str(), tools.empty() ? " нет" : tools.c_str());
         }
@@ -183,7 +198,7 @@ static json::Value ReqToJ(const Request& r)
 {
     json::Value v = json::Value::Object();
     v["system"] = r.system; v["tools"] = r.tools; v["messages"] = r.messages; v["maxTokens"] = r.maxTokens;
-    v["effort"] = r.effort; v["format"] = r.format; v["cache"] = r.cache; v["tag"] = r.tag; v["noThinking"] = r.noThinking;
+    v["effort"] = r.effort; v["format"] = r.format; v["cache"] = r.cache; v["tag"] = r.tag; v["noThinking"] = r.noThinking; v["role"] = r.role;
     return v;
 }
 
@@ -202,7 +217,9 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
     if(LimitReached()) return 0;
 
     json::Value body = json::Value::Object();
-    body["model"] = g_s.model;
+    std::string model = !req.model.empty() ? req.model : ModelFor(req.role);
+    bool sonnet = model.find("sonnet") != std::string::npos;
+    body["model"] = model;
     body["max_tokens"] = req.warmOnly ? 0 : req.maxTokens;
     body["stream"] = !req.warmOnly;       // max_tokens 0 с потоком API отклоняет
     if(req.system.size()) body["system"] = req.system;
@@ -211,10 +228,17 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
     json::Value oc = json::Value::Object();
     std::string eff = req.effort.empty() ? g_s.effort : req.effort;
     oc["effort"] = eff;
-    if(req.noThinking && (eff == "low" || eff == "medium" || eff == "high")) { json::Value th = json::Value::Object(); th["type"] = "disabled"; body["thinking"] = th; }
+    if(req.noThinking && (eff == "low" || eff == "medium" || eff == "high"))
+    {   // «без размышления»: Haiku — disabled, Sonnet 5.5 — between_tools (disabled у него — ошибка 400)
+        json::Value th = json::Value::Object();
+        th["type"] = sonnet ? "between_tools" : "disabled"; body["thinking"] = th;
+    }
     if(!req.format.isNull()) oc["format"] = req.format;
     body["output_config"] = oc;
     if(req.cache) { json::Value cc = json::Value::Object(); cc["type"] = "ephemeral"; body["cache_control"] = cc; }
+    // Отказ фильтров Sonnet 5.5 — сервер сам повторит на запасной модели (у Haiku запасной нет)
+    bool fallbacks = sonnet && !req.warmOnly && !g_noFallbacks;
+    if(fallbacks) body["fallbacks"] = "default";
 
     std::vector<std::string> headers = {
         "content-type", "application/json",
@@ -222,10 +246,13 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
         "anthropic-version", g_s.apiVersion,
         "accept", "text/event-stream",
     };
+    if(fallbacks) { headers.push_back("anthropic-beta"); headers.push_back("server-side-fallback-2026-07-01"); }
     int id = bridge::HttpPost(g_s.url.c_str(), headers, body.dump(), req.timeoutMs);
     if(!id) return 0;
     Pending& p = g_pending[id];
     p.onText = onText; p.onDone = onDone; p.tag = req.tag; p.sentAt = Mono(); p.warm = req.warmOnly;
+    p.model = model; p.timeoutMs = req.timeoutMs;
+    if(fallbacks) { json::Value b2 = body; b2.erase("fallbacks"); p.body = b2.dump(); }
     {   // в подробный лог: что спросили (последнее сообщение — обстановка и слова игрока / результаты инструментов)
         std::string last;
         if(req.messages.isArray() && req.messages.size())
@@ -234,7 +261,7 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
             last = m["content"].isString() ? m["content"].str() : m["content"].dump();
         }
         if(last.size() > 3000) last = last.substr(0, 3000) + "…";
-        TRACE("ИИ>", "#%d %s: режим %s%s, сообщений %d, последнее: %s", id, req.tag, (req.effort.empty() ? g_s.effort : req.effort).c_str(),
+        TRACE("ИИ>", "#%d %s [%s]: режим %s%s, сообщений %d, последнее: %s", id, req.tag, model.c_str(), (req.effort.empty() ? g_s.effort : req.effort).c_str(),
               req.noThinking ? " без размышления" : "", req.messages.isArray() ? (int)req.messages.size() : 0, last.c_str());
     }
     return id;
@@ -243,6 +270,7 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
 void Cancel(int id)
 {
     auto it = g_pending.find(id); if(it != g_pending.end()) it->second.cancelled = true;
+    for(auto& kv : g_alias) if(kv.second == id) { auto j = g_pending.find(kv.first); if(j != g_pending.end()) j->second.cancelled = true; }
     auto pt = g_proxied.find(id); if(pt != g_proxied.end()) { pt->second.onText = nullptr; pt->second.onDone = nullptr; }
 }
 int  InFlight() { return (int)(g_pending.size() + g_proxied.size()); }
@@ -276,7 +304,7 @@ void HandleProxyRequest(const json::Value& m)
     const json::Value& j = m["req"];
     Request r;
     r.system = j["system"]; r.tools = j["tools"]; r.messages = j["messages"]; r.maxTokens = j["maxTokens"].i(600);
-    r.effort = j["effort"].str(); r.format = j["format"]; r.cache = j["cache"].b(true); r.noThinking = j["noThinking"].b(false);
+    r.effort = j["effort"].str(); r.format = j["format"]; r.cache = j["cache"].b(true); r.noThinking = j["noThinking"].b(false); r.role = j["role"].i(ROLE_TALK);
     static std::string tagBuf; tagBuf = "друг: " + j["tag"].str(); r.tag = tagBuf.c_str();
     int id = Send(r, nullptr, [reply](Result& res) {
         json::Value o = json::Value::Object();
@@ -327,6 +355,22 @@ void Pump()
             g_pending.erase(it);
             continue;
         }
+        if(e.status == 400 && !p.body.empty() && e.text.find("allback") != std::string::npos)
+        {   // параметр fallbacks не приняли — повторяем тот же запрос без него (номер для вызывающего тот же)
+            g_noFallbacks = true;
+            LOG_ERROR("[ИИ] сервер не принял fallbacks — дальше без запасной модели");
+            std::vector<std::string> headers = { "content-type", "application/json", "x-api-key", g_s.key, "anthropic-version", g_s.apiVersion, "accept", "text/event-stream" };
+            int nid = bridge::HttpPost(g_s.url.c_str(), headers, p.body, p.timeoutMs);
+            if(nid)
+            {
+                int pub = e.id; auto al = g_alias.find(e.id); if(al != g_alias.end()) { pub = al->second; g_alias.erase(al); }
+                Pending np = std::move(p); g_pending.erase(it);
+                np.body.clear(); np.blocks.clear(); np.r = Result(); np.gotStop = false; np.event.clear();
+                g_alias[nid] = pub;
+                g_pending[nid] = std::move(np);
+                continue;
+            }
+        }
         p.r.status = e.status;
         if(e.status == 200 && p.gotStop && p.r.error.empty()) p.r.ok = true;
         else if(e.status == 200 && p.r.error.empty()) { p.r.ok = !p.blocks.empty(); if(!p.r.ok) p.r.error = "Ответ оборвался"; }
@@ -334,18 +378,22 @@ void Pump()
         if(!p.r.ok) LOG_ERROR("[ИИ] %s: HTTP %d %s", p.tag.c_str(), e.status, p.r.error.c_str());
         Pending done = std::move(p);
         g_pending.erase(it);
-        Finish(e.id, done);
+        int pub = e.id; { auto al = g_alias.find(e.id); if(al != g_alias.end()) { pub = al->second; g_alias.erase(al); } }
+        Finish(pub, done);
     }
 }
 
 Usage Today() { RollDay(); return g_today; }
 Usage Total() { return g_total; }
 
-double CostUsd(const Usage& u)
+double CostUsd(const Usage& u) { return u.usd; }
+
+// Уровень 1 (по умолчанию): разговоры, Джарвис и мир — Sonnet 5.5 (умнее, живее), а мгновенные реакции на событие
+// (ударили, навели ствол, напали) — Haiku 5.5: там важнее скорость, слова короткие. Уровень 0 — всё на Haiku (быстрее всего).
+std::string ModelFor(int role)
 {
-    // Haiku 5.5: $0.10 / 1M вход, $0.50 / 1M выход; чтение кэша ~в 10 раз дешевле, запись — ~на 25% дороже
-    double in = (double)(u.inTok) * 0.10 + (double)u.cacheRead * 0.01 + (double)u.cacheWrite * 0.125;
-    return (in + (double)u.outTok * 0.50) / 1e6;
+    if(g_s.tier <= 0 || role == ROLE_REACT) return "claude-haiku-5-5";
+    return "claude-sonnet-5-5";
 }
 
 void SetDailyLimit(int r) { g_dailyLimit = r; }
@@ -355,13 +403,15 @@ static json::Value UsageToJson(const Usage& u)
 {
     json::Value v = json::Value::Object();
     v["requests"] = u.requests; v["errors"] = u.errors; v["in"] = (double)u.inTok; v["out"] = (double)u.outTok;
-    v["cr"] = (double)u.cacheRead; v["cw"] = (double)u.cacheWrite;
+    v["cr"] = (double)u.cacheRead; v["cw"] = (double)u.cacheWrite; v["usd"] = u.usd;
     return v;
 }
 static Usage UsageFromJson(const json::Value& v)
 {
     Usage u; u.requests = v["requests"].i(); u.errors = v["errors"].i(); u.inTok = (long long)v["in"].num();
     u.outTok = (long long)v["out"].num(); u.cacheRead = (long long)v["cr"].num(); u.cacheWrite = (long long)v["cw"].num();
+    // старые записи без цены — по ценам Haiku (тогда другой модели не было)
+    u.usd = v.has("usd") ? v["usd"].num() : (u.inTok * 0.10 + u.outTok * 0.50 + u.cacheRead * 0.01 + u.cacheWrite * 0.125) / 1e6;
     return u;
 }
 

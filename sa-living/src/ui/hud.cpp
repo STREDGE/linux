@@ -197,7 +197,7 @@ namespace
     {
         claude::Request r;
         json::Value msg = json::Value::Object(); msg["role"] = "user"; msg["content"] = "Ответь одним словом: работает";
-        r.messages = json::Value::Array(); r.messages.push(msg); r.maxTokens = 32; r.cache = false; r.tag = "проверка ключа";
+        r.messages = json::Value::Array(); r.messages.push(msg); r.maxTokens = 64; r.noThinking = true; r.cache = false; r.tag = "проверка ключа";
         MenuToast("Проверяю ключ…");
         g_checkReq = claude::Send(r, nullptr, [](claude::Result& res) {
             g_checkReq = 0;
@@ -345,7 +345,8 @@ namespace
         }
         if(!st.error.empty()) { Tx(F_SMALL, ImVec2(x0, y), C(kRed), ("Ошибка речи: " + st.error).c_str(), x1 - x0); y += TS(F_SMALL, st.error.c_str(), x1 - x0).y + U(1.5f); }
         claude::Usage t = claude::Today(), all = claude::Total();
-        std::string us = Fmt("сегодня %d запр. около $%.3f · всего %d около $%.2f · лимит %d в день", t.requests, claude::CostUsd(t), all.requests, claude::CostUsd(all), s.dailyLimit);
+        std::string us = Fmt("сегодня %d запр. около $%.3f · всего %d около $%.2f · %s", t.requests, claude::CostUsd(t), all.requests, claude::CostUsd(all),
+                             s.dailyLimit > 0 ? Fmt("лимит %d в день", s.dailyLimit).c_str() : "без лимита");
         Row(y, x0, x1, "Расход ИИ", us.c_str()); y += U(5.0f);
         const char* mode = coopnet::GetRole() == coopnet::HOST ? "кооп: ты хост (ИИ по твоему ключу)" : coopnet::GetRole() == coopnet::CLIENT ? "кооп: ИИ через хоста" : "одиночная игра";
         std::string mem = world::MemoryKey().empty() ? std::string("игра не загружена") : "память сохранения «" + world::MemoryKey() + Fmt("»: людей %d", (int)world::W().chars.size());
@@ -457,21 +458,20 @@ namespace
 
     void TabSettings(settings::Data& s, float x0, float x1, float& y)
     {
-        static const char* models[] = { "Haiku 5.5", "Sonnet 5.5" };
-        static const char* modelIds[] = { "claude-haiku-5-5", "claude-sonnet-5-5" };
-        int mi = s.model == modelIds[1] ? 1 : 0;
-        int nm = Chips(y, x0, x1, "Модель", models, 2, mi);
-        if(nm != mi) { s.model = modelIds[nm]; claude::Settings cs = claude::Get(); cs.model = s.model; claude::Configure(cs); }
+        static const char* tiers[] = { "Быстрее (Haiku)", "Максимум (Sonnet)" };
+        int ti = s.tier <= 0 ? 0 : 1;
+        int nt = Chips(y, x0, x1, "Мозг людей и Джарвиса", tiers, 2, ti);
+        if(nt != ti) { s.tier = nt; claude::Settings cs = claude::Get(); cs.tier = s.tier; claude::Configure(cs); }
         static const char* efforts[] = { "Быстро", "Умнее" };
         int ei = s.effort == "medium" ? 1 : 0;
         int ne = Chips(y, x0, x1, "Режим размышлений", efforts, 2, ei);
         if(ne != ei) { s.effort = ne ? "medium" : "low"; claude::Settings cs = claude::Get(); cs.effort = s.effort; claude::Configure(cs); }
         static const char* inits[] = { "Выкл", "Редко", "Часто" };
         s.initiative = Chips(y, x0, x1, "Педы сами заговаривают", inits, 3, s.initiative);
-        static const char* limits[] = { "100", "400", "1500" };
-        int li = s.dailyLimit <= 100 ? 0 : (s.dailyLimit <= 400 ? 1 : 2);
+        static const char* limits[] = { "Без лимита", "1500", "400" };
+        int li = s.dailyLimit <= 0 ? 0 : (s.dailyLimit > 400 ? 1 : 2);
         int nl = Chips(y, x0, x1, "Лимит запросов ИИ в день", limits, 3, li);
-        if(nl != li) { static const int lv[] = { 100, 400, 1500 }; s.dailyLimit = lv[nl]; claude::SetDailyLimit(s.dailyLimit); }
+        if(nl != li) { static const int lv[] = { 0, 1500, 400 }; s.dailyLimit = lv[nl]; claude::SetDailyLimit(s.dailyLimit); }
         static const char* forget[] = { "3 дня", "7 дней", "Никогда" };
         int fi = s.forgetDays <= 0 ? 2 : (s.forgetDays <= 3 ? 0 : 1);
         int nf = Chips(y, x0, x1, "Забывать неважных людей через", forget, 3, fi);
@@ -1023,6 +1023,13 @@ void OpenMenu()
     for(auto& f : g_f) f = Finger();
 }
 
+// Долгое удержание пальца на экране — в игре «оглянуться назад» (CPad::GetLookBehindForPed/ForCar →
+// CTouchInterface::IsHeldDown): камера показывала CJ спереди, пока держишь «Говорить». Касание у игры мы не
+// забираем (так нельзя — сломаются кнопки других модов), поэтому, пока палец на нашей кнопке, «оглянуться» — нет.
+namespace { bool OurButtonHeld() { return g_talkHeld || g_jarvisHeld; } }
+SDECL_HOOKb(LookBehindPedH, uintptr_t self) { if(OurButtonHeld()) return false; return LookBehindPedH(self); }
+SDECL_HOOKb(LookBehindCarH, uintptr_t self) { if(OurButtonHeld()) return false; return LookBehindCarH(self); }
+
 bool Init(void* h)
 {
     if(!imgui_rw::Init(h)) { LOG_ERROR("Интерфейс: нет функций RenderWare"); return false; }
@@ -1044,6 +1051,9 @@ bool Init(void* h)
     aml->Hook(r2d, (void*)HookOf_Render2dStuffH, (void**)&Render2dStuffH);
     aml->Hook(render, (void*)HookOf_MobileMenuRenderH, (void**)&MobileMenuRenderH);
     aml->Hook(update, (void*)HookOf_MobileMenuUpdateH, (void**)&MobileMenuUpdateH);
+    if(void* lp = (void*)aml->GetSym(h, "_ZN4CPad19GetLookBehindForPedEv")) aml->Hook(lp, (void*)HookOf_LookBehindPedH, (void**)&LookBehindPedH);
+    else LOG_ERROR("Интерфейс: нет CPad::GetLookBehindForPed — камера может разворачиваться при удержании кнопки");
+    if(void* lc = (void*)aml->GetSym(h, "_ZN4CPad19GetLookBehindForCarEv")) aml->Hook(lc, (void*)HookOf_LookBehindCarH, (void**)&LookBehindCarH);
     LOG_INFO("Интерфейс готов");
     return true;
 }

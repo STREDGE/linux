@@ -169,7 +169,7 @@ namespace
         double now = talk::Now();
         if(now < g_nextInit) return;
         uintptr_t pl = game::Player(); if(!pl) return;
-        double cooldown = lvl >= 2 ? 25 : 70;
+        double cooldown = lvl >= 2 ? 12 : 35;                    // люди подходят сами чаще (не экономим)
 
         // 1) игрок целится в человека
         uintptr_t t = game::PlayerTarget();
@@ -230,7 +230,7 @@ namespace
     {
         if(!settings::Get().director || !claude::Available() || g_directorReq) return;
         int h = game::Hour();
-        if(g_directorHour >= 0 && ((h - g_directorHour + 24) % 24) < 6) return;   // раз в 6 игровых часов (было 3 — около 20 платных запросов в час)
+        if(g_directorHour >= 0 && ((h - g_directorHour + 24) % 24) < 2) return;   // раз в 2 игровых часа — город живёт плотнее (не экономим)
         g_directorHour = h;
         RunDirector(false);
     }
@@ -273,7 +273,7 @@ void RunDirector(bool force)
         "news":{"type":"array","items":{"type":"string"}},
         "police":{"type":"object","additionalProperties":false,"required":["heat_change","start_internal_affairs"],
           "properties":{"heat_change":{"type":"integer"},"start_internal_affairs":{"type":"boolean"}}}}}})", fmt);
-    r.format = fmt; r.maxTokens = 2000; r.effort = "low"; r.cache = false; r.tag = "режиссёр";
+    r.format = fmt; r.maxTokens = 6000; r.effort = "medium"; r.cache = false; r.tag = "режиссёр"; r.role = claude::ROLE_WORLD;   // в фоне — можно подумать
     g_directorReq = claude::Send(r, nullptr, [](claude::Result& res) {
         g_directorReq = 0;
         json::Value v;
@@ -316,7 +316,7 @@ void RequestProfile(Character& c)
     r.messages = json::Value::Array(); r.messages.push(msg);
     json::Value fmt; json::Parse(R"({"type":"json_schema","schema":{"type":"object","additionalProperties":false,"required":["nick","backstory","dream","fear","speech","role"],
       "properties":{"nick":{"type":"string"},"backstory":{"type":"string"},"dream":{"type":"string"},"fear":{"type":"string"},"speech":{"type":"string"},"role":{"type":"string"}}}})", fmt);
-    r.format = fmt; r.maxTokens = 1500; r.effort = "low"; r.noThinking = true; r.cache = false; r.tag = "профиль";   // 500 не хватало: ответ обрывался
+    r.format = fmt; r.maxTokens = 4000; r.effort = "low"; r.cache = false; r.tag = "профиль"; r.role = claude::ROLE_WORLD;   // с размышлением — живее; запас под него
     int id = c.id;
     claude::Send(r, nullptr, [id](claude::Result& res) {
         Character* ch = world::Find(id);
