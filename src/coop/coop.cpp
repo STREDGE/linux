@@ -443,6 +443,24 @@ namespace
     char     g_tsInfo[192] = "";           // что сейчас происходит (для меню)
     int      g_tsLastFind = -9;
     ts::State g_tsLastState = ts::State::Off;
+    uint64_t g_tsKeyTryUs = 0;             // вход по ключу: следующая попытка (ключ — в g_cfg.tsKey / SetTsKey)
+    char     g_tsLastErr[256] = "";
+
+    std::string TsKey() { std::lock_guard<std::mutex> l(g_cfgMutex); return g_hasPending ? g_pendingCfg.tsKey : g_cfg.tsKey; }
+
+    // Ошибка входа Tailscale (по-английски) → понятная подсказка
+    void LoginErrText(const char* e, bool haveKey, char* out, size_t len)
+    {
+        auto has = [&](const char* s) { return strstr(e, s) != nullptr; };
+        if(has("invalid key") || has("key expired") || has("expired") || has("not valid") || has("revoked") || has("unknown key") || has("authkey"))
+            snprintf(out, len, "Код приглашения не подошёл (ключ удалён или устарел). Попроси у хоста новый код");
+        else if(has("attempt to create tailnet") || has("does not exist"))
+            snprintf(out, len, "Вошёл не тем аккаунтом. Проще: вставь код приглашения от хоста (кнопка «Вставить»)");
+        else if(has("deadline") || has("timeout") || has("connection") || has("abort") || has("no route") || has("refused"))
+            snprintf(out, len, "Нет связи с серверами Tailscale. Если включён VPN — выключи его или исключи GTA");
+        else
+            snprintf(out, len, "%s: %.150s", haveKey ? "Вход по коду не удался" : "Вход не удался", e);
+    }
 
     bool IsPointId(const char* s)
     {
@@ -468,10 +486,23 @@ namespace
             Log(st.state == ts::State::Error, "[TAILSCALE] %s%s%s", ts::StateText(st.state), st.error[0] ? ": " : "", st.error);
             if(st.state == ts::State::Running) Log(false, "[TAILSCALE] Мой адрес в сети: %s", st.ip);
         }
+        if(strcmp(st.error, g_tsLastErr))
+        {
+            snprintf(g_tsLastErr, sizeof(g_tsLastErr), "%s", st.error);
+            if(st.error[0] && st.state == ts::State::NeedsLogin) Log(true, "[TAILSCALE] ошибка входа: %s", st.error);
+        }
         if(st.state != ts::State::Running)
         {
-            if(st.state == ts::State::NeedsLogin) TsInfo("Войди в Tailscale (один раз) — кнопка «Войти»");
-            else if(st.state == ts::State::NeedsApproval) TsInfo("Телефон ждёт одобрения в аккаунте Tailscale (сайт → Machines)");
+            std::string key = TsKey();
+            if(st.state == ts::State::NeedsLogin && !key.empty() && now >= g_tsKeyTryUs)
+            {   // код приглашения: входим ключом, без браузера (повтор раз в 20 с, если не вышло)
+                g_tsKeyTryUs = now + 20000000;
+                ts::UseKey(key.c_str());
+            }
+            if(st.state == ts::State::NeedsLogin && st.error[0]) { char m[192]; LoginErrText(st.error, !key.empty(), m, sizeof(m)); TsInfo("%s", m); }
+            else if(st.state == ts::State::NeedsLogin && !key.empty()) TsInfo("Вхожу в сеть по коду приглашения…");
+            else if(st.state == ts::State::NeedsLogin) TsInfo("Войди в Tailscale (один раз) — кнопка «Войти». Или вставь код приглашения от хоста");
+            else if(st.state == ts::State::NeedsApproval) TsInfo("Телефон ждёт одобрения в аккаунте Tailscale (сайт, раздел Machines)");
             else if(st.state == ts::State::Error) TsInfo("Tailscale: %s", st.error);
             else TsInfo("Tailscale %s", ts::StateText(st.state));
             return;
@@ -555,8 +586,8 @@ namespace
                 if(c.role == net::Role::Client && !c.relay[0] && IsPointId(c.hostAddress))
                 {   // друг ввёл ID точки: сначала встроенный Tailscale находит хоста
                     snprintf(g_tsClientId, sizeof(g_tsClientId), "%s", c.hostAddress);
-                    g_tsClientWait = true; g_tsNextTryUs = 0;
-                    ts::Start(c.myId);
+                    g_tsClientWait = true; g_tsNextTryUs = 0; g_tsKeyTryUs = 0;
+                    ts::Start(c.myId, c.tsKey);
                     TsInfo("Включаю Tailscale…");
                     Log(false, "[TAILSCALE] Ищу точку хоста %s (мой ID %s)", g_tsClientId, c.myId);
                     break;
@@ -564,8 +595,8 @@ namespace
                 if(!g_session.Start(c, g_log)) Log(true, "Сеть не запустилась — второй CJ не появится");
                 if(c.role == net::Role::Host && !c.relay[0])
                 {   // хост: открыть точку во встроенном Tailscale (обычный адрес тоже работает)
-                    g_tsHost = true; g_tsNextTryUs = 0;
-                    ts::Start(c.myId);
+                    g_tsHost = true; g_tsNextTryUs = 0; g_tsKeyTryUs = 0;
+                    ts::Start(c.myId, c.tsKey);
                     TsInfo("Включаю Tailscale…");
                 }
                 break;
@@ -1267,7 +1298,17 @@ bool Launch(const char* path, const char* name, char* why, size_t whyLen)
     return ok;
 }
 
-void StartTailscale() { CTRACE("КНОПКА", "включить Tailscale"); ts::Start(GetConfig().myId); }
+void StartTailscale() { CTRACE("КНОПКА", "включить Tailscale"); net::Config c = GetConfig(); ts::Start(c.myId, c.tsKey); }
+void SetTsKey(const char* key)
+{
+    {
+        std::lock_guard<std::mutex> l(g_cfgMutex);
+        snprintf(g_cfg.tsKey, sizeof(g_cfg.tsKey), "%s", key ? key : "");
+        snprintf(g_pendingCfg.tsKey, sizeof(g_pendingCfg.tsKey), "%s", key ? key : "");
+    }
+    g_tsKeyTryUs = 0;
+    CTRACE("КНОПКА", "ключ Tailscale для кода приглашения: %s", key && key[0] ? "сохранён" : "убран");   // сам ключ не пишем
+}
 bool TailscaleLogout() { bool ok = ts::Logout(); CTRACE("КНОПКА", "выйти из аккаунта Tailscale: %s", ok ? "ок" : "не вышло"); return ok; }
 
 bool GameLoaded() { return SlotPed(0) != 0; }

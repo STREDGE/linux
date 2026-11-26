@@ -103,6 +103,7 @@ namespace coop
     NetInfo GetNetInfo();
     void StartTailscale();                                           // включить заранее (войти в аккаунт)
     bool TailscaleLogout();                                          // сменить аккаунт
+    void SetTsKey(const char* key);                                  // ключ для кода приглашения (без сброса сессии)
 
     // Лобби (оба на связи): хост выбирает сохранение и жмёт «Запуск»
     struct LobbyInfo

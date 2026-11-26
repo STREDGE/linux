@@ -12,3 +12,4 @@ struct IAML
 extern IAML* aml;
 #define DECL_HOOK(_ret, _name, ...) _ret (*_name)(__VA_ARGS__); _ret HookOf_##_name(__VA_ARGS__)
 #define DECL_HOOKv(_name, ...) void (*_name)(__VA_ARGS__); void HookOf_##_name(__VA_ARGS__)
+#define DECL_HOOKb(_name, ...) bool (*_name)(__VA_ARGS__); bool HookOf_##_name(__VA_ARGS__)

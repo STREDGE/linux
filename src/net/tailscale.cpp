@@ -20,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 // Вшитая сжатая библиотека (src/net/ts_blob.S, .incbin third_party/tsbridge/sacoopts.gz)
 extern "C" const unsigned char sacoop_ts_blob[];
@@ -33,7 +34,9 @@ namespace
     std::atomic<int>  g_phase{ 0 };      // 0 — не включали, 1 — распаковка, 2 — загружено, -1 — ошибка
     char              g_err[256] = "";
 
-    int  (*f_start)(char*, char*, char*) = nullptr;
+    int  (*f_start)(char*, char*, char*, char*) = nullptr;
+    int  (*f_useKey)(char*) = nullptr;
+    std::string       g_pendKey;           // ключ пришёл, пока библиотека грузится (под g_mu)
     int  (*f_status)(char*, int) = nullptr;
     int  (*f_find)(char*, char*, int) = nullptr;
     int  (*f_bridge)(int, int) = nullptr;
@@ -137,7 +140,7 @@ namespace
         return true;
     }
 
-    void Worker(std::string id)
+    void Worker(std::string id, std::string key)
     {
         char path[600];
         Note(false, "включаю (мой ID %s)", id.c_str());
@@ -146,32 +149,49 @@ namespace
         void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         if(!h) { Fail("не загрузился: %s", dlerror()); return; }
         Note(false, "шаг 2: библиотека загружена");
-        f_start   = (int(*)(char*, char*, char*))dlsym(h, "sacoop_ts_start");
+        f_start   = (int(*)(char*, char*, char*, char*))dlsym(h, "sacoop_ts_start");
+        f_useKey  = (int(*)(char*))dlsym(h, "sacoop_ts_use_key");
         f_status  = (int(*)(char*, int))dlsym(h, "sacoop_ts_status");
         f_find    = (int(*)(char*, char*, int))dlsym(h, "sacoop_ts_find_peer");
         f_bridge  = (int(*)(int, int))dlsym(h, "sacoop_ts_bridge");
         f_setPeer = (int(*)(char*, int))dlsym(h, "sacoop_ts_set_peer");
         f_close   = (void(*)())dlsym(h, "sacoop_ts_close_bridge");
         f_logout  = (int(*)())dlsym(h, "sacoop_ts_logout");
-        if(!f_start || !f_status || !f_find || !f_bridge || !f_setPeer || !f_close || !f_logout) { Fail("в библиотеке нет нужных функций"); return; }
+        if(!f_start || !f_useKey || !f_status || !f_find || !f_bridge || !f_setPeer || !f_close || !f_logout) { Fail("в библиотеке нет нужных функций"); return; }
         char dir[600]; snprintf(dir, sizeof(dir), "%s/sacoop_tailscale", aml->GetDataPath());
         char name[64]; NodeName(id.c_str(), name, sizeof(name));
         char logDir[600]; LogDir(logDir, sizeof(logDir));
         Note(false, "шаг 3: запускаю «%s» (журнал и вылеты: %s/tailscale_log.txt, tailscale_crash.txt)", name, logDir[0] ? logDir : dir);
-        if(f_start(dir, name, logDir) != 0) { Fail("не запустился (папка %s)", dir); return; }
-        Note(false, "шаг 3: запущен, подключаюсь к серверам Tailscale");
-        g_phase = 2;
+        std::vector<char> k(key.begin(), key.end()); k.push_back(0);
+        if(f_start(dir, name, logDir, k.data()) != 0) { Fail("не запустился (папка %s)", dir); return; }
+        Note(false, "шаг 3: запущен, подключаюсь к серверам Tailscale%s", key.empty() ? "" : " (вход по коду приглашения)");
+        std::string pend;
+        { std::lock_guard<std::mutex> l(g_mu); pend.swap(g_pendKey); g_phase = 2; }
+        if(!pend.empty() && pend != key) { std::vector<char> p(pend.begin(), pend.end()); p.push_back(0); f_useKey(p.data()); }
     }
 }
 
 void NodeName(const char* id, char* out, size_t len) { snprintf(out, len, "sacoop-%s", id ? id : ""); }
 void SetLogSink(void (*fn)(bool, const char*)) { g_sink = fn; }
 
-void Start(const char* myId)
+void Start(const char* myId, const char* authKey)
 {
     int expected = 0;
-    if(!g_phase.compare_exchange_strong(expected, 1)) return;
-    std::thread(Worker, std::string(myId ? myId : "")).detach();
+    if(!g_phase.compare_exchange_strong(expected, 1)) { if(authKey && authKey[0]) UseKey(authKey); return; }
+    std::thread(Worker, std::string(myId ? myId : ""), std::string(authKey ? authKey : "")).detach();
+}
+
+void UseKey(const char* authKey)
+{
+    if(!authKey || !authKey[0]) return;
+    {
+        std::lock_guard<std::mutex> l(g_mu);
+        if(g_phase == 1) { g_pendKey = authKey; return; }   // библиотека ещё грузится
+    }
+    if(g_phase != 2) return;
+    std::vector<char> k(authKey, authKey + strlen(authKey) + 1);
+    f_useKey(k.data());
+    Note(false, "вход по коду приглашения");
 }
 
 Status GetStatus()

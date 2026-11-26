@@ -50,6 +50,7 @@ Data Load()
     cfg->GetString(d.net.relay, sizeof(d.net.relay), "Relay", "", "Network");   // сервер-посредник (адрес:порт), пусто — Tailscale
     // Свой ID точки: 6 цифр, создаётся один раз (друг вводит его, чтобы подключиться)
     cfg->GetString(d.net.myId, sizeof(d.net.myId), "MyId", "", "Network");
+    cfg->GetString(d.net.tsKey, sizeof(d.net.tsKey), "TsKey", "", "Network");   // ключ Tailscale для кода приглашения
     bool idOk = strlen(d.net.myId) == 6;
     for(int i = 0; idOk && i < 6; ++i) if(d.net.myId[i] < '0' || d.net.myId[i] > '9') idOk = false;
     if(!idOk)
@@ -74,6 +75,7 @@ void Save(const Data& d)
     e = cfg->Bind("Nick", "Player", "Network");         e->SetString(d.net.nick);              delete e;
     e = cfg->Bind("Relay", "", "Network");              e->SetString(d.net.relay);             delete e;
     if(d.net.myId[0]) { e = cfg->Bind("MyId", "", "Network"); e->SetString(d.net.myId); delete e; }
+    e = cfg->Bind("TsKey", "", "Network");              e->SetString(d.net.tsKey);             delete e;
     cfg->Save();
 }
 

@@ -67,6 +67,8 @@ namespace coop {
                            strcpy(n.info, g_role == net::Role::Host ? "Точка открыта — жду друга" : "Нашёл точку 482913 — стучусь к хосту"); n.pointOpen = true; return n; }
     void StartTailscale() {}
     bool TailscaleLogout() { return true; }
+    void SetTsKey(const char*) {}
+    bool TalkButtonOwned() { return false; }
     LobbyInfo GetLobbyInfo() { LobbyInfo l; l.active = g_lobbyDemo; l.isHost = g_role == net::Role::Host; strcpy(l.peerNick, "HOMIE_BE"); l.pingMs = 84; l.inGame = true;
                                if(!l.isHost) { l.lobby.launchId = 0; l.lobby.hostInGame = true; } return l; }
     std::vector<world::SaveEntry> ListSaves()
@@ -220,6 +222,7 @@ int main(int argc, char** argv)
     Tap(cx, card(0)); Frames(0.9); Save("off.ppm");
     Tap(cx, card(1)); Frames(0.9); Save("solo.ppm");
     Tap(cx, card(2)); Frames(0.9); Save("host.ppm");
+    Tap(W * 0.803f, H * 0.307f); Frames(0.6); Save("host_keytoast.ppm");   // «Ключ для друга»: подсказка в две строки
     coop::g_lobbyDemo = true; g_connected = true; Frames(0.5);
     Tap(W * 0.55f, H * 0.52f); Frames(0.3); Save("lobby_host.ppm");
     g_role = net::Role::Client; Tap(cx, card(3)); Frames(0.6); Save("lobby_client.ppm");

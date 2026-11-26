@@ -21,7 +21,10 @@ namespace ts
     };
 
     // Включить (один раз за запуск игры; повтор — ничего). Распаковка — в фоне.
-    void   Start(const char* myId);
+    // authKey — ключ из кода приглашения: вход без аккаунта и браузера (пусто — обычный вход).
+    void   Start(const char* myId, const char* authKey = nullptr);
+    // Войти по ключу, если Tailscale уже включён без него и ждёт входа
+    void   UseKey(const char* authKey);
     Status GetStatus();
     const char* StateText(State s);   // по-русски, для меню и лога
 

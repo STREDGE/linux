@@ -31,6 +31,7 @@ import (
 	"unsafe"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -41,6 +42,9 @@ var (
 	lc       *local.Client
 	started  bool
 	failed   bool // tsnet не запустился — в меню «ошибка», а не вечное «подключается»
+	useKey   bool // вход по ключу из кода приглашения: браузер не нужен, интерактивный вход не просим
+	loginErr string // последняя ошибка входа от Tailscale (для меню)
+	pendKey  string // ключ пришёл, пока tsnet ещё стартует — применить, когда будет LocalClient
 	lastErr  string
 	logFile  *os.File
 	logBytes int64
@@ -158,7 +162,7 @@ func put(buf *C.char, n C.int, s string) C.int {
 }
 
 //export sacoop_ts_start
-func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.int) {
+func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char, authKey *C.char) (rc C.int) {
 	defer guard("start", &rc)
 	mu.Lock()
 	defer mu.Unlock()
@@ -191,6 +195,11 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.i
 		Logf:     func(f string, a ...any) { logf(f, a...) },
 		UserLogf: func(f string, a ...any) { logf("[user] "+f, a...) },
 	}
+	if k := strings.TrimSpace(cstr(authKey)); k != "" {
+		srv.AuthKey = k // ключ в журнал не пишем
+		useKey = true
+		logf("вход по ключу из кода приглашения")
+	}
 	started = true
 	stName = name
 	logf("старт: имя %s, папка %s", name, dir)
@@ -221,8 +230,18 @@ func sacoop_ts_start(stateDir *C.char, hostname *C.char, logDir *C.char) (rc C.i
 		}
 		mu.Lock()
 		lc = c
+		pk := pendKey
+		pendKey = ""
 		mu.Unlock()
 		logf("tsnet: запущен, жду состояния")
+		if pk != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			st, err := c.Status(ctx)
+			cancel()
+			if err == nil && st.BackendState == "NeedsLogin" {
+				go loginWithKey(c, pk)
+			}
+		}
 		statusLoop()
 	}()
 	return 0
@@ -264,7 +283,22 @@ func statusLoop() {
 		}
 		mu.Lock()
 		stState, stURL, stIP, stPeers = st.BackendState, st.AuthURL, ip, peers
-		ask := st.BackendState == "NeedsLogin" && st.AuthURL == "" && time.Since(loginAsked) > 20*time.Second
+		le := ""
+		for _, h := range st.Health {
+			if i := strings.Index(h, "login error was: "); i >= 0 {
+				le = h[i+len("login error was: "):]
+			}
+		}
+		if st.BackendState == "Running" {
+			le = ""
+		}
+		if le != loginErr {
+			loginErr = le
+			if le != "" {
+				logf("ошибка входа: %s", le)
+			}
+		}
+		ask := st.BackendState == "NeedsLogin" && st.AuthURL == "" && !useKey && time.Since(loginAsked) > 20*time.Second
 		if ask {
 			loginAsked = time.Now()
 		}
@@ -297,7 +331,15 @@ func sacoop_ts_status(buf *C.char, n C.int) (rc C.int) {
 	} else if state == "" {
 		state = "Starting"
 	}
-	return put(buf, n, strings.Join([]string{state, stURL, stIP, stName, lastErr}, "\t"))
+	e := lastErr
+	if e == "" && state == "NeedsLogin" {
+		e = loginErr
+	}
+	url := stURL
+	if useKey {
+		url = "" // по ключу браузер не открываем
+	}
+	return put(buf, n, strings.Join([]string{state, url, stIP, stName, e}, "\t"))
 }
 
 // Найти устройство по имени (sacoop-<ID>). 1 — в сети, 2 — есть, но не в сети, 0 — нет, -1 — сеть не готова.
@@ -341,6 +383,38 @@ func sacoop_ts_peers(buf *C.char, n C.int) (rc C.int) {
 		}
 	}
 	return put(buf, n, strings.Join(parts, ";"))
+}
+
+// Войти по ключу из кода приглашения, когда Tailscale уже запущен без ключа (ждёт входа).
+//
+//export sacoop_ts_use_key
+func sacoop_ts_use_key(authKey *C.char) (rc C.int) {
+	defer guard("use_key", &rc)
+	k := strings.TrimSpace(cstr(authKey))
+	if k == "" {
+		return -1
+	}
+	mu.Lock()
+	c := lc
+	useKey = true
+	if c == nil {
+		pendKey = k // tsnet ещё стартует — применим, когда будет готов
+	}
+	mu.Unlock()
+	if c != nil {
+		go loginWithKey(c, k)
+	}
+	return 0
+}
+
+func loginWithKey(c *local.Client, k string) {
+	defer guard("вход по ключу", nil)
+	logf("вход по ключу из кода приглашения (Tailscale уже запущен)")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := c.Start(ctx, ipn.Options{AuthKey: k}); err != nil {
+		logf("вход по ключу: %v", err)
+	}
 }
 
 // Мост: игра шлёт на 127.0.0.1:<ответ>, мост — в сеть Tailscale и обратно.

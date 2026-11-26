@@ -185,7 +185,7 @@ namespace
     float     g_ffKnob = 0;             // 0..1 положение тумблера
     float     g_swKnob = 0;             // тумблер «общий розыск»
 
-    char      g_toast[192] = "";
+    char      g_toast[400] = "";
     double    g_toastAt = -10;
 
 
@@ -317,8 +317,8 @@ namespace
     const ModeInfo kModes[] = {
         { net::Role::Off,    "Выключено",       "Обычная игра" },
         { net::Role::Echo,   "Тест в одиночку", "Двойник повторяет тебя" },
-        { net::Role::Host,   "Создать игру",    "Твоя точка: друг входит по ID" },
-        { net::Role::Client, "Подключиться",    "По ID точки друга" },
+        { net::Role::Host,   "Создать игру",    "Твоя точка: друг входит по коду" },
+        { net::Role::Client, "Подключиться",    "По коду от друга" },
     };
 
     float StatusPill(ImVec2 rightTop, float h)
@@ -778,6 +778,36 @@ namespace
         else { char t[200]; snprintf(t, sizeof(t), "Не запустилось: %s", why); Toast(t); }
     }
 
+    // Код приглашения: «SACOOP-<ID>-<ключ Tailscale>». Друг вставляет его — и входит в сеть хоста без аккаунта.
+    void InviteCode(char* out, size_t len) { snprintf(out, len, "SACOOP-%s-%s", g_settings.net.myId, g_settings.net.tsKey); }
+    // Найти в тексте ключ Tailscale (tskey-…)
+    bool FindTsKey(const char* text, char* out, size_t len)
+    {
+        const char* p = strstr(text, "tskey-");
+        if(!p) return false;
+        size_t n = 0;
+        while(p[n] && (isalnum((unsigned char)p[n]) || p[n] == '-' || p[n] == '_') && n + 1 < len) { out[n] = p[n]; ++n; }
+        out[n] = 0;
+        return n > 20;
+    }
+    // Разобрать код приглашения: ID точки + ключ
+    bool ParseInvite(const char* text, char* id, size_t idLen, char* key, size_t keyLen)
+    {
+        const char* p = strstr(text, "SACOOP-");
+        if(!p) return false;
+        p += 7;
+        for(int i = 0; i < 6; ++i) if(p[i] < '0' || p[i] > '9') return false;
+        if(p[6] != '-') return false;
+        snprintf(id, idLen, "%.6s", p);
+        return FindTsKey(p + 7, key, keyLen);
+    }
+    void SaveTsKey(const char* key)
+    {
+        snprintf(g_settings.net.tsKey, sizeof(g_settings.net.tsKey), "%s", key);
+        settings::Save(g_settings);
+        coop::SetTsKey(key);
+    }
+
     // Строка состояния Tailscale + кнопка «Войти» / «Сменить аккаунт». Возвращает нижний край.
     float TsStatusRow(ImVec2 a, float width, bool active)
     {
@@ -791,7 +821,8 @@ namespace
         ImVec2 dc(a.x + U(3), (a.y + b.y) * 0.5f);
         DL()->AddCircleFilled(dc, U(1.0f), C(dot), 16);
         const char* chip = nullptr;
-        if(ni.tsState == ts::State::NeedsLogin) chip = "Войти";
+        bool byKey = g_settings.net.tsKey[0] != 0;   // есть код/ключ — входим им, браузер не нужен
+        if(ni.tsState == ts::State::NeedsLogin && !byKey) chip = "Войти";
         else if(ni.tsState == ts::State::Off && !active) chip = "Войти заранее";
         else if(ni.tsState == ts::State::Running && !active) chip = "Сменить аккаунт";
         float cw = chip ? ChipWidth(chip) : 0;
@@ -816,7 +847,7 @@ namespace
             }
         }
         // вход нужен: один раз открываем браузер сами (как окно разрешения)
-        if(ni.tsState == ts::State::NeedsLogin && ni.loginUrl[0] && !g_loginAutoOpened && (active || g_open))
+        if(ni.tsState == ts::State::NeedsLogin && ni.loginUrl[0] && !byKey && !g_loginAutoOpened && (active || g_open))
         {
             g_loginAutoOpened = true;
             if(platform::OpenUrl(ni.loginUrl)) Toast("Войди в Tailscale (один раз) и вернись в игру");
@@ -829,25 +860,41 @@ namespace
         coop::Status st = coop::GetStatus();
         coop::NetInfo ni = coop::GetNetInfo();
         bool active = st.role == net::Role::Host && !st.pending;
-        Text(F_SMALL, ImVec2(px, y), C(kGold), "ТВОЙ ID · ПО НЕМУ ДРУГ НАЙДЁТ ТВОЮ ТОЧКУ"); y += U(3.8f);
+        bool haveKey = g_settings.net.tsKey[0] != 0;
+        Text(F_SMALL, ImVec2(px, y), C(haveKey ? kGrove : kGold), haveKey ? "КОД ПРИГЛАШЕНИЯ ГОТОВ · «КОПИРОВАТЬ» И ОТПРАВЬ ДРУГУ"
+                                                                       : "ТВОЙ ID · ДЛЯ ВХОДА ДРУГА БЕЗ АККАУНТА — «КЛЮЧ ДЛЯ ДРУГА»"); y += U(3.8f);
         const char* copyLbl = "Копировать";
-        float cw = ChipWidth(copyLbl);
+        const char* keyLbl = haveKey ? "Ключ есть" : "Ключ для друга";
+        float cw = ChipWidth(copyLbl), kw = ChipWidth(keyLbl);
         ImVec2 ra(px, y), rb(px + pw, y + U(11));
         char idText[16]; snprintf(idText, sizeof(idText), "%.3s %.3s", ni.myId, ni.myId[0] ? ni.myId + 3 : "");
-        IpReadout(ra, ImVec2(rb.x - cw - U(2.4f), rb.y), idText, false, false);
-        bool copy = false;
+        IpReadout(ra, ImVec2(rb.x - cw - kw - U(4.0f), rb.y), idText, false, false);
+        bool copy = false, keyBtn = false;
+        Chip(ImVec2(rb.x - cw - kw - U(1.6f), y + U(2.2f)), ImVec2(rb.x - cw - U(1.6f), rb.y - U(2.2f)), keyLbl, &keyBtn);
         Chip(ImVec2(rb.x - cw, y + U(2.2f)), ImVec2(rb.x, rb.y - U(2.2f)), copyLbl, &copy);
+        if(keyBtn)
+        {   // одна кнопка: ключ в буфере — сохранить; нет — открыть страницу ключей Tailscale
+            char text[512] = "", key[128];
+            if(platform::ClipboardGetText(text, sizeof(text)) && FindTsKey(text, key, sizeof(key)) && strcmp(key, g_settings.net.tsKey))
+            { SaveTsKey(key); Toast("Ключ сохранён — теперь «Копировать» даёт код приглашения для друга"); }
+            else if(platform::OpenUrl("https://login.tailscale.com/admin/settings/keys"))
+                Toast("На сайте Tailscale: «Generate auth key», включи «Reusable», «Generate key», «Copy». Вернись в игру и нажми «Ключ для друга» ещё раз");
+            else Toast("Не открылся браузер: login.tailscale.com/admin/settings/keys");
+        }
         if(copy)
         {
-            if(platform::ClipboardSetText(ni.myId)) { char t[96]; snprintf(t, sizeof(t), "ID %s скопирован — отправь другу", ni.myId); Toast(t); }
-            else Toast("Не удалось скопировать");
+            char code[200];
+            if(g_settings.net.tsKey[0]) InviteCode(code, sizeof(code)); else snprintf(code, sizeof(code), "%s", ni.myId);
+            if(!platform::ClipboardSetText(code)) Toast("Не удалось скопировать");
+            else if(g_settings.net.tsKey[0]) Toast("Код приглашения скопирован — отправь другу (Telegram, WhatsApp…)");
+            else { char t[256]; snprintf(t, sizeof(t), "ID %s скопирован. Чтобы друг входил без аккаунта — нажми «Ключ для друга»", ni.myId); Toast(t); }
         }
         y = rb.y + U(1.6f);
         y = TsStatusRow(ImVec2(px, y), pw, active) + U(1.6f);
         y = NickRow(ImVec2(px, y), pw) + U(1.6f);
         if(!active)
         {
-            const char* p = "Нажми «Открыть точку». Друг выбирает «Подключиться» и вводит этот ID. Вы оба входите в один аккаунт Tailscale (один раз).";
+            const char* p = "Нажми «Открыть точку», потом «Копировать» и отправь код другу. Друг: «Подключиться», «Вставить», «Подключиться».";
             Text(F_SMALL, ImVec2(px, y), C(kDim), p, pw); y += TextSize(F_SMALL, p, pw).y + U(1.6f);
         }
         FriendlyFireRow(ImVec2(px, y), pw);
@@ -859,7 +906,7 @@ namespace
         bool active = st.role == net::Role::Client && !st.pending;
         float keysW = U(34);
         float lw = pw - keysW - U(3);
-        Text(F_SMALL, ImVec2(px, y), C(kGold), "ID ТОЧКИ ДРУГА (6 ЦИФР)"); float ly = y + U(3.8f);
+        Text(F_SMALL, ImVec2(px, y), C(kGold), "КОД ДРУГА (ИЛИ ID ТОЧКИ, 6 ЦИФР)"); float ly = y + U(3.8f);
         IpReadout(ImVec2(px, ly), ImVec2(px + lw, ly + U(11)), g_ip.c_str(), true, false);
         ly += U(11) + U(2.0f);
         bool paste = false, clear = false;
@@ -871,12 +918,18 @@ namespace
         ly = NickRow(ImVec2(px, ly), lw) + U(1.6f);
         ly = TsStatusRow(ImVec2(px, ly), lw, active) + U(1.4f);
         if(!active)
-            Text(F_SMALL, ImVec2(px, ly), C(kDim), "ID пришлёт друг (кнопка «Копировать» у него). Можно и адрес Tailscale вида 100.x.x.x.", lw);
+            Text(F_SMALL, ImVec2(px, ly), C(kDim), "Скопируй код приглашения, который прислал друг (кнопка «Копировать» у него), и нажми «Вставить». Аккаунт Tailscale не нужен.", lw);
         Keypad(ImVec2(px + pw - keysW, y), keysW);
         if(paste)
         {
-            char text[256], ip[32];
-            if(platform::ClipboardGetText(text, sizeof(text)))
+            char text[512] = "", ip[32], id[8], key[128];
+            if(platform::ClipboardGetText(text, sizeof(text)) && ParseInvite(text, id, sizeof(id), key, sizeof(key)))
+            {
+                g_ip = id;
+                SaveTsKey(key);
+                Toast("Код приглашения вставлен — жми «Подключиться» (аккаунт Tailscale не нужен)");
+            }
+            else if(text[0])
             {
                 std::string digits;
                 for(const char* c = text; *c; ++c) if(*c >= '0' && *c <= '9') digits += *c; else if(*c != ' ' && !digits.empty()) break;
@@ -1221,16 +1274,18 @@ namespace
 
         // --- всплывашка ---
         float tt = (float)(g_now - g_toastAt);
-        if(tt < 2.2f && g_toast[0])
+        float tdur = 2.2f + std::min(4.5f, strlen(g_toast) * 0.025f);   // длинную подсказку — дольше
+        if(tt < tdur && g_toast[0])
         {
-            float k = EaseBack(tt / 0.35f) * (tt > 1.9f ? 1 - (tt - 1.9f) / 0.3f : 1);
-            ImVec2 ts = TextSize(F_BODY, g_toast);
+            float k = EaseBack(tt / 0.35f) * (tt > tdur - 0.3f ? 1 - (tt - (tdur - 0.3f)) / 0.3f : 1);
+            float tw = Wd * 0.7f;
+            ImVec2 ts = TextSize(F_BODY, g_toast, tw);
             float w = ts.x + U(6), h = ts.y + U(2.8f);
             ImVec2 a(Wd * 0.5f - w * 0.5f, y1 - barH - U(4) - h + (1 - k) * U(4)), b(a.x + w, a.y + h);
             float sa = g_alpha; g_alpha *= Clamp01(k);
-            DL()->AddRectFilled(a, b, C(Rgb{ 5, 7, 10 }), h * 0.5f);
-            DL()->AddRect(a, b, C(kGrove), h * 0.5f, 0, U(0.3f));
-            Text(F_BODY, ImVec2(a.x + U(3), a.y + U(1.4f)), C(kInk), g_toast);
+            DL()->AddRectFilled(a, b, C(Rgb{ 5, 7, 10 }), std::min(h * 0.5f, U(4)));
+            DL()->AddRect(a, b, C(kGrove), std::min(h * 0.5f, U(4)), 0, U(0.3f));
+            Text(F_BODY, ImVec2(a.x + U(3), a.y + U(1.4f)), C(kInk), g_toast, tw);
             g_alpha = sa;
         }
 
