@@ -48,6 +48,11 @@ namespace game
     void  Teleport(uintptr_t ped, const Vec& to);
     uintptr_t NearestPed(const Vec& at, float radius, const std::function<bool(uintptr_t)>& filter);
     uintptr_t NearestVehicle(const Vec& at, float radius);
+    uintptr_t VehDriver(uintptr_t veh);            // CVehicle::pDriver (+0x5A0) или 0
+    int  VehFreeSeats(uintptr_t veh);              // свободных пассажирских мест (max - занято)
+    bool IsPoliceCar(int model);                   // патрульные машины, в которые можно посадить задержанного
+    // Ближайшая патрульная машина: без водителя или за рулём коп, есть 2 свободных места (коп + задержанный)
+    uintptr_t NearestPoliceCar(const Vec& at, float radius);
 
     // Типы педов (ePedType)
     enum : int { PT_PLAYER1 = 0, PT_PLAYER2 = 1, PT_CIVMALE = 4, PT_CIVFEMALE = 5, PT_COP = 6,

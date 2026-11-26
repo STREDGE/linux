@@ -548,18 +548,30 @@ void Frame()
             if(InStage() > 3.0)
             {
                 game::ClearTask(pl);                  // опустить руки: дальше игрока ведут к машине
-                g_car = game::NearestVehicle(game::Pos(pl), 40.0f);
-                if(!g_car) { BeginStation(); break; }  // машины нет — сразу в участок (не стоять с поднятыми руками)
-                game::TaskEnterCar(cop, g_car, true);
+                // только патрульная машина (не мотоцикл, не чужая машина с водителем на светофоре)
+                g_car = game::NearestPoliceCar(game::Pos(pl), 45.0f);
+                if(!g_car)
+                {   // коп на мотоцикле / пешком: вызывает патруль — короткая пауза и затемнение, дальше участок
+                    talk::Notify("Коп вызвал патрульную машину — тебя везут в участок");
+                    SetStage(ST_ESCORT); g_car = 0;
+                    break;
+                }
+                if(game::VehDriver(g_car)) game::TaskEnterCar(cop, g_car, false, 0);   // напарник за рулём — коп садится рядом
+                else game::TaskEnterCar(cop, g_car, true);
                 game::TaskEnterCar(pl, g_car, false, 1);
                 SetStage(ST_ESCORT);
             }
             break;
         case ST_ESCORT:
+            if(!g_car && InStage() < 3.0) break;                   // ждём «патруль» (пауза перед затемнением)
             if(!g_car || InStage() > 16 || (game::Vehicle(pl) && game::Vehicle(cop)))
             {
                 if(!game::Vehicle(pl)) { game::ClearTask(pl); BeginStation(); break; }   // не сел — не держим игрока, сразу участок
-                if(game::Vehicle(cop)) game::TaskDriveTo(cop, game::Vehicle(cop), NearestStation(), 14.0f);
+                if(uintptr_t v = game::Vehicle(pl))
+                {   // везёт тот, кто за рулём (сам коп или его напарник)
+                    uintptr_t drv = game::VehDriver(v);
+                    if(drv && drv != pl) game::TaskDriveTo(drv, v, NearestStation(), 14.0f);
+                }
                 SetStage(ST_RIDE);
                 if(cop) { world::Character& c = world::Promote(cop); talk::Notify(Fmt("В машине с копом %s. Можно попробовать договориться.", c.name.c_str())); }
             }

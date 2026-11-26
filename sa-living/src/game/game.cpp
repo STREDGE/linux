@@ -310,6 +310,28 @@ uintptr_t NearestPed(const Vec& at, float radius, const std::function<bool(uintp
     return best;
 }
 
+uintptr_t VehDriver(uintptr_t veh) { return veh ? F<uintptr_t>(veh, 0x5A0) : 0; }            // CVehicle::pDriver
+int VehFreeSeats(uintptr_t veh) { return veh ? (int)F<uint8_t>(veh, 0x5EC) - (int)F<uint8_t>(veh, 0x5E8) : 0; }   // m_nMaxPassengers - m_nNumPassengers
+bool IsPoliceCar(int m) { return m == 596 || m == 597 || m == 598 || m == 599 || m == 427 || m == 490 || m == 528 || m == 601; }   // не мотоцикл (523) и не вертолёт
+
+uintptr_t NearestPoliceCar(const Vec& at, float radius)
+{
+    Pool p; if(!GetPool(g_vehPool, p)) return 0;
+    uintptr_t best = 0; float bd = radius;
+    for(int i = 0; i < p.size; ++i)
+    {
+        if(F<uint8_t>(p.flags, i) & 0x80) continue;
+        uintptr_t v = p.objs + (uintptr_t)i * 0xC68;
+        if(!IsPoliceCar(Model(v))) continue;
+        uintptr_t d = VehDriver(v);
+        if(d && PedType(d) != PT_COP) continue;               // за рулём не коп — не наша машина
+        if(VehFreeSeats(v) < (d ? 2 : 1)) continue;           // нужно место задержанному (и копу, если водитель уже сидит)
+        float dist = Dist(Pos(v), at);
+        if(dist < bd) { bd = dist; best = v; }
+    }
+    return best;
+}
+
 uintptr_t NearestVehicle(const Vec& at, float radius)
 {
     Pool p; if(!GetPool(g_vehPool, p)) return 0;
