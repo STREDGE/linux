@@ -125,4 +125,9 @@ namespace game
     bool  CamFading();                          // экран в затемнении/проявлении
     void  PoolUse(int& peds, int& pedMax, int& cars, int& carMax);
     int   VehRef(uintptr_t veh);
+    int   SimplestTaskType(uintptr_t ped);      // что пед делает «телом» сейчас (простейшая активная задача)
+    uintptr_t LockOn(uintptr_t ped);            // в кого целится (захват прицела) или 0
+    uintptr_t LastDamager(uintptr_t ped, int& weapon, uint32_t& timeMs);   // кто последний ранил
+    std::string EntName(uintptr_t ent);         // «P#123», «V#45», «игрок», «объект»
+    bool  Camera(Vec& pos, Vec& front);         // камера игры: где стоит и куда смотрит
 }

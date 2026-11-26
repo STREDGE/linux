@@ -121,6 +121,8 @@ namespace
         if(car) s += world::Fmt(" car=V#%d", car);
         s += world::Fmt(" (%.1f,%.1f,%.1f) h=%.0f v=%.1f", v.x, v.y, v.z, game::Heading(p) * 57.29578f, game::Speed(p));
         int wt, wa; if(game::CurWeapon(p, wt, wa) && wt) s += world::Fmt(" w=%d/%d", wt, wa);
+        s += world::Fmt(" тело=%d", game::SimplestTaskType(p));
+        if(uintptr_t lo = game::LockOn(p)) s += " целится=" + game::EntName(lo);
         if(world::Character* c = world::FindByPed(p)) s += world::Fmt(" [наш#%d %s]", c->id, c->name.c_str());
         if(game::IsScriptPed(p)) s += " [скрипт]";
         if(game::IsPlayer(p)) s += p == game::Player() ? " [ИГРОК]" : " [ИГРОК2]";
@@ -148,10 +150,10 @@ namespace
         std::map<int, PedSeen> peds; std::map<int, CarSeen> cars;
         game::ForEachPed([&](uintptr_t p) {
             int ref = game::Ref(p); if(!ref) return;
-            PedSeen n; n.pos = game::Pos(p); n.st = game::PedState(p); n.task = game::ActiveTaskType(p);
+            PedSeen n; n.pos = game::Pos(p); n.st = game::PedState(p); n.task = game::ActiveTaskType(p) * 10000 + game::SimplestTaskType(p);
             n.car = game::Vehicle(p) ? game::VehRef(game::Vehicle(p)) : 0; n.hp = (int)game::Health(p);
             auto it = g_peds.find(ref);
-            bool changed = it == g_peds.end() || game::Dist(it->second.pos, n.pos) > 1.0f || it->second.st != n.st ||
+            bool changed = it == g_peds.end() || game::Dist(it->second.pos, n.pos) > 0.5f || it->second.st != n.st ||
                            it->second.task != n.task || it->second.car != n.car || it->second.hp != n.hp;
             if(full || changed) Line(it == g_peds.end() ? "ПЕД+" : "ПЕД", "%s", PedLine(p).c_str());
             peds[ref] = n;
@@ -177,13 +179,53 @@ namespace
         game::Vec p = game::Pos(pl);
         uintptr_t v = game::PlayerVehicle();
         int wt = 0, wa = 0; game::CurWeapon(pl, wt, wa);
-        Line("ИГРОК", "(%.2f,%.2f,%.2f) h=%.0f v=%.1f hp=%.0f/%.0f бр=%.0f зв=%d $%d w=%d/%d st=%d task=%d%s%s int=%d | %02d:%02d %s%s%s%s%s",
+        game::Vec cp, cf; bool cam = game::Camera(cp, cf);
+        uintptr_t lo = game::LockOn(pl);
+        Line("ИГРОК", "(%.2f,%.2f,%.2f) h=%.0f v=%.1f hp=%.0f/%.0f бр=%.0f зв=%d $%d w=%d/%d st=%d task=%d тело=%d целится=%s камера=(%.1f,%.1f,%.1f)→(%.2f,%.2f,%.2f)%s%s int=%d | %02d:%02d %s%s%s%s%s",
              p.x, p.y, p.z, game::Heading(pl) * 57.29578f, game::Speed(v ? v : pl), game::Health(pl), game::MaxHealth(pl), game::Armour(pl),
-             game::Wanted(), game::Money(), wt, wa, game::PedState(pl), game::ActiveTaskType(pl),
+             game::Wanted(), game::Money(), wt, wa, game::PedState(pl), game::ActiveTaskType(pl), game::SimplestTaskType(pl), lo ? game::EntName(lo).c_str() : "-",
+             cam ? cp.x : 0, cam ? cp.y : 0, cam ? cp.z : 0, cam ? cf.x : 0, cam ? cf.y : 0, cam ? cf.z : 0,
              v ? world::Fmt(" car=V#%d m=%d", game::VehRef(v), game::Model(v)).c_str() : "", game::PadLocked() ? " УПРАВЛЕНИЕ_ЗАБЛОКИРОВАНО" : "",
              game::AreaCode(pl), game::Hour(), game::Minute(), game::ZoneName().c_str(),
              game::OnMission() ? " МИССИЯ" : "", game::CutsceneRunning() ? " КАТСЦЕНА" : "", game::CamFading() ? " ЗАТЕМНЕНИЕ" : "",
              police::Arresting() ? " АРЕСТ" : "");
+    }
+
+    // бой — каждый кадр для всех педов в 60 м (и игрока): урон с виновником, выстрелы, смена прицела, смерть
+    struct Fight { float hp = -1; int ammo = -1, wtype = -1, shots = 0; double shotsAt = 0; uintptr_t lock = 0; bool alive = true; };
+    std::map<int, Fight> g_fight;
+    void Combat(double now)
+    {
+        uintptr_t pl = game::Player(); if(!pl) return;
+        game::Vec me = game::Pos(pl);
+        std::map<int, Fight> next;
+        game::ForEachPed([&](uintptr_t p) {
+            if(game::Dist(game::Pos(p), me) > 60) return;
+            int ref = game::Ref(p); if(!ref) return;
+            Fight f; auto it = g_fight.find(ref); if(it != g_fight.end()) f = it->second;
+            float hp = game::Health(p);
+            const std::string who = p == pl ? std::string("игрок") : game::EntName(p);
+            if(f.hp >= 0 && hp < f.hp - 0.5f)
+            {
+                int wpn = 0; uint32_t t = 0; uintptr_t by = game::LastDamager(p, wpn, t);
+                Line("УДАР", "%s: здоровье %.0f → %.0f, кто: %s, оружие %d", who.c_str(), f.hp, hp, game::EntName(by).c_str(), wpn);
+            }
+            bool alive = game::Alive(p);
+            if(f.hp >= 0 && f.alive && !alive) { int wpn = 0; uint32_t t = 0; uintptr_t by = game::LastDamager(p, wpn, t); Line("ГИБЕЛЬ", "%s погиб, кто: %s, оружие %d", who.c_str(), game::EntName(by).c_str(), wpn); }
+            int wt = 0, wa = 0; game::CurWeapon(p, wt, wa);
+            if(f.ammo >= 0 && wt == f.wtype && wa < f.ammo && wt >= 22) { f.shots += f.ammo - wa; if(f.shotsAt == 0) f.shotsAt = now; }
+            if(f.shots && now - f.shotsAt > 0.5)
+            {
+                uintptr_t lo = game::LockOn(p);
+                Line("ВЫСТРЕЛЫ", "%s: %d выстр. из оружия %d, целится в %s", who.c_str(), f.shots, wt, game::EntName(lo).c_str());
+                f.shots = 0; f.shotsAt = 0;
+            }
+            uintptr_t lo = game::LockOn(p);
+            if(lo != f.lock && f.hp >= 0) Line("ПРИЦЕЛ", "%s → %s", who.c_str(), game::EntName(lo).c_str());
+            f.hp = hp; f.ammo = wa; f.wtype = wt; f.lock = lo; f.alive = alive;
+            next[ref] = f;
+        });
+        g_fight.swap(next);
     }
 
     // события игрока — проверяем каждый кадр
@@ -319,13 +361,14 @@ void Frame()
     }
     if(!game::Player()) return;
     PlayerEvents();
-    if(now >= g_nextPlayer) { g_nextPlayer = now + 0.5; PlayerLine(); }
+    Combat(now);
+    if(now >= g_nextPlayer) { g_nextPlayer = now + 0.25; PlayerLine(); }
     if(now >= g_nextWorld)
     {
         bool full = now >= g_nextFull;
-        if(full) g_nextFull = now + 30.0;
-        g_nextWorld = now + 2.0;
-        Snapshot(full, "раз в 30 с");
+        if(full) g_nextFull = now + 15.0;
+        g_nextWorld = now + 1.0;
+        Snapshot(full, "раз в 15 с");
     }
 }
 

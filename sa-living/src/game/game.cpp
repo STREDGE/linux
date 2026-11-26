@@ -81,6 +81,7 @@ namespace
     ClearWeapons_t ClearWeaponsFn; AddPed_t AddPed; RemovePed_t RemovePed; RequestModel_t RequestModel; LoadAll_t LoadAll;
     SetCreatedBy_t SetCreatedBy; AnimBlockIndex_t AnimBlockIndex; OnScreen_t OnScreenFn;
     void (*SetDecisionMaker)(uintptr_t, int) = nullptr;   // CPedIntelligence::SetPedDecisionMakerType
+    uintptr_t (*GetSimplest)(void*) = nullptr;            // CTaskManager::GetSimplestActiveTask
     int  (*ComputeDoorPass)(uintptr_t, int) = nullptr;    // CCarEnterExit::ComputeTargetDoorToEnterAsPassenger
     void (*LoadSceneFn)(const Vec&) = nullptr;            // CStreaming::LoadScene
 
@@ -188,6 +189,7 @@ bool Init(void* h)
     SetCreatedBy = (SetCreatedBy_t)Sym(h, "_ZN4CPed16SetCharCreatedByEh");
     SetDecisionMaker = (void(*)(uintptr_t, int))Sym(h, "_ZN16CPedIntelligence23SetPedDecisionMakerTypeEi", false);
     ComputeDoorPass = (int(*)(uintptr_t, int))Sym(h, "_ZN13CCarEnterExit35ComputeTargetDoorToEnterAsPassengerERK8CVehiclei", false);
+    GetSimplest = (uintptr_t(*)(void*))Sym(h, "_ZNK12CTaskManager21GetSimplestActiveTaskEv", false);
     LoadSceneFn = (void(*)(const Vec&))Sym(h, "_ZN10CStreaming9LoadSceneERK7CVector", false);
     AnimBlockIndex = (AnimBlockIndex_t)Sym(h, "_ZN12CAnimManager22GetAnimationBlockIndexEPKc", false);
     OnScreenFn   = (OnScreen_t)Sym(h, "_ZN7CEntity13GetIsOnScreenEv", false);
@@ -296,6 +298,39 @@ void  PoolUse(int& peds, int& pedMax, int& cars, int& carMax)
     if(GetPool(g_vehPool, p)) { carMax = p.size; for(int i = 0; i < p.size; ++i) if(!(F<uint8_t>(p.flags, i) & 0x80)) ++cars; }
 }
 int   VehRef(uintptr_t v) { return v && GetVehRefFn ? GetVehRefFn(v) : 0; }
+int   SimplestTaskType(uintptr_t ped)
+{
+    void* m = Mgr(ped); if(!m || !GetSimplest) return -1;
+    uintptr_t t = GetSimplest(m); if(!t) return -1;
+    uintptr_t vt = F<uintptr_t>(t, 0); if(!vt) return -1;
+    typedef int (*GetType_t)(uintptr_t);
+    GetType_t fn = F<GetType_t>(vt, 0x28);
+    return fn ? fn(t) : -1;
+}
+uintptr_t LockOn(uintptr_t ped) { return ped ? F<uintptr_t>(ped, 0x8E0) : 0; }                 // CPed::m_pEntLockOnTarget
+uintptr_t LastDamager(uintptr_t ped, int& weapon, uint32_t& timeMs)
+{
+    if(!ped) return 0;
+    weapon = F<int8_t>(ped, 0x93C); timeMs = F<uint32_t>(ped, 0x948);                          // LastDamagedWeaponType / LastDamagedTime
+    return F<uintptr_t>(ped, 0x940);                                                           // pLastDamageEntity
+}
+std::string EntName(uintptr_t e)
+{
+    if(!e) return "-";
+    int type = F<uint8_t>(e, kEntTypeByte) & 7;
+    char b[32];
+    if(type == 3) { if(e == Player()) return "игрок"; if(e == Player2()) return "друг"; snprintf(b, sizeof(b), "P#%d", Ref(e)); return b; }
+    if(type == 2) { snprintf(b, sizeof(b), "V#%d", VehRef(e)); return b; }
+    snprintf(b, sizeof(b), "объект(тип %d, модель %d)", type, Model(e)); return b;
+}
+bool  Camera(Vec& pos, Vec& front)
+{
+    if(!g_camera) return false;
+    uintptr_t m = g_camera + 0x970;                                                            // CCamera::m_cameraMatrix
+    front = { F<float>(m, 0x10), F<float>(m, 0x14), F<float>(m, 0x18) };
+    pos   = { F<float>(m, 0x30), F<float>(m, 0x34), F<float>(m, 0x38) };
+    return true;
+}
 
 void LockPlayer(bool lock)
 {

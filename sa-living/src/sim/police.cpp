@@ -32,6 +32,7 @@ namespace
         uintptr_t wanted = 0;
         int type = 0; game::Vec pos; uint64_t victim = 0; bool imm = false;
         int eventId = 0;
+        float callerHp = 0;
     };
     PendingReport g_rep;
     game::Vec g_lastOutdoor; bool g_haveOutdoor = false;
@@ -159,6 +160,7 @@ namespace
         if(g_rep.active) { if(Severity(type) > Severity(g_rep.type)) { g_rep.type = type; g_rep.pos = pos; g_rep.victim = victim; if(ev) g_rep.eventId = ev->id; } return; }
         g_rep.active = true; g_rep.callerRef = game::Ref(caller); g_rep.at = now + 7.0 + world::Rand(0, 4);
         g_rep.wanted = self; g_rep.type = type; g_rep.pos = pos; g_rep.victim = victim; g_rep.imm = imm; g_rep.eventId = ev ? ev->id : 0;
+        g_rep.callerHp = game::Health(caller);
         game::TaskPhone(caller, 8000);
         talk::Notify("Свидетель достаёт телефон — звонит в полицию!");
     }
@@ -173,7 +175,14 @@ namespace
         }
         if(FindWanted) g_rep.wanted = (uintptr_t)FindWanted(-1);   // не хранить старый указатель (могла быть загрузка)
         uintptr_t caller = game::FromRef(g_rep.callerRef);
-        if(!caller || !game::Alive(caller)) { talk::Notify("Свидетель не успел позвонить"); return; }
+        if(!caller || !game::Alive(caller)) { talk::Notify("Свидетель не успел позвонить"); TRACE("ЗВОНОК", "свидетель не дозвонился: погиб/пропал"); return; }
+        if(game::Health(caller) < g_rep.callerHp - 1.0f)
+        {   // свидетеля ударили, пока он звонил — звонок сорвался
+            talk::Notify("Свидетель не дозвонился — ты помешал");
+            TRACE("ЗВОНОК", "свидетель P#%d не дозвонился: его ударили (%.0f → %.0f)", game::Ref(caller), g_rep.callerHp, game::Health(caller));
+            if(world::Character* wc = world::FindByPed(caller)) world::Remember(*wc, "Хотел вызвать полицию, но " + world::W().playerNick + " ударил меня");
+            return;
+        }
         uintptr_t pl = game::Player();
         world::Character* c = pl ? world::FindByPed(caller) : nullptr;
         if(c && c->rel[world::WHO_CJ].fear > 60) { talk::Notify(Fmt("%s побоялся звонить", c->name.c_str())); return; }

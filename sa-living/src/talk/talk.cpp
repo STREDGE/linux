@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <vector>
 
 #include "game/game.h"
@@ -992,19 +993,30 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
     {
         std::string who2 = in["who"].str();
         if(!needPed() && !phone) return "ты не можешь позвонить";
-        if(needPed()) game::TaskPhone(ped, 6000);
+        bool radio = c && c->faction == world::F_POLICE;            // коп — по рации: быстрее
+        if(needPed()) { if(radio) game::TaskAnim(ped, "phone_talk", "ped", true, 3500); else game::TaskPhone(ped, 6000); }
         int cid = c ? c->id : 0;
+        float hp0 = ped ? game::Health(ped) : 0;
         if(who2 == "police")
         {
-            Later(6.5, [cid, who]() {
+            TRACE("ЗВОНОК", "#%d %s звонит в полицию (%s)", cid, c ? c->name.c_str() : "?", radio ? "рация" : "телефон");
+            Later(radio ? 3.5 : 6.5, [cid, who, hp0, radio]() {
                 world::Character* ch = world::Find(cid);
                 uintptr_t p = ch ? world::PedOf(*ch) : 0;
-                if(ch && p && !game::Alive(p)) return;   // не успел дозвониться
+                if(ch && p && !game::Alive(p)) { TRACE("ЗВОНОК", "#%d не дозвонился: погиб", cid); return; }
+                if(ch && p && game::Health(p) < hp0 - 1.0f)
+                {   // ударили / ранили во время звонка — звонок сорвался
+                    TRACE("ЗВОНОК", "#%d не дозвонился: его ударили во время звонка", cid);
+                    world::Remember(*ch, std::string("Пытался вызвать полицию, но ") + world::W().playerNick + " не дал — ударил");
+                    Notify(radio ? "Коп не успел договорить по рации" : "Он не успел дозвониться — ты помешал");
+                    return;
+                }
                 if(who == world::WHO_CJ) { int w = game::Wanted(); game::SetWanted(w < 2 ? w + 1 : w); }
                 world::W().pcase[who].heat = world::Clamp(world::W().pcase[who].heat + 10, 0, 100);
-                Notify("Кто-то сообщил о тебе в полицию");
+                Notify(radio ? "Коп вызвал подмогу по рации" : "Кто-то сообщил о тебе в полицию");
+                TRACE("ЗВОНОК", "#%d дозвонился: розыск %d", cid, game::Wanted());
             });
-            return "звонишь в полицию (6 секунд)";
+            return radio ? "вызываешь подмогу по рации (3 секунды; если тебя ударят — не успеешь)" : "звонишь в полицию (6 секунд; если тебя ударят — не дозвонишься)";
         }
         if(who2 == "gang")
         {
@@ -1093,6 +1105,44 @@ void HandleHostReply(const json::Value& rep)
 }
 
 // ---------- кадр ----------
+// Удар во время разговора: оборвать ответ и голос, снять нашу позу (чтобы сработала настоящая реакция игры —
+// дать сдачи / убежать), запомнить, а через 0,8 с ИИ решает, что дальше. Раньше человек «договаривал» и стоял.
+static std::map<int, float> g_hpSeen; static int g_hpConv = 0;
+static void HitFrame()
+{
+    if(!g_c.active || g_c.phone) { g_hpSeen.clear(); g_hpConv = 0; return; }
+    if(g_hpConv != g_c.charId) { g_hpSeen.clear(); g_hpConv = g_c.charId; }
+    uintptr_t pl = game::Player(), p2 = game::Player2();
+    std::vector<int> ids{ g_c.charId }; for(int id : g_c.group) ids.push_back(id);
+    for(int id : ids)
+    {
+        Character* m = world::Find(id); uintptr_t p = m ? world::PedOf(*m) : 0;
+        if(!p) continue;
+        float hp = game::Health(p);
+        auto it = g_hpSeen.find(id);
+        if(it != g_hpSeen.end() && hp < it->second - 0.5f)
+        {
+            int wpn = 0; uint32_t tm = 0; uintptr_t by = game::LastDamager(p, wpn, tm);
+            bool byCJ = by && (by == pl || (p2 && by == p2) || (game::Vehicle(pl) && by == game::Vehicle(pl)));
+            if(byCJ)
+            {
+                bool main = id == g_c.charId;
+                TRACE("РАЗГОВОР", "удар по #%d %s (%s) во время разговора: %.0f → %.0f", id, m->name.c_str(), main ? "собеседник" : "слушатель", it->second, hp);
+                world::Remember(*m, world::W().playerNick + (wpn >= 22 ? " ранил меня" : " ударил меня") + " посреди разговора");
+                world::ChangeRelation(*m, g_c.who, -10, -2, -15, 12, "ударил посреди разговора");
+                if(g_c.reqId > 0) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
+                StopVoice();
+                int at = game::ActiveTaskType(p);
+                if(at == 401 || at == 203 || at == 920) game::ClearTask(p);     // наша поза не мешает настоящей реакции
+                int cid = g_c.charId, who = g_c.who; std::string victim = main ? std::string("тебя") : m->name;
+                std::string ev = world::W().playerNick + (wpn >= 22 ? " ранил " : " ударил ") + victim + " (здоровье " + std::to_string((int)hp) + "). Реагируй делом сразу: дать сдачи, убежать, позвать своих или копов";
+                Later(0.8, [cid, who, ev]() { if(Character* cc = world::Find(cid)) if(g_c.active && g_c.charId == cid) React(*cc, who, ev, true); });
+            }
+        }
+        g_hpSeen[id] = hp;
+    }
+}
+
 // Прогрев кэша правил педов: первый ответ нового разговора без него шёл 7 с (запись 6–7 тыс. токенов в кэш),
 // с ним — как остальные (1–2 с). Раз в 4 минуты, если разговоров не было; цена — около цента в час.
 static void WarmFrame(double now)
@@ -1121,7 +1171,9 @@ static void AimFrame(double now)
     g_aimCheck = now + 0.2;
     bool aimed = false;
     uintptr_t ped = (g_c.active && !g_c.phone) ? CurrentPed() : 0, pl = game::Player();
-    if(ped && pl && script::Ready() && game::Alive(ped) && !game::Vehicle(ped) && !game::IsScriptPed(ped))
+    int wt = 0, wa = 0; if(pl) game::CurWeapon(pl, wt, wa);
+    bool gun = wt >= 22 && wt <= 38;                       // пистолеты…миниган; кулаки/бита/нож — это драка, а не «ствол»
+    if(gun && ped && pl && script::Ready() && game::Alive(ped) && !game::Vehicle(ped) && !game::IsScriptPed(ped))
     {
         std::vector<script::Arg> a{ script::Arg::I(0), script::Arg::I(game::Ref(ped)) };
         bool f = false;
@@ -1184,6 +1236,7 @@ void Frame()
     }
 
     AimFrame(Now());
+    HitFrame();
     WarmFrame(Now());
     if(g_c.active && g_c.reqId == -1 && Now() - g_c.sentAt > 30) { g_c.reqId = 0; Notify("Хост не ответил"); }
 

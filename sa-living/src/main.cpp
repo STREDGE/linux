@@ -30,7 +30,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.2.9, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.2.10, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";

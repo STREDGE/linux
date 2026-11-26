@@ -13,6 +13,7 @@
 #include "net/sacoop_api.h"
 #include "talk/talk.h"
 #include "util/log.h"
+#include "trace/trace.h"
 
 namespace coopnet
 {
@@ -97,8 +98,9 @@ const char* PeerNick() { return g_api ? g_api->PeerNick() : ""; }
 
 bool Send(const json::Value& msg)
 {
-    if(!Connected()) return false;
+    if(!Connected()) { TRACE("КООП>", "не отправлено (нет связи): %.200s", msg.dump().c_str()); return false; }
     std::string s = msg.dump();
+    TRACE("КООП>", "%s", s.size() > 1500 ? (s.substr(0, 1500) + "…").c_str() : s.c_str());
     Out o; o.id = g_nextId++; o.next = 0; o.tries = 0;
     for(size_t i = 0; i < s.size(); i += kChunk) o.chunks.push_back(s.substr(i, kChunk));
     if(o.chunks.empty()) o.chunks.push_back("");
@@ -136,7 +138,7 @@ void Frame()
     {
         std::string s = std::move(g_ready.front()); g_ready.pop_front();
         json::Value v;
-        if(json::Parse(s, v)) OnMessage(v); else LOG_ERROR("Связь: битое сообщение");
+        if(json::Parse(s, v)) { TRACE("КООП<", "%s", s.size() > 1500 ? (s.substr(0, 1500) + "…").c_str() : s.c_str()); OnMessage(v); } else LOG_ERROR("Связь: битое сообщение");
     }
 }
 
