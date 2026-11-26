@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "net/sacoop_api.h"
+#include "settings.h"
+#include "speech/speech.h"
 #include "talk/talk.h"
 #include "util/log.h"
 #include "trace/trace.h"
@@ -84,6 +86,12 @@ void Init()
     if(!g_api || g_api->version < 1) { g_api = nullptr; LOG_INFO("Кооп (SA Coop) не найден — только одиночная игра"); return; }
     g_api->SetReceiver(kChannel, Receive);
     LOG_INFO("Кооп найден: при подключении друга мир станет общим автоматически");
+    if(g_api->version >= 2 && g_api->SetMicTap)
+    {   // одна кнопка «Говорить»: звук пишет SA Coop (друг слышит), копию распознаём мы
+        g_api->SetMicTap([](const int16_t* pcm, int n, int rate) { speech::FeedExternal(pcm, n, rate); });
+        LOG_INFO("SA Coop 1.1+: один микрофон и одна кнопка «Говорить» на оба мода");
+    }
+    else LOG_INFO("SA Coop старый (без общего микрофона) — у него своя золотая кнопка голоса");
 }
 
 Role GetRole()
@@ -96,6 +104,14 @@ Role GetRole()
 bool Connected() { return GetRole() != NONE; }
 const char* PeerNick() { return g_api ? g_api->PeerNick() : ""; }
 const char* MyNick() { return g_api && g_api->MyNick ? g_api->MyNick() : ""; }
+
+bool MicShared()
+{
+    if(!g_api || g_api->version < 2 || !g_api->VoiceAvailable || !g_api->VoiceAvailable()) return false;
+    int raw = g_api->GetRole();                       // 1 — «Тест» в одиночку (эхо своего голоса) — тоже через SA Coop
+    return raw == 1 || GetRole() != NONE;
+}
+void SetTalk(bool on) { if(g_api && g_api->version >= 2 && g_api->SetTalk) g_api->SetTalk(on); }
 
 bool Send(const json::Value& msg)
 {
@@ -113,6 +129,11 @@ bool Send(const json::Value& msg)
 
 void Frame()
 {
+    {   // кнопку «Говорить» рисуем мы — золотую SA Coop прячем (одна кнопка: и людям, и другу)
+        static int owned = -1;
+        bool own = g_api && g_api->version >= 2 && g_api->SetTalkButtonOwner && settings::Get().enabled;
+        if((int)own != owned) { owned = own; if(g_api && g_api->version >= 2 && g_api->SetTalkButtonOwner) g_api->SetTalkButtonOwner(own); }
+    }
     Role r = GetRole();
     if(r != g_lastRole)
     {

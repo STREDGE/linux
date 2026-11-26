@@ -56,6 +56,9 @@ namespace speech
     void CancelListen();
     bool Listening();
     bool Recognizing();                            // запись ушла на распознавание, ждём текст
+    // Кооп (одна кнопка): звук пишет SA Coop (его же слышит друг), сюда приходит копия — её и распознаём
+    bool ListenExternal();                         // начать «слушать» внешний звук (StopListen — закончить и распознать)
+    void FeedExternal(const int16_t* pcm, int n, int rate);   // кусок звука (моно, 16 бит), игровой поток
     struct Heard { bool ok = false; std::string text; std::string error; };
     bool PollHeard(Heard& out);
 

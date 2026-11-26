@@ -24,6 +24,7 @@ namespace talk
     void PttUp();
     bool Listening();
     bool Recognizing();                   // запись ушла на распознавание
+    bool TalkingToFriend();               // кнопка зажата, но говоришь другу (кооп) — людям не распознаём
     const std::string& Partial();
     // Разовая запись «не педу» (Джарвис, проверка микрофона): текст придёт в sink (пусто — не расслышал)
     void CaptureDown(std::function<void(const std::string&)> sink);

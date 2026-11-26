@@ -918,6 +918,10 @@ void StartPhoneCall(int charId)
 
 void SetSpeechSink(std::function<void(const std::string&)> fn) { g_sink = std::move(fn); }
 
+static bool g_viaCoop = false;      // эта запись идёт через микрофон SA Coop
+static bool g_voiceOnly = false;    // эта фраза — только другу (людям не распознаём)
+static bool g_asrHintShown = false;
+
 static bool BeginListen()
 {
     if(g_waitFinal || g_listening) { Notify("Секунду, распознаю прошлую фразу…"); return false; }
@@ -931,7 +935,8 @@ static bool BeginListen()
             Notify(st.loading ? "Речь ещё загружается — подожди несколько секунд" : st.asrFiles ? "Распознавание не запустилось: Настройки > AI" : "Распознавание речи не установлено: Настройки > AI > «Скачать распознавание»");
             return false;
         }
-        if(!speech::Listen()) { Notify("Микрофон недоступен — проверь разрешение (Настройки > AI)"); return false; }
+        bool ext = g_viaCoop && !g_captureActive;                      // кооп: распознаём копию звука SA Coop (микрофон один)
+        if(ext ? !speech::ListenExternal() : !speech::Listen()) { Notify("Микрофон недоступен — проверь разрешение (Настройки > AI)"); return false; }
     }
     else
     {
@@ -959,18 +964,58 @@ void CaptureUp() { if(g_captureActive) EndListen(); }
 bool Capturing() { return g_captureActive; }
 bool Recognizing() { return g_waitFinal; }
 
+// Одна кнопка «Говорить» в коопе: друг слышит твой живой голос всегда (голосовой чат SA Coop),
+// а человек рядом — только если ты говоришь ему (стоишь к нему лицом или уже с ним разговариваешь).
+// Повернулся к другу или вокруг никого — ИИ не включается: болтовня с другом не дёргает прохожих и не тратит запросы.
+
+// Говоришь другу, а не человеку: друг ближе и прямо перед тобой (та же мера, что при выборе собеседника)
+static bool ToFriend(uintptr_t ped, bool inTalk)
+{
+    uintptr_t pl = game::Player(), p2 = game::Player2();
+    if(!pl || !p2 || !game::Alive(p2)) return false;
+    game::Vec me = game::Pos(pl);
+    float h = game::Heading(pl), fx = -sinf(h), fy = cosf(h);
+    auto score = [&](uintptr_t p) {
+        game::Vec v = game::Pos(p); float d = game::Dist(v, me);
+        if(d > 12) return 1e9f;
+        float dx = (v.x - me.x) / (d + 0.01f), dy = (v.y - me.y) / (d + 0.01f);
+        return d * (1.6f - (dx * fx + dy * fy));
+    };
+    float sf = score(p2), sp = ped ? score(ped) : 1e9f;
+    if(inTalk) sp *= 0.7f;                                          // уже говоришь с ним — к другу надо повернуться явно
+    return sf < sp;
+}
+
 void PttDown()
 {
     TRACE("КНОПКА", "«Говорить» нажата");
     if(g_captureActive) return;
-    if(g_waitFinal) { Notify("Секунду, распознаю прошлую фразу…"); return; }
+    g_viaCoop = coopnet::MicShared();
+    g_voiceOnly = false;
+    if(g_viaCoop) coopnet::SetTalk(true);                             // друг слышит всегда — как в жизни
+    if(g_waitFinal) { if(g_viaCoop) g_voiceOnly = true; else Notify("Секунду, распознаю прошлую фразу…"); return; }
     if(g_sink) { BeginListen(); return; }
+    if(g_viaCoop && settings::Get().engine == 0 && !speech::Get().asrReady)
+    {   // распознавания нет — кнопка работает как голосовой чат
+        if(!g_asrHintShown) { g_asrHintShown = true; Notify("Друг тебя слышит. Чтобы слышали и люди — Настройки > AI > «Скачать распознавание»"); }
+        g_voiceOnly = true; return;
+    }
     if(!g_c.phone)
     {
         // уже говорим с человеком рядом — продолжаем с ним (а не с прохожим, который оказался впереди)
         uintptr_t cur = CurrentPed(), aim = game::PlayerTarget();
-        uintptr_t ped = (cur && game::Alive(cur) && game::Dist(game::Pos(cur), game::Pos(game::Player())) < 12 && (!aim || aim == cur)) ? cur : PickTarget();
-        if(!ped) { Notify("Рядом никого — подойди к человеку ближе"); return; }
+        bool inTalk = cur && game::Alive(cur) && game::Dist(game::Pos(cur), game::Pos(game::Player())) < 12 && (!aim || aim == cur);
+        uintptr_t ped = inTalk ? cur : PickTarget();
+        if(g_viaCoop && (!aim || aim != ped) && ToFriend(ped, inTalk))
+        {   // говоришь другу — его голосовой чат, людям не распознаём
+            TRACE("РАЗГОВОР", "говоришь другу (он перед тобой) — людям не отвечаем");
+            g_voiceOnly = true; return;
+        }
+        if(!ped)
+        {
+            if(g_viaCoop) { g_voiceOnly = true; return; }               // рядом никого — просто голос другу
+            Notify("Рядом никого — подойди к человеку ближе"); return;
+        }
         StartWith(ped);
     }
     if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
@@ -984,7 +1029,18 @@ void PttDown()
     BeginListen();
 }
 
-void PttUp() { TRACE("КНОПКА", "«Говорить» отпущена"); if(!g_captureActive) EndListen(); }
+void PttUp()
+{
+    TRACE("КНОПКА", "«Говорить» отпущена");
+    bool coop = g_viaCoop;
+    if(g_viaCoop) { coopnet::SetTalk(false); g_viaCoop = false; }
+    if(g_voiceOnly) { g_voiceOnly = false; return; }
+    if(g_captureActive) return;
+    // SA Coop дописывает хвост слова ещё 0,25 с после отпускания — распознаём вместе с ним (иначе обрезается конец фразы)
+    if(coop && g_listening) Later(0.3, []() { if(g_listening && !g_captureActive) EndListen(); });
+    else EndListen();
+}
+bool TalkingToFriend() { return g_voiceOnly; }
 
 // conv — это ход игрока в разговоре (слова, деньги), а не событие «[Событие: …]»
 static void SendToHost(Character& c, const std::string& text, bool phone, const std::string& said = "", bool conv = true)

@@ -145,6 +145,7 @@ namespace
     double g_now = 0;
     uint64_t g_lastUs = 0;
     bool   g_talkHeld = false;
+    bool   g_talkDrawn = false;      // кнопку «Говорить» нарисовали в этом кадре (иначе зажатую — отпустить)
 
     // Кооп (мы друг): контакты и новости приходят от хоста
     struct RemoteContact { int hostId; std::string name; std::string what; };
@@ -745,8 +746,10 @@ namespace
         ImVec2 c(s.talkX * Ww(), s.talkY * Hh());
         ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
         bool held = HeldFrom(a, b);
+        g_talkDrawn = true;
         if(held != g_talkHeld) { g_talkHeld = held; if(held) talk::PttDown(); else talk::PttUp(); }
-        bool listening = talk::Listening() && !talk::Capturing(), thinking = talk::Thinking() || (talk::Recognizing() && !talk::Capturing());
+        bool toFriend = talk::TalkingToFriend();                       // кооп: говоришь другу (голосовой чат), людям не распознаём
+        bool listening = (talk::Listening() && !talk::Capturing()) || toFriend, thinking = !toFriend && (talk::Thinking() || (talk::Recognizing() && !talk::Capturing()));
         Rgb ring = listening ? kRed : (thinking ? kGold : kBlue);
         DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.6f)), r, C(kBlack, 0.45f), 40);
         DL()->AddCircleFilled(c, r - U(0.4f), C(kPanel, 0.9f), 40);
@@ -761,7 +764,7 @@ namespace
             DL()->AddRectFilled(ba, bb, C(kInk), U(1));
             DL()->AddTriangleFilled(ImVec2(c.x - r * 0.2f, bb.y), ImVec2(c.x, bb.y), ImVec2(c.x - r * 0.3f, bb.y + r * 0.25f), C(kInk));
         }
-        const char* lbl = listening ? "ГОВОРИ" : (talk::PhoneMode() ? "ТРУБКА" : "ГОВОРИТЬ");
+        const char* lbl = toFriend ? "ДРУГУ" : listening ? "ГОВОРИ" : (talk::PhoneMode() ? "ТРУБКА" : "ГОВОРИТЬ");
         ImVec2 ts = TS(F_SMALL, lbl);
         TxShadow(F_SMALL, ImVec2(c.x - ts.x * 0.5f, b.y + U(0.5f)), C(listening ? kRed : kInk), lbl);
         // кому говорим
@@ -972,6 +975,13 @@ namespace
                 }
             }
             DrawFeed();
+        }
+        // Кнопку перестали показывать, пока её держали (катсцена, меню, смерть) — отпустить: иначе микрофон
+        // (в коопе — голос другу) так и остался бы включённым
+        if(!fromMenu)
+        {
+            if(!g_talkDrawn && g_talkHeld) { g_talkHeld = false; talk::PttUp(); }
+            g_talkDrawn = false;
         }
         imgui_rw::Render();
         return true;

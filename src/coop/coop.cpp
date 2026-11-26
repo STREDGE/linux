@@ -63,6 +63,8 @@ namespace
     uint64_t  g_localSinceUs = 0;          // с какого момента игрок в игре (без заставки)
     constexpr uint64_t kSpawnDelayUs = 3000000; // 3 с
     bool      g_localTalking = false;  // кнопка микрофона зажата
+    bool      g_extTalking = false;    // зажата кнопка «Говорить» другого мода (SA Living, API v2)
+    bool      g_talkOwned = false;     // другой мод рисует свою кнопку — золотую прячем
     bool      g_lockLocal = false;     // редактор раскладки: управление CJ выключено
     bool      g_friendlyFire = false;  // свой тумблер «огонь по своим»
     bool      g_sharedWanted = true;   // свой тумблер «общий розыск»
@@ -574,7 +576,7 @@ namespace
     void PumpVoice()
     {
         voice::SetLoopback(false, 0);
-        voice::SetTransmit(g_localTalking && g_session.Connected());
+        voice::SetTransmit((g_localTalking || g_extTalking) && g_session.Connected());
         voice::Pump();
         uint8_t buf[net::kVoiceMaxBytes]; uint16_t seq; uint8_t spurt;
         while(int n = voice::PopEncodedFrame(buf, sizeof(buf), &seq, &spurt))
@@ -831,7 +833,7 @@ namespace
             TracePlayers(now, local, me, &ers);
             // Голос в одиночку: говоришь — через 0,5 с слышишь себя (как двойник повторяет движения)
             voice::SetLoopback(true, (int)(kEchoDelayUs / 1000));
-            voice::SetTransmit(g_localTalking);
+            voice::SetTransmit(g_localTalking || g_extTalking);
             voice::Pump();
             if(g_remotePed && !g_echoAnnounced)
             {
@@ -990,7 +992,13 @@ namespace
     void Api_SetReceiver(uint8_t ch, void (*fn)(const void*, int)) { g_modRecv[ch] = fn; }
     const char* Api_PeerNick() { return g_session.PeerNick(); }
     const char* Api_MyNick() { return g_cfg.nick; }
-    SACoopNetApi g_netApi = { 1, Api_GetRole, Api_Connected, Api_Send, Api_SetReceiver, Api_PeerNick, Api_MyNick };
+    // версия 2: один микрофон и одна кнопка на оба мода
+    void Api_SetMicTap(void (*fn)(const int16_t*, int, int)) { voice::SetMicTap(fn); CTRACE("ГОЛОС", "другой мод %s копию микрофона", fn ? "берёт" : "больше не берёт"); }
+    void Api_SetTalk(bool on) { if(on != g_extTalking) CTRACE("ГОЛОС", "кнопка «Говорить» SA Living %s", on ? "зажата" : "отпущена"); g_extTalking = on; }
+    void Api_SetTalkButtonOwner(bool owned) { if(owned != g_talkOwned) CTRACE("ГОЛОС", "золотая кнопка %s", owned ? "спрятана — говорит кнопка SA Living" : "снова своя"); g_talkOwned = owned; if(!owned) g_extTalking = false; }
+    bool Api_VoiceAvailable() { return voice::Available(); }
+    SACoopNetApi g_netApi = { 2, Api_GetRole, Api_Connected, Api_Send, Api_SetReceiver, Api_PeerNick, Api_MyNick,
+                              Api_SetMicTap, Api_SetTalk, Api_SetTalkButtonOwner, Api_VoiceAvailable };
 }
 
 static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
@@ -1165,6 +1173,7 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
 }
 
 void AnswerJoin(bool accept) { CTRACE("КНОПКА", "запрос «%s»: %s", g_session.PendingNick(), accept ? "ПРИНЯТЬ" : "отклонить"); g_session.AnswerJoin(accept); }
+bool TalkButtonOwned() { return g_talkOwned; }
 void SetTalking(bool talking) { if(talking != g_localTalking) CTRACE("ГОЛОС", "кнопка микрофона %s", talking ? "зажата" : "отпущена"); g_localTalking = talking; }
 void SetFriendlyFire(bool on) { if(on != g_friendlyFire) CTRACE("КНОПКА", "огонь по своим: %s", on ? "вкл" : "выкл"); g_friendlyFire = on; }
 void SetSharedWanted(bool on) { if(on != g_sharedWanted) CTRACE("КНОПКА", "общий розыск: %s", on ? "вкл" : "выкл"); g_sharedWanted = on; }

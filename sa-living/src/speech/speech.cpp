@@ -396,6 +396,10 @@ namespace
     // ---------- запись ----------
     enum { MIC_NONE, MIC_HEAR, MIC_VOICE };
     int g_micMode = MIC_NONE;
+    // внешний звук (SA Coop): друг слышит живой голос, а мы распознаём его копию
+    bool g_ext = false, g_extReady = false;
+    std::vector<int16_t> g_extPcm;                 // 16 кГц
+    int g_extSum = 0, g_extCnt = 0; double g_extPos = 0;
     bool g_micDrop = false;
     double g_micSince = 0;
     std::string g_recTitle; bool g_recFemale = false;
@@ -631,8 +635,39 @@ bool Listen()
     g_micMode = MIC_HEAR; g_micDrop = false; g_micSince = NowSec();
     return true;
 }
-void StopListen() { if(g_micMode == MIC_HEAR) { bridge::MicStop(); g_asrBusy = true; } }
-void CancelListen() { if(g_micMode == MIC_HEAR) { g_micDrop = true; bridge::MicStop(); } }
+void StopListen()
+{
+    if(g_micMode != MIC_HEAR) return;
+    if(g_ext) { g_ext = false; g_extReady = true; g_asrBusy = true; return; }   // запись готова — распознаем в Frame
+    bridge::MicStop(); g_asrBusy = true;
+}
+void CancelListen()
+{
+    if(g_micMode != MIC_HEAR) return;
+    if(g_ext) { g_ext = false; g_extPcm.clear(); g_micMode = MIC_NONE; return; }
+    g_micDrop = true; bridge::MicStop();
+}
+bool ListenExternal()
+{
+    if(!AsrReady() || g_micMode != MIC_NONE || g_asrBusy) return false;
+    g_extPcm.clear(); g_extReady = false; g_extSum = 0; g_extCnt = 0; g_extPos = 0;
+    g_ext = true; g_micMode = MIC_HEAR; g_micDrop = false; g_micSince = NowSec();
+    return true;
+}
+void FeedExternal(const int16_t* pcm, int n, int rate)
+{
+    if(!g_ext || g_micMode != MIC_HEAR || !pcm || n <= 0 || rate <= 0) return;
+    if(g_extPcm.size() > 16000u * 30) return;                         // не дольше 30 с, как у своего микрофона
+    if(rate == 16000) { g_extPcm.insert(g_extPcm.end(), pcm, pcm + n); return; }
+    if(rate == 48000)
+    {   // 48 → 16 кГц: среднее по три отсчёта (заодно срезает верх, который распознаванию не нужен)
+        for(int i = 0; i < n; ++i) { g_extSum += pcm[i]; if(++g_extCnt == 3) { g_extPcm.push_back((int16_t)(g_extSum / 3)); g_extSum = 0; g_extCnt = 0; } }
+        return;
+    }
+    double step = rate / 16000.0;                                     // другая частота — простое прореживание
+    for(; g_extPos < n; g_extPos += step) g_extPcm.push_back(pcm[(int)g_extPos]);
+    g_extPos -= n;
+}
 bool Listening() { return g_micMode == MIC_HEAR && !g_asrBusy; }
 bool Recognizing() { return g_asrBusy; }
 bool PollHeard(Heard& out) { std::lock_guard<std::mutex> l(g_mx); if(g_heard.empty()) return false; out = std::move(g_heard.front()); g_heard.pop_front(); return true; }
@@ -781,10 +816,13 @@ void Frame()
         }
     }
 
-    // микрофон
+    // микрофон (свой — через мост Android, или внешний — копия звука SA Coop)
     std::vector<int16_t> rec;
-    while(bridge::PollMic(rec))
+    bool extRec = false;
+    if(g_extReady) { g_extReady = false; rec.swap(g_extPcm); extRec = true; }
+    while(extRec || bridge::PollMic(rec))
     {
+        extRec = false;
         int mode = g_micMode; g_micMode = MIC_NONE;
         if(g_micDrop) { g_micDrop = false; g_asrBusy = false; continue; }
         std::vector<float> pcm(rec.size());

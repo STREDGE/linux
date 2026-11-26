@@ -86,7 +86,8 @@ mkdir -p /tmp/preview && cd /tmp/preview && bash <repo>/tools/preview/build.sh
 встроенный Tailscale с ID точки, лобби с выбором сохранения, раздельные кооп-сохранения (`docs/ARCHITECTURE.md` §4в–4д).
 Связь — **только встроенный Tailscale** (игрок отказался от своего сервера; код посредника `tools/relay` остался, не используется).
 
-Выпущено: **1.0.2** (протокол 14; 1.0.2 — подробный лог коопа).
+Выпущено: **1.1.0** (протокол 14; 1.0.2 — подробный лог коопа; 1.1.0 — API `SACoopNet` v2: один микрофон и одна кнопка «Говорить» с SA Living —
+`SetMicTap`/`SetTalk`/`SetTalkButtonOwner`/`VoiceAvailable`, `src/net/sacoop_api.h` и копия в `sa-living/src/net/` — менять обе).
 
 1. Проверка 1.0.1 с другом по сети + голос на телефоне (ждём игрока: логи `sacoop.txt`, `aml_crashlog`,
    журнал Tailscale лежит в личной папке игры — если не подключается, первым делом смотреть строки `[TAILSCALE]`).
@@ -94,14 +95,17 @@ mkdir -p /tmp/preview && cd /tmp/preview && bash <repo>/tools/preview/build.sh
 3. ТЗ 1.1 (`docs/TZ-1.1.md`), этапы 1–6 (таблица §10).
 4. Мелочи по желанию: кнопка «Сброс CO-OP» в настройке сенсоров, применение режима по нажатию на карточку.
 
-## Второй мод: SA Living (ИИ-педы + Джарвис) — папка `sa-living/` (выпущена 0.3.1, в коопе в игре не проверена — см. `sa-living/STATUS.md`)
+## Второй мод: SA Living (ИИ-педы + Джарвис) — папка `sa-living/` (выпущена 0.4.0, в коопе в игре не проверена — см. `sa-living/STATUS.md`)
 
 **0.3.x (кооп): полное равенство двух CJ.** Мир SA Living живёт у хоста; когда игроки рядом, люди у друга — копии
 педов хоста (SA Coop, `createdBy 2`, `talk::CoopCopy`). Разговор друга идёт к тому же персонажу, что у хоста
 (хост находит настоящего педа по модели и позиции копии — `RealPed`), тело двигает хост (`FinishTurn` «done»,
 `RemoteBody`/«act»), у хоста для разговора друга свой `g_fc` (слушатели, удары, позы, «ствол»). Реплики слышат оба
 («hear», `SayNear`). Полиция/подмога/месть/засады/инициатива — для обоих (`life::FriendNearHost`, «copcall», «helpers»).
-Сообщения кооп-канала SA Living: talk, reply, act, aimed, hear, helpers, copcall, note, news, sync, jv, ai.
+Сообщения кооп-канала SA Living: talk, reply, act, aimed, hear, helpers, copcall, convend, demand, wanted, note, news, sync, jv, ai.
+**0.4.0: одна кнопка «Говорить»** (с SA Coop 1.1+): в коопе микрофон пишет SA Coop (друг слышит голос всегда),
+SA Living распознаёт копию (`speech::ListenExternal/FeedExternal`, 48→16 кГц), ИИ — только если человек перед тобой
+(`ToFriend` в `talk::PttDown`); золотую кнопку SA Coop прячет (`SetTalkButtonOwner`).
 
 **0.2.0 сделана** по [`sa-living/TZ-0.2.md`](sa-living/TZ-0.2.md) и [`sa-living/TZ-JARVIS.md`](sa-living/TZ-JARVIS.md):
 своя речь без Google (GigaAM + xVibe), 4 голоса и свои голоса, память по сохранениям, групповой разговор, Джарвис.

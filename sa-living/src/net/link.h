@@ -13,4 +13,7 @@ namespace coopnet
     bool  Send(const json::Value& msg);
     const char* PeerNick();
     const char* MyNick();
+    // SA Coop 1.1+ (API v2): один микрофон и одна кнопка «Говорить» на оба мода
+    bool  MicShared();             // на связи, микрофон SA Coop работает — говорим через него (друг слышит)
+    void  SetTalk(bool on);        // «говорить другу» (голосовой чат SA Coop)
 }

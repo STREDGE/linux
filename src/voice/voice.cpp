@@ -282,6 +282,7 @@ namespace
     struct Encoded { uint16_t seq; uint8_t spurt; uint8_t len; uint8_t data[kMaxPacket]; uint64_t t; };
     std::vector<Encoded> g_txQueue;    // готовые кадры для сети
     float     g_inLevel = 0;
+    MicTap    g_tap = nullptr;         // копия звука для другого мода (SA Living — распознавание речи)
 
     // ---------------- эхо-проверка ----------------
     bool      g_loopback = false;
@@ -475,6 +476,7 @@ namespace
             if(!n) break;
             rs.clear(); g_inRs.Process(buf, (int)n, rs);
             g_txPcm.insert(g_txPcm.end(), rs.begin(), rs.end());
+            if(g_tap && !rs.empty()) g_tap(rs.data(), (int)rs.size(), kRate);
         }
         Encode(now);
     }
@@ -577,6 +579,8 @@ void Stop()
     g_inRing.Clear(); g_outRing.Clear();
     g_inLevel = g_outLevel = 0;
 }
+
+void SetMicTap(MicTap fn) { g_tap = fn; }
 
 float InputLevel()  { return g_inLevel; }
 float OutputLevel() { return g_outLevel; }

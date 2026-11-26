@@ -71,6 +71,7 @@ namespace coop
     bool PendingRequest(char* nick, size_t len, float* secondsLeft); // хост: висит запрос?
     void AnswerJoin(bool accept);
     void SetTalking(bool talking);                                   // кнопка микрофона зажата
+    bool TalkButtonOwned();                                          // кнопку «Говорить» рисует другой мод (SA Living) — золотую не показывать
     void SetFriendlyFire(bool on);                                   // огонь по своим (у клиента решает хост)
     void SetSharedWanted(bool on);                                   // общий розыск (у клиента решает хост)
     // Хост выдаёт оружие (меню CO-OP): toFriend — другу, иначе себе. Выполнится в игровом кадре.

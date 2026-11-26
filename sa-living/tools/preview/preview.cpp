@@ -68,6 +68,7 @@ namespace police {
     bool Arresting() { return false; } void Surrender() {} const char* ArrestStage() { return ""; }
 }
 namespace speech {
+    void SetLoudness(int) {}
     Status Get()
     {
         Status s;
@@ -107,7 +108,7 @@ namespace talk {
     static std::deque<Sub> g_subs; static bool g_conv = false;
     void Frame() {} bool PopNotify(std::string&) { return false; } void Notify(const std::string&) {}
     double Now() { return 0; }
-    bool Capturing() { return false; } bool Recognizing() { return false; } void CaptureDown(std::function<void(const std::string&)>) {} void CaptureUp() {}
+    bool Capturing() { return false; } bool Recognizing() { return false; } bool TalkingToFriend() { return false; } void CaptureDown(std::function<void(const std::string&)>) {} void CaptureUp() {}
     void EnsureVoice(world::Character& c, const std::vector<std::string>&) { if(c.voice.empty()) c.voice = "m01"; }
     bool Listening() { return false; } bool Thinking() { return false; } bool PhoneMode() { return false; } const std::string& Partial() { static std::string e; return e; }
     world::Character* Current() { return g_conv ? world::Find(1) : nullptr; } uintptr_t CurrentPed() { return g_conv ? 5 : 0; }

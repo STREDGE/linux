@@ -1573,7 +1573,8 @@ namespace
         }
         g_s = l.item[settings::L_TEAM].s; g_editBox[settings::L_TEAM] = DrawTeam(t, ItemPos(l, settings::L_TEAM));
         g_s = l.item[settings::L_TALK].s; g_editBox[settings::L_TALK] = DrawTalking(t, ItemPos(l, settings::L_TALK), sample);
-        if(t.show || sample) { g_s = l.item[settings::L_MIC].s; g_editBox[settings::L_MIC] = DrawMic(t, ItemPos(l, settings::L_MIC), !sample); }
+        // Есть SA Living со своей кнопкой «Говорить» — она же и голос другу: золотую не рисуем (одна кнопка на всё)
+        if(sample || (t.show && !coop::TalkButtonOwned())) { g_s = l.item[settings::L_MIC].s; g_editBox[settings::L_MIC] = DrawMic(t, ItemPos(l, settings::L_MIC), !sample); }
         else if(g_micHeld) { g_micHeld = false; coop::SetTalking(false); }
         g_s = l.item[settings::L_FEED].s; g_editBox[settings::L_FEED] = DrawFeed(ItemPos(l, settings::L_FEED), sample);
         g_s = 1.0f;

@@ -33,6 +33,11 @@ namespace voice
 
     void Stop();                            // закрыть микрофон и динамик, очистить буферы
 
+    // Копия звука микрофона (48 кГц моно) для другого мода — например, распознавание речи SA Living.
+    // Вызывается из Pump() (игровой поток), только пока микрофон пишет.
+    typedef void (*MicTap)(const int16_t* pcm, int n, int rate);
+    void SetMicTap(MicTap fn);
+
     float InputLevel();                     // 0..1 — громкость микрофона (для индикатора)
     float OutputLevel();                    // 0..1 — громкость друга
     bool  Playing();                        // сейчас звучит голос друга (или эхо)
