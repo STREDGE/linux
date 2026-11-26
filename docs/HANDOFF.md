@@ -31,6 +31,8 @@
 4. [`docs/HISTORY.md`](HISTORY.md) — версии и найденные баги (почему код именно такой).
 5. [`docs/libgtasa-2.10-arm64.md`](libgtasa-2.10-arm64.md), [`docs/main-scm-notes.md`](main-scm-notes.md) — смещения
    игры и выводы из её сценария.
+6. [`docs/IDEAS-STABILITY.md`](IDEAS-STABILITY.md) — отложенные идеи по стабильности (не начаты, ждут команды игрока;
+   на Rust не переводить — решено).
 
 ## 4. Главные решения игрока (кратко; полностью — в ТЗ)
 
