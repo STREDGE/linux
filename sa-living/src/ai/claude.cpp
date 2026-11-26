@@ -65,7 +65,9 @@ namespace
             case 403: return "Нет доступа (403): " + msg;
             case 404: return "Модель не найдена (404): " + msg;
             case 429: return "Слишком много запросов (429) — подожди немного.";
-            case 400: return "Ошибка запроса (400): " + msg;
+            case 400:
+                if(msg.find("credit") != std::string::npos) return "На счёте API нет денег (400). Забери кредиты подписки: claude.ai > Settings > Billing > API credits.";
+                return "Ошибка запроса (400): " + msg;
             case 529: return "Сервис перегружен (529) — повторю позже.";
             default:
                 if(status <= 0) return "Нет связи: " + body;

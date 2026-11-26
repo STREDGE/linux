@@ -259,7 +259,9 @@ namespace
         {
             std::string k = buf; while(!k.empty() && (k.back() == ' ' || k.back() == '\n' || k.back() == '\r')) k.pop_back();
             while(!k.empty() && (k[0] == ' ' || k[0] == '\n')) k.erase(0, 1);
-            if(k.rfind("sk-", 0) == 0 && k.size() > 20) { s.key = k; claude::Settings cs = claude::Get(); cs.key = k; claude::Configure(cs); settings::Save(); MenuToast("Ключ вставлен — нажми «Проверить»"); }
+            if(k.rfind("sk-", 0) == 0 && (k.find("...") != std::string::npos || k.find("\xE2\x80\xA6") != std::string::npos || k.size() < 60))
+                MenuToast("Это сокращённый ключ (с «...») — он не работает. В консоли создай новый ключ и нажми «Copy» сразу после создания");
+            else if(k.rfind("sk-", 0) == 0 && k.size() > 20) { s.key = k; claude::Settings cs = claude::Get(); cs.key = k; claude::Configure(cs); settings::Save(); MenuToast("Ключ вставлен — нажми «Проверить»"); }
             else MenuToast("В буфере нет ключа (должен начинаться с sk-)");
         }
         else MenuToast("Буфер обмена пуст");
