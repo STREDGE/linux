@@ -48,6 +48,8 @@ namespace
     uintptr_t g_camera = 0;
     int (*GetVehRefFn)(uintptr_t) = nullptr;
     uintptr_t g_cutscene = 0, g_clockH = 0, g_clockM = 0, g_weatherNew = 0, g_zoneName = 0, g_animBlocks = 0;
+    uintptr_t g_activeScripts = 0, g_scriptSpace = 0, g_mainScriptSize = 0;
+    void (*SkipCutsceneFn)() = nullptr;
 
     typedef void* (*TaskNew_t)(unsigned long);
     typedef void  (*SetTask_t)(void* mgr, void* task, int slot, bool);
@@ -162,6 +164,10 @@ bool Init(void* h)
     g_userPause = Sym(h, "_ZN6CTimer11m_UserPauseE");
     g_codePause = Sym(h, "_ZN6CTimer11m_CodePauseE", false);
     g_cutscene  = Sym(h, "_ZN12CCutsceneMgr10ms_runningE", false);
+    g_activeScripts = Sym(h, "_ZN11CTheScripts14pActiveScriptsE", false);
+    g_scriptSpace   = Sym(h, "_ZN11CTheScripts11ScriptSpaceE", false);
+    g_mainScriptSize= Sym(h, "_ZN11CTheScripts14MainScriptSizeE", false);
+    SkipCutsceneFn  = (void(*)())Sym(h, "_ZN12CCutsceneMgr12SkipCutsceneEv", false);
     g_camera    = Sym(h, "TheCamera", false);
     GetVehRefFn = (int(*)(uintptr_t))Sym(h, "_ZN6CPools13GetVehicleRefEP8CVehicle", false);
     g_clockH    = Sym(h, "_ZN6CClock18ms_nGameClockHoursE", false);
@@ -674,6 +680,21 @@ int Hour()   { return g_clockH ? *(uint8_t*)g_clockH : 12; }
 int Minute() { return g_clockM ? *(uint8_t*)g_clockM : 0; }
 int Weather(){ return g_weatherNew ? *(int16_t*)g_weatherNew : 0; }
 bool CutsceneRunning() { return g_cutscene && *(uint8_t*)g_cutscene; }
+bool SkipCutscene() { if(!SkipCutsceneFn || !CutsceneRunning()) return false; TRACE("МОД", "CCutsceneMgr::SkipCutscene"); SkipCutsceneFn(); return true; }
+
+// Скрипты сценария (CRunningScript, 2.10 arm64): pNext +0x0, имя +0x10, BaseAddress +0x18, PC +0x20, PCStack[8] +0x28,
+// StackDepth +0x68, IsThisAMissionScript +0x116. Код миссии лежит в ScriptSpace сразу после main.
+uintptr_t MissionCodeBase()
+{
+    if(!g_scriptSpace || !g_mainScriptSize) return 0;
+    return g_scriptSpace + *(uint32_t*)g_mainScriptSize;
+}
+void ForEachScript(const std::function<void(uintptr_t script)>& fn)
+{
+    if(!g_activeScripts) return;
+    uintptr_t s = *(uintptr_t*)g_activeScripts;
+    for(int guard = 0; s && guard < 512; ++guard) { uintptr_t next = F<uintptr_t>(s, 0); fn(s); s = next; }
+}
 bool GamePaused() { return (g_userPause && *(uint8_t*)g_userPause) || (g_codePause && *(uint8_t*)g_codePause); }
 uint32_t TimeMs() { return g_timeMs ? *(uint32_t*)g_timeMs : 0; }
 

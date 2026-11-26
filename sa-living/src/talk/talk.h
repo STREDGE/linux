@@ -25,6 +25,10 @@ namespace talk
     bool Listening();
     bool Recognizing();                   // запись ушла на распознавание
     bool TalkingToFriend();               // кнопка зажата, но говоришь другу (кооп) — людям не распознаём
+    // Предохранитель: идёт миссия (у себя или, в коопе, у хоста) — сюжет как в обычной игре: ИИ людей молчит,
+    // разговоров, подмоги, спутников, рефлексов нет; кнопка «Говорить» — только голос другу
+    bool MissionLock();
+    void HandleMissionState(const json::Value& m);   // друг: хост сообщил, идёт ли у него миссия
     const std::string& Partial();
     // Разовая запись «не педу» (Джарвис, проверка микрофона): текст придёт в sink (пусто — не расслышал)
     void CaptureDown(std::function<void(const std::string&)> sink);

@@ -120,7 +120,7 @@ namespace
     {
         uintptr_t pl = game::Player();
         uintptr_t tgt = c.goalTarget == world::WHO_CJ ? pl : FriendNearHost();
-        if(!tgt || game::OnMission() || game::CutsceneRunning() || police::Arresting()) return;
+        if(!tgt || talk::MissionLock() || game::CutsceneRunning() || police::Arresting()) return;
         if(talk::Current() == &c && talk::InConversation() && !talk::PhoneMode()) return;   // уже говорит с ним рядом
         uintptr_t ped = world::PedOf(c);
         if(ped && !game::Alive(ped)) return;
@@ -213,7 +213,7 @@ namespace
     void Initiative()
     {
         int lvl = settings::Get().initiative;
-        if(!lvl || !claude::Available() || talk::InConversation() || game::OnMission() || game::CutsceneRunning() || police::Arresting()) return;
+        if(!lvl || !claude::Available() || talk::InConversation() || talk::MissionLock() || game::CutsceneRunning() || police::Arresting()) return;
         double now = talk::Now();
         if(now < g_nextInit) return;
         uintptr_t pl = game::Player(); if(!pl) return;

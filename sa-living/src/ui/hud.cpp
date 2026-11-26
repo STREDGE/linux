@@ -742,6 +742,8 @@ namespace
     // ---------- слой поверх игры ----------
     void DrawTalkButton(const settings::Data& s)
     {
+        // идёт миссия: в одиночку кнопки нет (люди не слышат — сюжет как в игре); в коопе — только голос другу
+        if(talk::MissionLock() && !coopnet::MicShared()) return;
         float r = U(7.5f) * s.talkS;
         ImVec2 c(s.talkX * Ww(), s.talkY * Hh());
         ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
@@ -764,7 +766,7 @@ namespace
             DL()->AddRectFilled(ba, bb, C(kInk), U(1));
             DL()->AddTriangleFilled(ImVec2(c.x - r * 0.2f, bb.y), ImVec2(c.x, bb.y), ImVec2(c.x - r * 0.3f, bb.y + r * 0.25f), C(kInk));
         }
-        const char* lbl = toFriend ? "ДРУГУ" : listening ? "ГОВОРИ" : (talk::PhoneMode() ? "ТРУБКА" : "ГОВОРИТЬ");
+        const char* lbl = (toFriend || talk::MissionLock()) ? "ДРУГУ" : listening ? "ГОВОРИ" : (talk::PhoneMode() ? "ТРУБКА" : "ГОВОРИТЬ");
         ImVec2 ts = TS(F_SMALL, lbl);
         TxShadow(F_SMALL, ImVec2(c.x - ts.x * 0.5f, b.y + U(0.5f)), C(listening ? kRed : kInk), lbl);
         // кому говорим
@@ -799,7 +801,7 @@ namespace
             btn.push_back({ talk::PhoneMode() ? "Положить трубку" : "Уйти", 3 });
             btn.push_back({ "Карточка", 5 });
         }
-        if(game::Wanted() > 0 && !police::Arresting()) btn.push_back({ "Сдаться", 4 });
+        if(game::Wanted() > 0 && !police::Arresting() && !talk::MissionLock()) btn.push_back({ "Сдаться", 4 });
         float bw = U(20), bh = U(6), y = H * 0.86f, x = W * 0.5f - (btn.size() * (bw + U(1))) * 0.5f;
         for(auto& b : btn)
         {
@@ -970,7 +972,7 @@ namespace
                     DrawSubtitles();
                     DrawContextButtons();
                     DrawTalkButton(settings::Get());
-                    DrawPhoneButton(settings::Get());
+                    if(!talk::MissionLock()) DrawPhoneButton(settings::Get());   // звонки — это ИИ: во время миссии нет
                     if(g_phoneOpen) DrawPhone();
                 }
             }

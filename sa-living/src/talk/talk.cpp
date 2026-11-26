@@ -938,6 +938,13 @@ void StartPhoneCall(int charId)
 
 void SetSpeechSink(std::function<void(const std::string&)> fn) { g_sink = std::move(fn); }
 
+// ---- предохранитель миссий ----
+static bool g_hostMission = false;  // друг: у хоста идёт миссия (общая миссия в коопе)
+// У друга своё «на миссии» не считаем: SA Coop держит у него $ONMISSION = 1 возле спрятанных маркеров миссий
+// (чтобы маркер не сработал) — иначе люди «молчали» бы у дома Свита. Миссии идут у хоста — берём его состояние.
+bool MissionLock() { return coopnet::GetRole() == coopnet::CLIENT ? g_hostMission : game::OnMission(); }
+void HandleMissionState(const json::Value& m) { bool on = m["on"].b(); if(on != g_hostMission) TRACE("МИССИЯ", "у хоста миссия %s", on ? "началась — люди молчат" : "закончилась"); g_hostMission = on; }
+
 static bool g_viaCoop = false;      // эта запись идёт через микрофон SA Coop
 static bool g_voiceOnly = false;    // эта фраза — только другу (людям не распознаём)
 static bool g_asrHintShown = false;
@@ -1012,6 +1019,13 @@ void PttDown()
     if(g_captureActive) return;
     g_viaCoop = coopnet::MicShared();
     g_voiceOnly = false;
+    if(MissionLock())
+    {   // идёт миссия: сюжет как в обычной игре — люди не слышат, слышит только друг (в коопе)
+        g_voiceOnly = true;
+        if(g_viaCoop) coopnet::SetTalk(true);
+        TRACE("РАЗГОВОР", "идёт миссия — голос только другу, люди не слышат");
+        return;
+    }
     if(g_viaCoop) coopnet::SetTalk(true);                             // друг слышит всегда — как в жизни
     if(g_waitFinal) { if(g_viaCoop) g_voiceOnly = true; else Notify("Секунду, распознаю прошлую фразу…"); return; }
     if(g_sink) { BeginListen(); return; }
@@ -1132,6 +1146,7 @@ void PayDemand()
 
 bool React(Character& c, int who, const std::string& eventText, bool important)
 {
+    if(MissionLock()) return false;                                    // во время миссии люди не «оживают» — сюжет как в игре
     if(coopnet::GetRole() == coopnet::CLIENT) { SendToHost(c, "[Событие: " + eventText + "]", false, "", false); return true; }   // решает хост, исполняем у себя
     if(who == world::WHO_FRIEND && coopnet::GetRole() == coopnet::HOST)
     {   // событие в мире друга: мешает только ЕГО разговор с другим человеком, разговор хоста ни при чём
@@ -1468,6 +1483,11 @@ void HandleFriendTalk(const json::Value& req)
         e["error"] = claude::HasKey() ? "Хост выключил разговоры через свой ключ" : "У хоста нет ключа ИИ";
         coopnet::Send(e); return;
     }
+    if(MissionLock())
+    {
+        json::Value e = json::Value::Object(); e["t"] = "reply"; e["localId"] = req["localId"].i(); e["error"] = "Идёт миссия — люди сейчас тебя не слышат";
+        coopnet::Send(e); return;
+    }
     auto& W = world::W();
     if(req["nick"].isString()) W.friendNick = FriendName(req["nick"].str().c_str());
     bool phone = req["phone"].b();
@@ -1715,7 +1735,7 @@ static void HitFrame()
 static double g_nextFollow = 0;
 static void FollowersFrame(double now)
 {
-    if(now < g_nextFollow || g_followers.empty()) return;
+    if(now < g_nextFollow || g_followers.empty() || MissionLock()) return;
     g_nextFollow = now + 0.5;
     if(game::CutsceneRunning() || police::Arresting()) return;
     std::map<uintptr_t, int> claimed;                                   // машина → занятое в этом проходе место
@@ -1937,6 +1957,25 @@ void Frame()
     }
 
     AimFrame(Now());
+    {   // предохранитель миссий: на входе в миссию — закончить разговоры, отпустить спутников; хост сообщает другу
+        static int was = -1; static double nextSend = 0;
+        bool lock = MissionLock();
+        if(lock && was != 1)
+        {
+            if(g_c.active) EndConversation();
+            EndFriendConversation();
+            if(!g_followers.empty()) { TRACE("СПУТНИК", "началась миссия — спутники отпущены (%d)", (int)g_followers.size()); g_followers.clear(); }
+            TRACE("МИССИЯ", "предохранитель: люди молчат, сюжет как в игре");
+        }
+        else if(!lock && was == 1) TRACE("МИССИЯ", "предохранитель снят — люди снова слышат");
+        was = lock;
+        if(coopnet::GetRole() == coopnet::HOST)
+        {
+            static int sent = -1;
+            bool on = game::OnMission();
+            if((int)on != sent || Now() > nextSend) { json::Value m = json::Value::Object(); m["t"] = "mission"; m["on"] = on; coopnet::Send(m); sent = on; nextSend = Now() + 5; }
+        }
+    }
     HitFrame();
     FriendConvFrame();
     FollowersFrame(Now());

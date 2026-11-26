@@ -56,7 +56,7 @@ namespace game {
     Vec Pos(uintptr_t) { return Vec{ 2495, -1668, 13 }; } bool CutsceneRunning() { return false; }
     bool WorldToScreen(const Vec&, float& sx, float& sy) { sx = W * 0.42f; sy = H * 0.36f; return true; }
 }
-namespace coopnet { Role GetRole() { return NONE; } bool Connected() { return false; } bool Send(const json::Value&) { return false; } const char* PeerNick() { return ""; } void Init() {} void Frame() {} }
+namespace coopnet { Role GetRole() { return NONE; } bool Connected() { return false; } bool Send(const json::Value&) { return false; } const char* PeerNick() { return ""; } const char* MyNick() { return ""; } bool MicShared() { return false; } void SetTalk(bool) {} void Init() {} void Frame() {} }
 namespace platform {
     bool ClipboardGetText(char*, size_t) { return false; } bool ClipboardSetText(const char*) { return true; }
     int HasPermission(const char*) { return g_scenario == 1 ? 0 : 1; } bool RequestPermission(const char*) { return true; } bool OpenAppSettings() { return true; }
@@ -108,7 +108,7 @@ namespace talk {
     static std::deque<Sub> g_subs; static bool g_conv = false;
     void Frame() {} bool PopNotify(std::string&) { return false; } void Notify(const std::string&) {}
     double Now() { return 0; }
-    bool Capturing() { return false; } bool Recognizing() { return false; } bool TalkingToFriend() { return false; } void CaptureDown(std::function<void(const std::string&)>) {} void CaptureUp() {}
+    bool Capturing() { return false; } bool Recognizing() { return false; } bool TalkingToFriend() { return false; } bool MissionLock() { return false; } void CaptureDown(std::function<void(const std::string&)>) {} void CaptureUp() {}
     void EnsureVoice(world::Character& c, const std::vector<std::string>&) { if(c.voice.empty()) c.voice = "m01"; }
     bool Listening() { return false; } bool Thinking() { return false; } bool PhoneMode() { return false; } const std::string& Partial() { static std::string e; return e; }
     world::Character* Current() { return g_conv ? world::Find(1) : nullptr; } uintptr_t CurrentPed() { return g_conv ? 5 : 0; }

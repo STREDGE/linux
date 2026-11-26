@@ -333,7 +333,7 @@ void Frame()
     TrackPlayerHits(now);
     TrackOwnHurt(now);
     Release(now);
-    if(game::CutsceneRunning() || police::Arresting()) return;
+    if(game::CutsceneRunning() || police::Arresting() || talk::MissionLock()) return;   // миссия — сюжет как в игре
     // Хост (и одиночка) прикрывает обоих CJ своими педами — друг видит это на копиях.
     // У друга — только его самого и только своими людьми: когда вы рядом, люди у него — копии хоста
     // (createdBy 2, как у миссии) и в защитники не берутся; разъехались — у друга своё население, его и зовём.

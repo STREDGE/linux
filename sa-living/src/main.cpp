@@ -31,7 +31,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.4.2, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.5.0, SA Coop Team)
 
 static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
@@ -164,6 +164,7 @@ void OnMessage(const json::Value& m)
         if(t == "reply") talk::HandleHostReply(m);
         else if(t == "hear") talk::HandleHear(m);
         else if(t == "note") talk::Notify(m["text"].str());
+        else if(t == "mission") talk::HandleMissionState(m);
         else if(t == "demand") talk::HandleDemand(m);
         else if(t == "wanted") { int w = game::Wanted(); int a = m["add"].i(1); game::SetWanted(w < 2 ? w + a : w); talk::Notify("Кто-то сообщил о тебе в полицию"); }
         else if(t == "jv") jarvis::OnCoopMessage(m);

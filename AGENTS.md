@@ -95,7 +95,7 @@ mkdir -p /tmp/preview && cd /tmp/preview && bash <repo>/tools/preview/build.sh
 3. ТЗ 1.1 (`docs/TZ-1.1.md`), этапы 1–6 (таблица §10).
 4. Мелочи по желанию: кнопка «Сброс CO-OP» в настройке сенсоров, применение режима по нажатию на карточку.
 
-## Второй мод: SA Living (ИИ-педы + Джарвис) — папка `sa-living/` (выпущена 0.4.2, в коопе в игре не проверена — см. `sa-living/STATUS.md`)
+## Второй мод: SA Living (ИИ-педы + Джарвис) — папка `sa-living/` (выпущена 0.5.0, в коопе в игре не проверена — см. `sa-living/STATUS.md`)
 
 **0.3.x (кооп): полное равенство двух CJ.** Мир SA Living живёт у хоста; когда игроки рядом, люди у друга — копии
 педов хоста (SA Coop, `createdBy 2`, `talk::CoopCopy`). Разговор друга идёт к тому же персонажу, что у хоста
@@ -106,6 +106,9 @@ mkdir -p /tmp/preview && cd /tmp/preview && bash <repo>/tools/preview/build.sh
 **0.4.0: одна кнопка «Говорить»** (с SA Coop 1.1+): в коопе микрофон пишет SA Coop (друг слышит голос всегда),
 SA Living распознаёт копию (`speech::ListenExternal/FeedExternal`, 48→16 кГц), ИИ — только если человек перед тобой
 (`ToFriend` в `talk::PttDown`); золотую кнопку SA Coop прячет (`SetTalkButtonOwner`).
+**0.5.0:** Джарвис засчитывает сюжетные миссии (`mission skip`, таблица `src/jarvis/mission_skip.h` из `mainV1.scm`,
+генератор `sa-living/tools/missions/`); **предохранитель миссий** `talk::MissionLock()` — во время миссии ИИ людей молчит,
+сюжет как в обычной игре, кнопка «Говорить» — только голос другу в коопе (игрок: «должен работать обычный Сан Андреас»).
 
 **0.2.0 сделана** по [`sa-living/TZ-0.2.md`](sa-living/TZ-0.2.md) и [`sa-living/TZ-JARVIS.md`](sa-living/TZ-JARVIS.md):
 своя речь без Google (GigaAM + xVibe), 4 голоса и свои голоса, память по сохранениям, групповой разговор, Джарвис.

@@ -12,6 +12,7 @@
 #include "ai/claude.h"
 #include "game/game.h"
 #include "jarvis/brain.h"
+#include "jarvis/mission_skip.h"
 #include "jarvis/script.h"
 #include "net/link.h"
 #include "platform/bridge.h"
@@ -183,6 +184,76 @@ namespace
     }
 
     // Выполнить одну готовую команду. Возвращает короткий итог (для ИИ и лога).
+    // ---- пропуск миссии ----
+    // Скрипт миссии переводим на её блок «миссия пройдена» (таблица mission_skip.h, сверка подписи кода): игра сама
+    // засчитывает миссию — прогресс сюжета, награду, флаги — и делает свою уборку. Как при настоящем прохождении.
+    double g_restoreAt = 0;          // через пару секунд: вернуть управление/камеру, если миссия правда закончилась
+    double g_skipAfterCutscene = 0;  // заставку пропустили — засчитать миссию, когда игра её закроет (до этого срока)
+    std::string g_skipped;
+    uint32_t Fnv(const uint8_t* p, int n) { uint32_t h = 2166136261u; for(int i = 0; i < n; ++i) { h ^= p[i]; h *= 16777619u; } return h; }
+    std::string SkipMission()
+    {
+        if(!game::OnMission()) return "сейчас миссия не идёт";
+        uintptr_t base = game::MissionCodeBase();
+        if(!base) return "не нашёл код миссии в игре";
+        uint32_t sig = Fnv((const uint8_t*)base, 32);
+        const MissionSkip* e = nullptr;
+        for(auto& m : kMissionSkip) if(m.sig == sig) { e = &m; break; }
+        if(!e) return "эту миссию так засчитать нельзя (гонка, подработка, особая миссия или сценарий игры другой версии) — её придётся пройти самому";
+        if(memcmp((const void*)(base + e->passOff), e->check, 8) != 0 || ((const uint8_t*)base)[e->retOff - 7] != 0x50)
+            return "код миссии не совпал с ожидаемым (другая версия игры или мод сценария) — пропуск запрещён, чтобы не сломать сюжет";
+        // главный скрипт миссии: он сейчас внутри основной части — возврат на стеке ведёт к проверке «смерть/арест»
+        uintptr_t script = 0;
+        game::ForEachScript([&](uintptr_t s) {
+            if(script || !*(const uint8_t*)(s + 0x116)) return;                       // IsThisAMissionScript
+            if(*(const uintptr_t*)(s + 0x18) != base) return;                        // BaseAddressOfThisScript
+            uint16_t depth = *(const uint16_t*)(s + 0x68);
+            if(depth >= 1 && *(const uintptr_t*)(s + 0x28) == base + e->retOff) script = s;   // PCStack[0]
+        });
+        if(game::CutsceneRunning())
+        {   // заставку сначала закрывает сама миссия (иначе останется висеть): пропускаем её, засчитаем после
+            game::SkipCutscene();
+            g_skipAfterCutscene = Now() + 10;
+            return "сначала пропускаю заставку — миссию засчитаю сразу после неё";
+        }
+        if(!script) return "миссия сейчас в особом месте (провал или уборка) — попробуй через пару секунд";
+        *(uintptr_t*)(script + 0x20) = base + e->passOff;                            // PCPointer → блок «пройдена»
+        *(uintptr_t*)(script + 0x28) = base + e->retOff;                             // стек: один возврат — к проверке смерти/ареста
+        *(uint16_t*)(script + 0x68) = 1;
+        *(uint8_t*)(script + 0x115) = 0;                                              // CmpFlag
+        *(uint16_t*)(script + 0x120) = 0;                                             // AndOrState
+        *(uint8_t*)(script + 0x122) = 0;                                              // NotForLatestExpression
+        *(uint32_t*)(script + 0x11C) = 0;                                             // ActivateTime — без ожидания WAIT
+        g_skipped = e->gxt[0] ? e->gxt : e->name;
+        g_restoreAt = Now() + 2.5;
+        LOG_INFO("[ДЖАРВИС] пропуск миссии %d «%s» (%s): переход на блок «пройдена» +0x%X", e->index, e->name, e->gxt, (unsigned)e->passOff);
+        Done("Миссия засчитана: " + g_skipped);
+        return "миссия засчитана как пройденная (" + g_skipped + "); через пару секунд игра покажет «Миссия пройдена»";
+    }
+    void RestoreAfterSkip()
+    {
+        if(g_skipAfterCutscene > 0)
+        {
+            if(Now() > g_skipAfterCutscene) { g_skipAfterCutscene = 0; LOG_INFO("[ДЖАРВИС] заставка не закрылась — пропуск миссии отменён"); }
+            else if(!game::CutsceneRunning() && game::OnMission())
+            {
+                g_skipAfterCutscene = 0;
+                std::string r = SkipMission();
+                LOG_INFO("[ДЖАРВИС] после заставки: %s", r.c_str());
+                talk::Notify("Джарвис: " + r);
+            }
+        }   // миссия закончилась — на всякий случай вернуть управление, камеру, экран (если миссия оставила их своими)
+        if(g_restoreAt <= 0 || Now() < g_restoreAt) return;
+        g_restoreAt = 0;
+        if(game::OnMission()) { LOG_INFO("[ДЖАРВИС] после пропуска миссия ещё идёт — значит, у неё продолжение (финал из нескольких частей)"); return; }
+        if(!script::Ready()) return;
+        script::Do(0x01B4, { Arg::I(0), Arg::I(1) });        // SET_PLAYER_CONTROL игрок 0 — вкл
+        script::Do(0x02A3, { Arg::I(0) });                    // SWITCH_WIDESCREEN выкл
+        script::Do(0x02EB, {});                               // RESTORE_CAMERA_JUMPCUT
+        script::Do(0x016A, { Arg::I(400), Arg::I(1) });       // DO_FADE — проявить экран
+        LOG_INFO("[ДЖАРВИС] после пропуска «%s»: управление и камера возвращены", g_skipped.c_str());
+    }
+
     std::string Exec(const std::string& tool, const json::Value& in)
     {
         uintptr_t pl = game::Player();
@@ -439,6 +510,19 @@ namespace
             Done(Fmt("Люди: %s %d", what, n));
             return Fmt("%s: %d", what, n);
         }
+        if(tool == "mission")
+        {
+            std::string act = in["action"].str();
+            if(Client()) return "миссии идут у хоста — пропускает только хост";
+            if(act == "skip_cutscene")
+            {
+                if(!game::SkipCutscene()) return "заставки сейчас нет";
+                Done("Заставка пропущена");
+                return "заставка пропущена";
+            }
+            if(act != "skip") return "неизвестное действие";
+            return SkipMission();
+        }
         if(tool == "world")
         {
             if(Client() && !settings::Get().jarvisFriend) return "общий мир (время, погода, движение) в коопе меняет только хост";
@@ -533,6 +617,7 @@ namespace
 {"name":"player","description":"Игрок: health (100 — полное), armour (100), money (прибавить, можно отрицательное), god (бессмертие), never_tired (бег без усталости), infinite_ammo (патроны пополняются сами). Указывай только то, что меняешь.","input_schema":{"type":"object","properties":{"health":{"type":"integer"},"armour":{"type":"integer"},"money":{"type":"integer"},"god":{"type":"boolean"},"never_tired":{"type":"boolean"},"infinite_ammo":{"type":"boolean"}}}},
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
 {"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак; explode_near — взорвать машины вокруг (who: all, police, empty; radius — метров, по умолчанию 40, до 120; машину игрока не трогает).","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack","explode_near"]},"model":{"type":"string"},"who":{"type":"string"},"radius":{"type":"number"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
+{"name":"mission","description":"Миссии сюжета. action: skip — засчитать ИДУЩУЮ миссию как пройденную (игра сама даст «Миссия пройдена», прогресс, награду; работает для сюжетных миссий — гонки, подработки, тиры, спортзалы, подружки так не засчитываются; это меняет прохождение — сначала спроси подтверждение); skip_cutscene — пропустить идущую заставку.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["skip","skip_cutscene"]}}}},
 {"name":"world","description":"Мир: hour/minute — время; weather — номер (0–1 ясно, 4 пасмурно, 8 дождь, 9 туман, 16 гроза, 19 песчаная буря; -1 — как в игре); time_scale — скорость игры (1 — обычная, 0.4 — замедление); traffic и peds — плотность машин и людей (0 — нет, 1 — обычно, 2 — много); clear_area — убрать всех вокруг.","input_schema":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"},"weather":{"type":"integer"},"time_scale":{"type":"number"},"traffic":{"type":"number"},"peds":{"type":"number"},"clear_area":{"type":"boolean"}}}},
 {"name":"people","description":"Люди вокруг игрока (прохожие, бандиты, копы). action: list — кто рядом (номер, кто, расстояние); remove — убрать/удалить/стереть из мира (люди исчезают, никто не погибает — это значат «убери», «удали», «очисти улицу»); kill — убить (ТОЛЬКО если прямо сказано «убей»); flee — разбежаться от игрока; attack — напасть на игрока; follow — идти за игроком (охрана); calm — оставить в покое (вернуться к своим делам). who: all, gang (любая банда), grove, ballas, vagos, aztecas, rifa, triads, danang, mafia, cops, civil (прохожие). ids — номера из list (если нужно конкретных). radius — метров (по умолчанию 50, до 150). Игрока и друга никогда не трогает; друзей и знакомых CJ при «все» не трогает (только по номеру из list); людей миссии — никогда.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["list","remove","kill","flee","attack","follow","calm"]},"who":{"type":"string"},"ids":{"type":"array","items":{"type":"integer"}},"radius":{"type":"number"}}}},
 {"name":"undo","description":"Отменить последнее действие (перенос, время, погоду, розыск, бессмертие, созданную машину).","input_schema":{"type":"object","properties":{}}},
@@ -775,6 +860,7 @@ void Frame()
 {
     if(!settings::Get().jarvis) { g_view.visible = false; return; }
     double now = Now();
+    RestoreAfterSkip();
     if(g_autoStopAt > 0 && now >= g_autoStopAt && talk::Capturing()) { g_autoStopAt = 0; talk::CaptureUp(); Show(RECOGNIZING); }
     if(g_view.visible)
     {

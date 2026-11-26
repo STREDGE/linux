@@ -99,6 +99,9 @@ namespace game
     int  Weather();
     std::string ZoneName();                 // район, где стоит игрок (из интерфейса игры)
     bool CutsceneRunning();
+    bool SkipCutscene();                    // пропустить идущую заставку (как тап по экрану); false — заставки нет
+    uintptr_t MissionCodeBase();            // где в памяти лежит код текущей миссии (ScriptSpace + MainScriptSize)
+    void ForEachScript(const std::function<void(uintptr_t script)>& fn);   // все активные скрипты сценария (CRunningScript*)
     bool GamePaused();
     uint32_t TimeMs();                      // CTimer::m_snTimeInMilliseconds
 

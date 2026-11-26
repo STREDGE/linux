@@ -96,7 +96,8 @@ namespace
                 s_type = type; s_at = n; s_rep = 0;
             }
         }
-        if(g_bypass || !settings::Get().enabled || !settings::Get().witnesses || self != mine || dontCare) { orig(self, type, pos, victim, dontCare); return; }
+        // во время миссии розыск — как в обычной игре (сюжет рассчитан на него)
+        if(g_bypass || !settings::Get().enabled || !settings::Get().witnesses || self != mine || dontCare || talk::MissionLock()) { orig(self, type, pos, victim, dontCare); return; }
 
         int sev = Severity(type);
         g_lastCrimeAt = talk::Now();
