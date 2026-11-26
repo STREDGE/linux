@@ -25,6 +25,10 @@ namespace game
     bool PlayerInVehicle();
     uintptr_t PlayerVehicle();
     void LockPlayer(bool lock);             // DisablePlayerControls пульта 0
+    uintptr_t Player2();                    // второй CJ (друг в коопе) или 0
+    float MaxHealth(uintptr_t ped);         // 100…176 у игрока
+    float Armour(uintptr_t ped);
+    bool  Waypoint(Vec& out);               // метка игрока на карте (false — не стоит)
 
     // ---- педы ----
     // Пед-ссылка (handle пула): устойчива, пока пед жив; 0 — нет
@@ -93,6 +97,10 @@ namespace game
     float GroundZ(float x, float y, float z);
     bool  OnMission();
     uintptr_t PlayerTarget();               // в кого целится игрок (или 0)
+
+    // Сюжетный персонаж: ключ («sweet», «ryder», «cesar»…) или пусто. Особые персонажи миссий
+    // (модели 290–299) узнаются по имени, с которым игра их загрузила (CStreaming::RequestSpecialChar).
+    std::string StoryKey(uintptr_t ped);
 
     const char* PedTypeName(int pedType);   // «прохожий», «Ballas»…
     bool IsGang(int pedType);

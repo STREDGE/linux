@@ -33,6 +33,18 @@ void Load()
     d.talkS  = cfg->GetInt("TalkScale", 100, "Layout") / 100.0f;
     d.phoneX = cfg->GetInt("PhoneX", 8000, "Layout") / 10000.0f; d.phoneY = cfg->GetInt("PhoneY", 2200, "Layout") / 10000.0f;
     d.phoneS = cfg->GetInt("PhoneScale", 100, "Layout") / 100.0f;
+    d.engine     = cfg->GetInt("SpeechEngine", 0, "AI");
+    d.forgetDays = cfg->GetInt("ForgetDays", 7, "AI");
+    d.jarvis        = cfg->GetBool("Enabled", true, "Jarvis");
+    d.jarvisButton  = cfg->GetBool("Button", true, "Jarvis");
+    d.jarvisVoice   = Str("Voice", "", "Jarvis");
+    d.jarvisPitch   = cfg->GetInt("Pitch", 100, "Jarvis") / 100.0f;
+    d.jarvisSpeed   = cfg->GetInt("Speed", 105, "Jarvis") / 100.0f;
+    d.jarvisAddress = Str("Address", "сэр", "Jarvis");
+    d.jarvisConfirm = cfg->GetInt("Confirm", 0, "Jarvis");
+    d.jarvisFriend  = cfg->GetBool("FriendAllowed", false, "Jarvis");
+    d.jarvisX = cfg->GetInt("X", 8000, "Jarvis") / 10000.0f; d.jarvisY = cfg->GetInt("Y", 5800, "Jarvis") / 10000.0f;
+    d.jarvisS = cfg->GetInt("Scale", 100, "Jarvis") / 100.0f;
     g_d = d;
     cfg->Save();
 }
@@ -52,6 +64,11 @@ void Save()
     SETB("RealisticArrest", d.realArrest, "Realism"); SETB("WantedByWitnesses", d.witnesses, "Realism");
     SETI("TalkX", (int)(d.talkX * 10000), "Layout"); SETI("TalkY", (int)(d.talkY * 10000), "Layout"); SETI("TalkScale", (int)(d.talkS * 100), "Layout");
     SETI("PhoneX", (int)(d.phoneX * 10000), "Layout"); SETI("PhoneY", (int)(d.phoneY * 10000), "Layout"); SETI("PhoneScale", (int)(d.phoneS * 100), "Layout");
+    SETI("SpeechEngine", d.engine, "AI"); SETI("ForgetDays", d.forgetDays, "AI");
+    SETB("Enabled", d.jarvis, "Jarvis"); SETB("Button", d.jarvisButton, "Jarvis"); SETS("Voice", d.jarvisVoice, "Jarvis");
+    SETI("Pitch", (int)(d.jarvisPitch * 100 + 0.5f), "Jarvis"); SETI("Speed", (int)(d.jarvisSpeed * 100 + 0.5f), "Jarvis");
+    SETS("Address", d.jarvisAddress, "Jarvis"); SETI("Confirm", d.jarvisConfirm, "Jarvis"); SETB("FriendAllowed", d.jarvisFriend, "Jarvis");
+    SETI("X", (int)(d.jarvisX * 10000), "Jarvis"); SETI("Y", (int)(d.jarvisY * 10000), "Jarvis"); SETI("Scale", (int)(d.jarvisS * 100), "Jarvis");
     #undef SETB
     #undef SETI
     #undef SETS

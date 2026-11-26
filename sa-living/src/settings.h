@@ -23,6 +23,17 @@ namespace settings
         bool  director = true;              // «режиссёр города»
         float talkX = 0.80f, talkY = 0.40f, talkS = 1.0f;     // кнопка «Говорить»
         float phoneX = 0.80f, phoneY = 0.22f, phoneS = 1.0f;  // кнопка «Телефон»
+        int   engine = 0;                   // речь: 0 — своя (GigaAM + xVibe, без Google), 1 — Google (Android)
+        int   forgetDays = 7;               // неважных персонажей забывать через N игровых дней
+        // Джарвис
+        bool  jarvis = true;
+        bool  jarvisButton = true;          // кнопка на экране (ещё есть пункт в меню CLEO)
+        std::string jarvisVoice;            // ключ голоса (пусто — выбрать самому)
+        float jarvisPitch = 1.0f, jarvisSpeed = 1.05f;
+        std::string jarvisAddress = "сэр";  // как обращаться
+        int   jarvisConfirm = 0;            // 0 — только опасное, 1 — всегда, 2 — никогда
+        bool  jarvisFriend = false;         // кооп: друг может менять общий мир через Джарвиса
+        float jarvisX = 0.80f, jarvisY = 0.58f, jarvisS = 1.0f;
     };
 
     Data& Get();

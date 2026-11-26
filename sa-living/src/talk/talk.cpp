@@ -13,6 +13,7 @@
 #include "settings.h"
 #include "sim/life.h"
 #include "sim/police.h"
+#include "speech/speech.h"
 #include "util/log.h"
 
 using world::Character;
@@ -38,6 +39,7 @@ namespace
         std::string demandWhy;
         bool endAfterSpeech = false;
         bool remote = false;          // мы — друг: ответы идут через хоста
+        std::vector<int> group;       // групповой разговор: кто ещё рядом из его компании (номера персонажей)
     };
     Conv g_c;
 
@@ -47,6 +49,10 @@ namespace
     double g_sttUntil = 0;
 
     std::function<void(const std::string&)> g_sink;
+    std::function<void(const std::string&)> g_capture;    // разовый приёмник (Джарвис, проверка микрофона)
+    bool g_captureActive = false;
+    double g_heardAt = 0;            // когда игрок договорил (для замера «ответ через N с»)
+    bool   g_firstVoice = false;
     std::deque<Sub> g_subs;
     std::deque<std::string> g_notes;
     int g_ttsSeq = 0;
@@ -102,6 +108,17 @@ namespace
             if(people) s += Fmt(" Рядом посторонних: %d.", people);
             if(!same && !cops && !people) s += " Свидетелей вокруг нет.";
         }
+        if(g_c.active && g_c.charId == c.id && !g_c.group.empty())
+        {
+            s += " РЯДОМ С ТОБОЙ ТВОЯ КОМПАНИЯ, они слышат разговор и могут вмешиваться (group_say / group_act):";
+            for(int id : g_c.group)
+                if(Character* m = world::Find(id))
+                {
+                    const char* temper = m->tr.aggression > 65 ? "вспыльчивый" : m->tr.courage < 35 ? "трусоватый" : m->tr.greed > 65 ? "жадный" : m->tr.talkative > 65 ? "болтливый" : "спокойный";
+                    s += Fmt(" [#%d %s%s, %s, симпатия к собеседнику %d]", m->id, m->nick.empty() ? m->name.c_str() : m->nick.c_str(),
+                             m->rank >= 2 ? " (старший)" : "", temper, m->rel[who].liking);
+                }
+        }
         s += Fmt(" У тебя при себе $%d.]", c.money);
         return s;
     }
@@ -142,15 +159,33 @@ namespace
         d.push(m);
     }
 
-    // ---------- озвучка по фразам ----------
-    void SpeakChunk(Character* c, const std::string& text)
+    // ---------- голоса ----------
+    unsigned HashStr(const std::string& s) { unsigned h = 2166136261u; for(unsigned char c : s) { h ^= c; h *= 16777619u; } return h; }
+
+    void SpeakAs(Character* c, const std::string& who, const std::string& text)
     {
         std::string t = text;
         while(!t.empty() && (t[0] == ' ' || t[0] == '\n')) t.erase(0, 1);
-        if(t.empty()) return;
-        if(settings::Get().voices && bridge::TtsReady())
+        if(t.empty() || !settings::Get().voices) return;
+        if(settings::Get().engine == 0)
+        {
+            if(!speech::TtsReady()) return;
+            std::string key; float p = 1, r = 1;
+            if(c) { EnsureVoice(*c); key = c->voice; p = c->vpitch; r = c->vrate; }
+            else key = speech::PickVoice(false, HashStr(who));
+            speech::Voice v;
+            if(speech::FindVoice(key, v)) { p *= v.pitch; r *= v.speed; }
+            if(!g_firstVoice && g_heardAt > 0) { g_firstVoice = true; LOG_INFO("Замер: от конца твоей фразы до первой реплики в очереди голоса — %.2f с", Now() - g_heardAt); }
+            speech::Speak(t, key, p, r, Fmt("u%d", ++g_ttsSeq));
+        }
+        else if(bridge::TtsReady())
             bridge::TtsSpeak(t, c ? c->pitch : 1.0f, c ? c->rate : 1.0f, Fmt("u%d", ++g_ttsSeq), true);
     }
+
+    void StopVoice() { speech::StopSpeaking(); bridge::TtsStop(); }
+
+    // ---------- озвучка по фразам ----------
+    void SpeakChunk(Character* c, const std::string& text) { SpeakAs(c, c ? c->name : "", text); }
 
     size_t SentenceEnd(const std::string& s)
     {
@@ -181,6 +216,30 @@ namespace
         auto& W = world::W();
         world::Relation& r = c.rel[who];
         physical = false;
+        if(n == "group_say" || n == "group_act")
+        {
+            Character* m = world::Find(in["who"].i());
+            bool inGroup = false; for(int id : g_c.group) if(m && id == m->id) inGroup = true;
+            if(!m || !inGroup || !(g_c.active && g_c.charId == c.id)) return "такого человека рядом нет";
+            uintptr_t mped = world::PedOf(*m);
+            if(n == "group_say")
+            {
+                std::string text = in["text"].str();
+                if(text.empty()) return "пусто";
+                Say(m->nick.empty() ? m->name : m->nick, text, false, m->id, m->pitch, m->rate, true);
+                m->lastTalkDay = world::Day();
+                return "сказал";
+            }
+            if(!mped) return "он уже ушёл";
+            const std::string& a = in["action"].str();
+            json::Value arg = json::Value::Object();
+            static const char* moves[] = { "follow_player", "come_closer", "go_away", "flee", "wait_here" };
+            for(const char* mv : moves) if(a == mv) { arg["mode"] = a; arg["run"] = a == "flee"; return ExecutePhysical(m, mped, who, "move", arg); }
+            if(a == "attack" || a == "aim_weapon") { arg["weapon"] = in["weapon"].s(a == "attack" ? "fists" : "pistol"); return ExecutePhysical(m, mped, who, a, arg); }
+            if(a == "holster") return ExecutePhysical(m, mped, who, "holster", arg);
+            arg["kind"] = a;
+            return ExecutePhysical(m, mped, who, "gesture", arg);
+        }
         if(n == "relationship")
         {
             world::ChangeRelation(c, who, in["trust"].i(), in["respect"].i(), in["liking"].i(), in["fear"].i(), in["why"].str().c_str());
@@ -309,6 +368,7 @@ namespace
         if(!remoteFriend)
         {
             g_c.spoken.clear(); g_c.buf.clear();
+            g_firstVoice = false;
         }
         int id = claude::Send(req,
             [charId, remoteFriend](const std::string& delta) {
@@ -420,6 +480,34 @@ namespace
             g_c = Conv(); g_c.active = true; g_c.charId = c.id; g_c.who = world::WHO_CJ; g_c.remote = coopnet::GetRole() == coopnet::CLIENT;
             if(!game::Vehicle(ped)) { game::TaskTurnTo(ped, game::Player()); }
             c.rel[world::WHO_CJ].met = true;
+            EnsureVoice(c);
+            // компания: свои рядом (банда, копы) — до двух человек, у каждого свой голос
+            if(!g_c.remote && c.faction != world::F_CIVIL && c.faction != world::F_NONE)
+            {
+                std::vector<std::string> used{ c.voice };
+                game::Vec at = game::Pos(ped);
+                int fac = c.faction, mainId = c.id;
+                std::vector<uintptr_t> near;
+                game::ForEachPed([&](uintptr_t p) {
+                    if(p == ped || game::IsPlayer(p) || !game::Alive(p) || game::Vehicle(p)) return;
+                    if(world::FactionOfPedType(game::PedType(p)) != fac || game::Dist(game::Pos(p), at) > 7.0f) return;
+                    near.push_back(p);
+                });
+                for(uintptr_t p : near)
+                {
+                    if(g_c.group.size() >= 2) break;
+                    Character& m = world::Promote(p);             // может сдвинуть массив персонажей — c больше не трогаем
+                    if(m.id == mainId) continue;
+                    EnsureVoice(m, used); used.push_back(m.voice);
+                    m.rel[world::WHO_CJ].met = true;
+                    g_c.group.push_back(m.id);
+                    game::TaskTurnTo(p, game::Player());
+                }
+                Character* mc = world::Find(mainId);
+                LOG_INFO("Разговор с #%d %s (%s), компания: %d чел.", mainId, mc ? mc->name.c_str() : "?", mc ? game::PedTypeName(mc->pedType) : "?", (int)g_c.group.size());
+                g_c.lastAt = Now();
+                return;
+            }
             LOG_INFO("Разговор с #%d %s (%s)", c.id, c.name.c_str(), game::PedTypeName(c.pedType));
         }
         g_c.lastAt = Now();
@@ -447,7 +535,27 @@ void Say(const std::string& who, const std::string& text, bool player, int charI
 {
     Sub s; s.who = who; s.text = text; s.player = player; s.charId = charId; s.until = Now() + 5 + text.size() * 0.04;
     g_subs.push_back(s); while(g_subs.size() > 4) g_subs.pop_front();
-    if(voice && settings::Get().voices && bridge::TtsReady()) bridge::TtsSpeak(text, pitch, rate, Fmt("s%d", ++g_ttsSeq), true);
+    (void)pitch; (void)rate;
+    if(voice) SpeakAs(world::Find(charId), who, text);
+}
+
+void EnsureVoice(Character& c, const std::vector<std::string>& avoid)
+{
+    if(!c.story.empty())
+    {   // сюжетный: голос общий для всех сохранений (если игрок назначил)
+        world::StoryVoice sv;
+        if(world::GetStoryVoice(c.story, sv)) { c.voice = sv.voice; c.vpitch = sv.pitch; c.vrate = sv.rate; }
+    }
+    speech::Voice v;
+    if(!c.voice.empty() && speech::FindVoice(c.voice, v)) return;
+    if(speech::Voices().empty()) return;
+    unsigned seed = c.story.empty() ? (unsigned)c.id * 2654435761u + (unsigned)c.model * 40503u : HashStr(c.story);
+    c.voice = speech::PickVoice(c.female, seed >> 7, avoid);
+    c.vpitch = 0.93f + ((seed >> 3) % 15) / 100.0f;      // 0.93 … 1.07: из одного голоса — разные люди
+    c.vrate  = 0.96f + ((seed >> 13) % 12) / 100.0f;     // 0.96 … 1.07
+    if(c.age >= 50) { c.vpitch -= 0.04f; c.vrate -= 0.03f; }
+    else if(c.age <= 22) c.vpitch += 0.03f;
+    LOG_INFO("Голос: #%d %s — «%s», высота %.2f, скорость %.2f", c.id, c.name.c_str(), c.voice.c_str(), c.vpitch, c.vrate);
 }
 
 void EndConversation()
@@ -459,6 +567,8 @@ void EndConversation()
         uintptr_t ped = world::PedOf(*c);
         if(ped && !g_c.phone && game::ActiveTaskType(ped) == 203 /*стоит*/) game::TaskWander(ped);
     }
+    for(int id : g_c.group)
+        if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); if(mp && game::ActiveTaskType(mp) == 203) game::TaskWander(mp); }
     g_c = Conv();
 }
 
@@ -475,30 +585,63 @@ void StartPhoneCall(int charId)
 
 void SetSpeechSink(std::function<void(const std::string&)> fn) { g_sink = std::move(fn); }
 
+static bool BeginListen()
+{
+    StopVoice();
+    g_partial.clear();
+    if(settings::Get().engine == 0)
+    {
+        speech::Status st = speech::Get();
+        if(!st.asrReady)
+        {
+            Notify(st.loading ? "Речь ещё загружается — подожди несколько секунд" : st.asrFiles ? "Распознавание не запустилось: Настройки > AI" : "Распознавание речи не установлено: Настройки > AI > «Скачать распознавание»");
+            return false;
+        }
+        if(!speech::Listen()) { Notify("Микрофон недоступен — проверь разрешение (Настройки > AI)"); return false; }
+    }
+    else
+    {
+        if(!bridge::Ready()) { Notify("Мост Android не запустился — голос недоступен"); return false; }
+        bridge::SttStart(settings::Get().lang.c_str());
+    }
+    g_listening = true; g_waitFinal = false;
+    return true;
+}
+
+static void EndListen()
+{
+    if(!g_listening) return;
+    g_listening = false; g_waitFinal = true; g_sttUntil = Now() + (settings::Get().engine == 0 ? 20 : 6);
+    if(settings::Get().engine == 0) speech::StopListen(); else bridge::SttStop();
+}
+
+void CaptureDown(std::function<void(const std::string&)> sink)
+{
+    if(g_listening) return;
+    g_capture = std::move(sink); g_captureActive = true;
+    if(!BeginListen()) { g_captureActive = false; g_capture = nullptr; }
+}
+void CaptureUp() { if(g_captureActive) EndListen(); }
+bool Capturing() { return g_captureActive; }
+bool Recognizing() { return g_waitFinal; }
+
 void PttDown()
 {
-    if(!bridge::Ready()) { Notify("Мост Android не запустился — голос недоступен"); return; }
-    if(g_sink) { g_partial.clear(); g_listening = true; g_waitFinal = false; bridge::TtsStop(); bridge::SttStart(settings::Get().lang.c_str()); return; }
+    if(g_captureActive) return;
+    if(g_sink) { BeginListen(); return; }
     if(!g_c.phone)
     {
         uintptr_t ped = PickTarget();
         if(!ped) { Notify("Рядом никого — подойди к человеку ближе"); return; }
         StartWith(ped);
     }
-    if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; bridge::TtsStop(); }
+    if(g_c.reqId) { claude::Cancel(g_c.reqId); g_c.reqId = 0; }
     if(Character* c = Current()) { uintptr_t ped = world::PedOf(*c); if(ped && !g_c.phone && !game::Vehicle(ped)) game::TaskStand(ped, 15000); }
-    g_partial.clear();
-    g_listening = true; g_waitFinal = false;
-    bridge::TtsStop();
-    bridge::SttStart(settings::Get().lang.c_str());
+    for(int id : g_c.group) if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); if(mp && !game::Vehicle(mp)) game::TaskStand(mp, 15000); }
+    BeginListen();
 }
 
-void PttUp()
-{
-    if(!g_listening) return;
-    g_listening = false; g_waitFinal = true; g_sttUntil = Now() + 6;
-    bridge::SttStop();
-}
+void PttUp() { if(!g_captureActive) EndListen(); }
 
 static void SendToHost(Character& c, const std::string& text, bool phone)
 {
@@ -512,6 +655,8 @@ static void SendToHost(Character& c, const std::string& text, bool phone)
 
 static void OnPlayerSaid(const std::string& text)
 {
+    g_heardAt = Now();
+    if(g_captureActive) { auto fn = std::move(g_capture); g_capture = nullptr; g_captureActive = false; if(fn) fn(text); return; }
     if(g_sink) { if(!text.empty()) { Say(world::W().playerNick, text, true, 0, 1, 1, false); g_sink(text); } return; }
     g_c.lastAt = Now();
     Character* c = Current();
@@ -797,11 +942,25 @@ void Frame()
             else Notify("Распознавание речи: ошибка " + se.text);
         }
     }
-    if(g_waitFinal && Now() > g_sttUntil) { g_waitFinal = false; if(!g_partial.empty()) OnPlayerSaid(g_partial); }
+    speech::Heard hd;
+    while(speech::PollHeard(hd))
+    {
+        if(!g_waitFinal && !g_listening) continue;                 // уже не ждём (отменили)
+        g_waitFinal = false; g_listening = false;
+        if(!hd.ok) { Notify("Распознавание: " + hd.error); if(g_captureActive) { g_captureActive = false; g_capture = nullptr; } continue; }
+        g_partial = hd.text;
+        OnPlayerSaid(hd.text);
+    }
+    if(g_waitFinal && Now() > g_sttUntil)
+    {
+        g_waitFinal = false;
+        if(g_captureActive && g_partial.empty()) { auto fn = std::move(g_capture); g_capture = nullptr; g_captureActive = false; if(fn) fn(""); }
+        else if(!g_partial.empty()) OnPlayerSaid(g_partial);
+    }
 
-    // голос: конец речи → можно завершить разговор
-    bridge::TtsEvent te;
-    while(bridge::PollTts(te)) {}
+    // голос: отзвучавшие фразы (конец речи → можно завершить разговор)
+    std::string spokenId;
+    while(speech::PollSpoken(spokenId)) {}
 
     // отложенные действия
     double now = Now();
@@ -821,7 +980,7 @@ void Frame()
         if(far && !g_c.reqId) EndConversation();
         else if(!g_c.reqId && !g_listening && now - g_c.lastAt > 45) EndConversation();
     }
-    if(g_c.active && g_c.endAfterSpeech && !g_c.reqId) { g_c.endAfterSpeech = false; if(g_c.phone) Notify("Разговор окончен"); EndConversation(); }
+    if(g_c.active && g_c.endAfterSpeech && !g_c.reqId && !speech::Speaking()) { g_c.endAfterSpeech = false; if(g_c.phone) Notify("Разговор окончен"); EndConversation(); }
 
     while(!g_subs.empty() && g_subs.front().until < now) g_subs.pop_front();
 }

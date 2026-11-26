@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 #include <algorithm>
 
@@ -34,6 +35,7 @@ namespace
 }
 
 World& W() { return g_w; }
+int g_forgetDays = 7;
 void (*g_forwardEvent)(const Event& e) = nullptr;
 
 int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -76,12 +78,152 @@ void Reset()
     g_w.fac[F_POLICE].hostility[WHO_CJ] = 20;
 }
 
-std::string DefaultPath()
+std::string BaseDir()
 {
     const char* base = aml->GetAndroidDataPath();
     std::string dir = std::string(base ? base : "/sdcard") + "/SALiving";
     mkdir(dir.c_str(), 0777);
-    return dir + "/world.json";
+    return dir;
+}
+std::string DefaultPath() { return BaseDir() + "/world.json"; }
+
+// ---------------- память по сохранениям ----------------
+static std::string g_key;
+static std::string MemoryPath(const std::string& key)
+{
+    std::string dir = BaseDir() + "/memory";
+    mkdir(dir.c_str(), 0777);
+    std::string safe;
+    for(char ch : key) safe += (isalnum((unsigned char)ch) || ch == '_' || ch == '-') ? ch : '_';
+    return dir + "/" + safe + ".json";
+}
+static std::string KeyOf(const std::string& saveName)
+{
+    std::string k = saveName;
+    size_t sl = k.find_last_of("/\\"); if(sl != std::string::npos) k = k.substr(sl + 1);
+    size_t dot = k.rfind('.'); if(dot != std::string::npos) k = k.substr(0, dot);
+    return k.empty() ? "save" : k;
+}
+const std::string& MemoryKey() { return g_key; }
+
+void SwitchTo(const std::string& saveName)
+{
+    g_key = KeyOf(saveName);
+    json::Value usage = g_w.usage;
+    std::string p = MemoryPath(g_key);
+    if(!Load(p)) { Reset(); g_path = p; }
+    g_w.usage = usage;
+    LOG_INFO("Память: сохранение «%s» — %s (персонажей %d, день %d)", g_key.c_str(), g_w.chars.empty() ? "новая" : "загружена", (int)g_w.chars.size(), g_w.day);
+}
+
+void SaveAs(const std::string& saveName)
+{
+    g_key = KeyOf(saveName);
+    if(Save(MemoryPath(g_key))) LOG_INFO("Память: записана для сохранения «%s» (персонажей %d)", g_key.c_str(), (int)g_w.chars.size());
+    else LOG_ERROR("Память: не удалось записать для «%s»", g_key.c_str());
+}
+
+void NewGame()
+{
+    json::Value usage = g_w.usage;
+    Reset();
+    g_w.usage = usage;
+    g_key = "new";
+    g_path = MemoryPath(g_key);
+    LOG_INFO("Память: новая игра — пустая");
+}
+
+// ---------------- сюжетные персонажи ----------------
+static const struct { const char* key; const char* name; bool female; int faction; } kStory[] = {
+    { "sweet", "Свит Джонсон", false, F_GROVE }, { "ryder", "Райдер", false, F_GROVE }, { "smoke", "Биг Смоук", false, F_GROVE },
+    { "tenpenny", "офицер Тенпенни", false, F_POLICE }, { "pulaski", "офицер Пуласки", false, F_POLICE }, { "hernandez", "офицер Эрнандес", false, F_POLICE },
+    { "dwaine", "Дуэйн", false, F_CIVIL }, { "forelli", "Форелли", false, F_MAFIA },
+    { "cesar", "Цезарь Виальпандо", false, F_AZTECAS }, { "kendl", "Кендл Джонсон", true, F_GROVE }, { "ogloc", "Оу-Джи Лок", false, F_GROVE },
+    { "wuzimu", "Ву Зи Му", false, F_TRIADS }, { "truth", "Правда", false, F_CIVIL }, { "cat", "Каталина", true, F_CIVIL },
+    { "torino", "Майк Торено", false, F_CIVIL }, { "zero", "Зеро", false, F_CIVIL }, { "jethro", "Джетро", false, F_CIVIL },
+    { "maccer", "Маккер", false, F_CIVIL }, { "paul", "Кент Пол", false, F_CIVIL }, { "rose", "Кен Розенберг", false, F_CIVIL },
+    { "emmet", "Эммет", false, F_GROVE }, { "bbthin", "Би Дап", false, F_GROVE }, { "bb", "Барбара", true, F_POLICE },
+    { "maddogg", "Мэдд Догг", false, F_CIVIL }, { "jizzy", "Джиззи Би", false, F_CIVIL }, { "tbone", "Ти-Боун Мендес", false, F_RIFA },
+    { "ryder1", "Райдер", false, F_GROVE }, { "ryder2", "Райдер", false, F_GROVE }, { "ryder3", "Райдер", false, F_GROVE },
+    { "smokev", "Биг Смоук", false, F_GROVE }, { "sweet2", "Свит Джонсон", false, F_GROVE }, { "csblue2", "Виллис", false, F_CIVIL },
+    { "salvatore", "Сальваторе Леоне", false, F_MAFIA }, { "suzie", "Сьюзи", true, F_TRIADS }, { "guppy", "Гуппи", false, F_TRIADS },
+    { "claude", "Клод", false, F_CIVIL }, { "janitor", "уборщик", false, F_CIVIL }, { "ogloc2", "Оу-Джи Лок", false, F_GROVE },
+};
+const char* StoryName(const std::string& story)
+{
+    for(auto& s : kStory) if(story == s.key) return s.name;
+    return nullptr;
+}
+
+static json::Value g_storyVoices;      // { "sweet": {voice,pitch,rate}, … } — общий файл для всех сохранений
+static bool g_storyLoaded = false;
+static void LoadStoryVoices()
+{
+    if(g_storyLoaded) return;
+    g_storyLoaded = true; g_storyVoices = json::Value::Object();
+    FILE* f = fopen((BaseDir() + "/story_voices.json").c_str(), "rb");
+    if(!f) return;
+    std::string s; char buf[8192]; size_t n;
+    while((n = fread(buf, 1, sizeof(buf), f)) > 0) s.append(buf, n);
+    fclose(f);
+    json::Value v; if(json::Parse(s, v) && v.isObject()) g_storyVoices = v;
+}
+static void SaveStoryVoices()
+{
+    FILE* f = fopen((BaseDir() + "/story_voices.json").c_str(), "wb");
+    if(!f) return;
+    std::string s = g_storyVoices.dump(); fwrite(s.data(), 1, s.size(), f); fclose(f);
+}
+bool GetStoryVoice(const std::string& story, StoryVoice& out)
+{
+    LoadStoryVoices();
+    if(story.empty() || !g_storyVoices.has(story)) return false;
+    const json::Value& v = g_storyVoices[story];
+    out.voice = v["voice"].str(); out.pitch = (float)v["pitch"].num(1); out.rate = (float)v["rate"].num(1);
+    return !out.voice.empty();
+}
+void SetStoryVoice(const std::string& story, const StoryVoice& sv)
+{
+    LoadStoryVoices();
+    if(story.empty()) return;
+    json::Value v = json::Value::Object(); v["voice"] = sv.voice; v["pitch"] = sv.pitch; v["rate"] = sv.rate;
+    g_storyVoices[story] = v;
+    SaveStoryVoices();
+}
+void ClearStoryVoice(const std::string& story) { LoadStoryVoices(); if(g_storyVoices.has(story)) { g_storyVoices.erase(story); SaveStoryVoices(); } }
+
+// ---------------- забывание неважных ----------------
+int ForgetUnimportant(int keepDays)
+{
+    int forgotten = 0;
+    for(size_t i = 0; i < g_w.chars.size();)
+    {
+        Character& c = g_w.chars[i];
+        bool keep = !c.story.empty() || c.jailUntilDay > g_w.day || !c.goal.empty() || c.hostId != 0 || c.exposed;
+        for(int w = 0; w < WHO_COUNT && !keep; ++w)
+        {
+            const Relation& r = c.rel[w];
+            if(r.contact || r.payroll || r.informant || r.debt != 0 || r.favors > 0) keep = true;
+            if(abs(r.trust) >= 25 || abs(r.respect) >= 25 || abs(r.liking) >= 25 || r.fear >= 40) keep = true;   // сильные отношения помнятся
+        }
+        if(!keep) for(auto& e : g_w.events)
+        {   // свидетель или жертва незакрытого дела — помним
+            if(e.day < g_w.day - 30) continue;
+            if(e.victimChar == c.id) { keep = true; break; }
+            for(int wid : e.witnesses) if(wid == c.id) { keep = true; break; }
+            if(keep) break;
+        }
+        int last = c.lastTalkDay >= 0 ? c.lastTalkDay : 0;
+        if(!keep && PedOf(c)) keep = true;                           // он сейчас рядом
+        if(!keep && g_w.day - last >= keepDays)
+        {
+            LOG_INFO("Память: забыт #%d %s (не виделись %d дн., ничего важного)", c.id, c.name.c_str(), g_w.day - last);
+            g_w.chars.erase(g_w.chars.begin() + i); ++forgotten;
+            continue;
+        }
+        ++i;
+    }
+    return forgotten;
 }
 
 // ---------------- сохранение ----------------
@@ -126,6 +268,7 @@ bool Save(const std::string& path)
         v["backstory"] = c.backstory; v["dream"] = c.dream; v["fear"] = c.fearOf; v["speech"] = c.speech; v["role"] = c.role; v["aiProfile"] = c.aiProfile;
         v["home"] = VecToJ(c.home); v["homeZone"] = c.homeZone; v["money"] = c.money; v["alive"] = c.alive; v["jail"] = c.jailUntilDay;
         v["secret"] = c.secretlyLoyal; v["exposed"] = c.exposed; v["goal"] = c.goal; v["goalUntil"] = c.goalUntilMin; v["goalTarget"] = c.goalTarget;
+        v["voice"] = c.voice; v["vpitch"] = c.vpitch; v["vrate"] = c.vrate; v["story"] = c.story;
         v["pitch"] = c.pitch; v["rate"] = c.rate; v["dialog"] = c.dialog; v["lastTalkDay"] = c.lastTalkDay; v["hostId"] = c.hostId;
         cs.push(v);
     }
@@ -202,6 +345,7 @@ bool Load(const std::string& path)
         c.home = VecFromJ(v["home"]); c.homeZone = v["homeZone"].str(); c.money = v["money"].i(100); c.alive = v["alive"].b(true);
         c.jailUntilDay = v["jail"].i(); c.secretlyLoyal = v["secret"].b(); c.exposed = v["exposed"].b();
         c.goal = v["goal"].str(); c.goalUntilMin = v["goalUntil"].i(); c.goalTarget = v["goalTarget"].i();
+        c.voice = v["voice"].str(); c.vpitch = (float)v["vpitch"].num(1); c.vrate = (float)v["vrate"].num(1); c.story = v["story"].str();
         c.pitch = (float)v["pitch"].num(1); c.rate = (float)v["rate"].num(1); c.dialog = v["dialog"]; c.lastTalkDay = v["lastTalkDay"].i(-1); c.hostId = v["hostId"].i();
         g_w.chars.push_back(std::move(c));
     }
@@ -283,6 +427,13 @@ Character& Promote(uintptr_t ped)
     if(c.faction == F_POLICE) { int r = Rand(0, 99); c.rank = r < 65 ? 0 : (r < 88 ? 1 : (r < 97 ? 2 : 3)); }
     else if(c.faction != F_CIVIL) { int r = Rand(0, 99); c.rank = r < 35 ? 0 : (r < 85 ? 1 : (r < 98 ? 2 : 3)); }
     RollTraits(c);
+    c.story = game::StoryKey(ped);
+    if(!c.story.empty())
+    {   // сюжетный персонаж: настоящее имя, а не случайное
+        for(auto& st : kStory) if(c.story == st.key) { c.name = st.name; c.nick.clear(); c.female = st.female; c.faction = st.faction; break; }
+        if(!StoryName(c.story)) { c.name = c.story; c.name[0] = (char)toupper((unsigned char)c.name[0]); }
+        c.rank = 2;
+    }
     c.home = game::Pos(ped); c.homeZone = game::ZoneName();
     c.money = c.faction == F_POLICE ? Rand(80, 400) : (c.pedType == game::PT_BUM ? Rand(0, 8) : (c.pedType == game::PT_DEALER ? Rand(500, 3000) : Rand(20, 300)));
     if(game::IsGang(c.pedType)) c.money = Rand(50, 800);
@@ -478,6 +629,7 @@ void Tick()
             for(int w = 0; w < WHO_COUNT; ++w) s.hostility[w] = Clamp(s.hostility[w] - 1, 0, 100);
         }
         for(int w = 0; w < WHO_COUNT; ++w) { PoliceCase& p = g_w.pcase[w]; p.heat = Clamp(p.heat - 3, 0, 100); }
+        if(g_forgetDays > 0) { int n = ForgetUnimportant(g_forgetDays); if(n) LOG_INFO("Память: за день забыто персонажей: %d (осталось %d)", n, (int)g_w.chars.size()); }
     }
     g_w.lastHour = h;
     SpreadRumors();

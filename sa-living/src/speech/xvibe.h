@@ -19,7 +19,7 @@ namespace xvibe
         float temperature = 0.5f;   // как у xVibe
         int   lsdSteps = 1;         // как у xVibe
         int   decodeChunk = 12;     // кадров на порцию звука (12 кадров = 0,96 с)
-        int   voiceCache = 6;       // сколько голосов держать готовыми (каждый ~50 МБ)
+        int   voiceCache = 4;       // сколько голосов держать готовыми (каждый ~50 МБ памяти)
     };
 
     // ortLib — путь к libonnxruntime.so (или пусто, если уже загружена в процесс)
@@ -32,6 +32,11 @@ namespace xvibe
 
     // Готовое состояние голоса (встроенные голоса xVibe, tools/xvibe/voice_state.py, формат XVST)
     bool LoadVoiceState(const std::string& key, const std::string& path, std::string& err);
+
+    // Сохранить подготовленный голос в файл (gzip) — в следующий раз грузится мгновенно через LoadVoiceState
+    bool SaveVoiceState(const std::string& key, const std::string& path, std::string& err);
+    bool HasVoice(const std::string& key);
+    void DropVoice(const std::string& key);
 
     // Текст: ударения «+гласная» или гласная+U+0301; лишние символы вычищаются.
     // onAudio получает куски звука (24 кГц) по мере готовности; вернуть false — остановить.

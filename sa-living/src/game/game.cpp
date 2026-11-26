@@ -4,6 +4,7 @@
 #include <mod/logger.h>
 #include <math.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "util/log.h"
 
@@ -39,6 +40,7 @@ namespace
 
     bool g_ok = false;
     uintptr_t g_base = 0;
+    uintptr_t g_radarTrace = 0;
 
     uintptr_t g_players = 0, g_focus = 0, g_pedPool = 0, g_vehPool = 0, g_timeMs = 0, g_userPause = 0, g_codePause = 0;
     uintptr_t g_cutscene = 0, g_clockH = 0, g_clockM = 0, g_weatherNew = 0, g_zoneName = 0, g_animBlocks = 0;
@@ -116,8 +118,31 @@ namespace
 float Dist(const Vec& a, const Vec& b) { float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; return sqrtf(dx * dx + dy * dy + dz * dz); }
 float Dist2D(const Vec& a, const Vec& b) { float dx = a.x - b.x, dy = a.y - b.y; return sqrtf(dx * dx + dy * dy); }
 
+// Особые персонажи миссий: игра грузит их в слоты 290–299 по имени
+static char g_specialName[10][16];
+SDECL_HOOKv(RequestSpecialCharH, int slot, const char* name, int flags)
+{
+    if(slot >= 0 && slot < 10 && name) { strncpy(g_specialName[slot], name, 15); g_specialName[slot][15] = 0; for(char* c = g_specialName[slot]; *c; ++c) *c = (char)tolower((unsigned char)*c); }
+    RequestSpecialCharH(slot, name, flags);
+}
+
+std::string StoryKey(uintptr_t ped)
+{
+    if(!ped) return "";
+    int m = Model(ped);
+    switch(m)
+    {
+        case 265: return "tenpenny"; case 266: return "pulaski"; case 267: return "hernandez"; case 268: return "dwaine";
+        case 269: return "smoke"; case 270: return "sweet"; case 271: return "ryder"; case 272: return "forelli";
+    }
+    if(m >= 290 && m <= 299 && g_specialName[m - 290][0]) return g_specialName[m - 290];
+    return "";
+}
+
 bool Init(void* h)
 {
+    if(void* rs = (void*)aml->GetSym(h, "_ZN10CStreaming18RequestSpecialCharEiPKci")) aml->Hook(rs, (void*)HookOf_RequestSpecialCharH, (void**)&RequestSpecialCharH);
+
     g_base = aml->GetLib("libGTASA.so");
     g_players   = Sym(h, "_ZN6CWorld7PlayersE");
     g_focus     = Sym(h, "_ZN6CWorld13PlayerInFocusE");
@@ -132,6 +157,7 @@ bool Init(void* h)
     g_weatherNew= Sym(h, "_ZN8CWeather14NewWeatherTypeE", false);
     g_zoneName  = Sym(h, "_ZN4CHud11m_pZoneNameE", false);
     g_animBlocks= Sym(h, "_ZN12CAnimManager14ms_aAnimBlocksE", false);
+    g_radarTrace= Sym(h, "_ZN6CRadar13ms_RadarTraceE", false);
 
     TaskNew      = (TaskNew_t)Sym(h, "_ZN5CTasknwEm");
     SetTask      = (SetTask_t)Sym(h, "_ZN12CTaskManager7SetTaskEP5CTaskib");
@@ -191,6 +217,30 @@ static uintptr_t PlayerInfo()
 }
 
 uintptr_t Player() { uintptr_t pi = PlayerInfo(); return pi ? F<uintptr_t>(pi, 0) : 0; }
+uintptr_t Player2()
+{
+    if(!g_players) return 0;
+    int focus = g_focus ? *(uint8_t*)g_focus : 0;
+    uintptr_t p = F<uintptr_t>(g_players + (focus ? 0 : 1) * kPlayerInfoSize, 0);
+    return p && p != Player() ? p : 0;
+}
+float MaxHealth(uintptr_t ped) { if(!ped) return 100; float m = F<float>(ped, kPedHealth + 4); return (m >= 50 && m <= 400) ? m : 100; }
+float Armour(uintptr_t ped) { return ped ? F<float>(ped, kPedHealth + 8) : 0; }
+
+// Метка на карте: CRadar::ms_RadarTrace — 250 записей по 0x30; значок (+0x28) 41 = метка игрока, занято — бит 1 в +0x29
+bool Waypoint(Vec& out)
+{
+    if(!g_radarTrace) return false;
+    for(int i = 0; i < 250; ++i)
+    {
+        uintptr_t t = g_radarTrace + (uintptr_t)i * 0x30;
+        uint16_t bits; memcpy(&bits, (void*)(t + 0x29), 2);
+        if(!(bits & 2) || F<uint8_t>(t, 0x28) != 41) continue;
+        out = F<Vec>(t, 0x08);
+        return true;
+    }
+    return false;
+}
 int  Money() { uintptr_t pi = PlayerInfo(); return pi ? F<int>(pi, kPiMoney) : 0; }
 void AddMoney(int d)
 {

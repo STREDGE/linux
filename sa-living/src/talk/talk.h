@@ -5,6 +5,7 @@
 #include <deque>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "ai/claude.h"
 #include "util/json.h"
@@ -22,7 +23,14 @@ namespace talk
     void PttDown();
     void PttUp();
     bool Listening();
+    bool Recognizing();                   // запись ушла на распознавание
     const std::string& Partial();
+    // Разовая запись «не педу» (Джарвис, проверка микрофона): текст придёт в sink (пусто — не расслышал)
+    void CaptureDown(std::function<void(const std::string&)> sink);
+    void CaptureUp();
+    bool Capturing();
+    // Голос персонажа: выбрать, если ещё нет (avoid — не совпадать с этими голосами)
+    void EnsureVoice(world::Character& c, const std::vector<std::string>& avoid = {});
 
     // Состояние разговора
     bool InConversation();

@@ -4,7 +4,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <zlib.h>
 
+#include <algorithm>
 #include <map>
 #include <random>
 #include <set>
@@ -414,10 +416,15 @@ bool Load(const std::string& dir, const std::string& ortLib, const Options& opt,
 {
     if(g_loaded) return true;
     g_opt = opt;
-    void* h = ortLib.empty() ? RTLD_DEFAULT : dlopen(ortLib.c_str(), RTLD_NOW | RTLD_GLOBAL);
-    if(!h) { err = std::string("dlopen onnxruntime: ") + dlerror(); return false; }
     typedef const OrtApiBase* (*GetBase_t)();
-    GetBase_t gb = (GetBase_t)dlsym(h, "OrtGetApiBase");
+    GetBase_t gb = nullptr;
+    if(ortLib.empty()) gb = (GetBase_t)dlsym(RTLD_DEFAULT, "OrtGetApiBase");     // уже загружена в процесс
+    else
+    {
+        void* h = dlopen(ortLib.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        if(!h) { const char* e = dlerror(); err = std::string("dlopen onnxruntime: ") + (e ? e : "?"); return false; }
+        gb = (GetBase_t)dlsym(h, "OrtGetApiBase");
+    }
     if(!gb) { err = "нет OrtGetApiBase"; return false; }
     A = gb()->GetApi(kOrtApiVersion);
     if(!A) { err = "onnxruntime старее 1.24"; return false; }
@@ -497,12 +504,63 @@ bool PrepareVoice(const std::string& key, const float* audio, int n, int sr, std
     return true;
 }
 
+// Файл состояния голоса может быть сжат gzip (в нём в основном нули) — gzread читает оба вида
+static bool ReadMaybeGz(const std::string& p, std::string& out)
+{
+    gzFile f = gzopen(p.c_str(), "rb");
+    if(!f) return false;
+    char buf[1 << 16]; int n;
+    out.clear();
+    while((n = gzread(f, buf, sizeof(buf))) > 0) out.append(buf, n);
+    gzclose(f);
+    return !out.empty();
+}
+
+bool HasVoice(const std::string& key) { return g_voices.count(key) > 0; }
+
+void DropVoice(const std::string& key)
+{
+    auto it = g_voices.find(key);
+    if(it == g_voices.end()) return;
+    ReleaseAll(it->second.state); g_voices.erase(it);
+}
+
+bool SaveVoiceState(const std::string& key, const std::string& path, std::string& err)
+{
+    auto it = g_voices.find(key);
+    if(it == g_voices.end()) { err = "голос не подготовлен"; return false; }
+    std::string tmp = path + ".tmp";
+    gzFile f = gzopen(tmp.c_str(), "wb1");
+    if(!f) { err = "не записать " + tmp; return false; }
+    uint32_t cnt = (uint32_t)it->second.state.size();
+    gzwrite(f, "XVST", 4); gzwrite(f, &cnt, 4);
+    bool ok = true;
+    for(OrtValue* v : it->second.state)
+    {
+        std::vector<int64_t> shape; ONNXTensorElementDataType t; size_t n;
+        if(!Info(v, shape, t, n, err)) { ok = false; break; }
+        uint8_t code = t == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ? 1 : t == ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL ? 2 : 0, nd = (uint8_t)shape.size();
+        gzwrite(f, &code, 1); gzwrite(f, &nd, 1);
+        if(nd) gzwrite(f, shape.data(), nd * 8);
+        void* p = nullptr;
+        if(n) { if(!Check(A->GetTensorMutableData(v, &p), err)) { ok = false; break; } }
+        size_t bytes = n * ElemSize(t), off = 0;
+        while(off < bytes) { unsigned k = (unsigned)std::min<size_t>(bytes - off, 1u << 20); if(gzwrite(f, (char*)p + off, k) != (int)k) { ok = false; err = "нет места"; break; } off += k; }
+        if(!ok) break;
+    }
+    gzclose(f);
+    if(!ok) { remove(tmp.c_str()); return false; }
+    remove(path.c_str());
+    if(rename(tmp.c_str(), path.c_str()) != 0) { err = "не переименовать файл голоса"; return false; }
+    return true;
+}
+
 bool LoadVoiceState(const std::string& key, const std::string& path, std::string& err)
 {
     if(!g_loaded) { err = "модель не загружена"; return false; }
     if(g_voices.count(key)) { g_voices[key].used = ++g_tick; return true; }
     std::string d;
-    if(!ReadFile(path, d) || d.size() < 8 || d.compare(0, 4, "XVST") != 0) { err = "нет файла голоса " + path; return false; }
+    if(!ReadMaybeGz(path, d) || d.size() < 8 || d.compare(0, 4, "XVST") != 0) { err = "нет файла голоса " + path; return false; }
     uint32_t cnt; memcpy(&cnt, d.data() + 4, 4);
     if(cnt != g_flowState.size()) { err = "файл голоса не от этой модели"; return false; }
     size_t pos = 8;

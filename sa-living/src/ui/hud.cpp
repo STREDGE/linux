@@ -21,7 +21,9 @@
 #include "platform/android.h"
 #include "platform/bridge.h"
 #include "settings.h"
+#include "jarvis/jarvis.h"
 #include "sim/police.h"
+#include "speech/speech.h"
 #include "talk/talk.h"
 #include "ui/fonts_data.h"
 #include "ui/imgui_rw.h"
@@ -29,6 +31,8 @@
 #include "world/world.h"
 
 using world::Fmt;
+
+void SALivingEnsureSpeech();   // main.cpp: мост Android + запуск речи (нужно и в главном меню)
 
 namespace hud
 {
@@ -88,7 +92,14 @@ namespace
     bool AnyDown() { for(auto& f : g_f) if(f.down) return true; return false; }
     bool In(ImVec2 p, ImVec2 a, ImVec2 b) { return p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y; }
     bool HeldFrom(ImVec2 a, ImVec2 b) { for(auto& f : g_f) if(f.down && In(f.downPos, a, b)) return true; return false; }
-    bool Clicked(ImVec2 a, ImVec2 b) { for(auto& f : g_f) if(f.released && In(f.downPos, a, b) && In(f.pos, a, b)) return true; return false; }
+    bool g_dragScroll = false;      // палец тянет список — отпускание не считается нажатием
+    ImVec2 g_clipA{ -1e9f, -1e9f }, g_clipB{ 1e9f, 1e9f };   // нажатия вне видимой области прокрутки не считаются
+    bool Clicked(ImVec2 a, ImVec2 b)
+    {
+        if(g_dragScroll) return false;
+        for(auto& f : g_f) if(f.released && In(f.downPos, a, b) && In(f.pos, a, b) && In(f.pos, g_clipA, g_clipB)) return true;
+        return false;
+    }
 
     // ---------- рисование ----------
     ImDrawList* DL() { return ImGui::GetForegroundDrawList(); }
@@ -191,41 +202,250 @@ namespace
         if(!g_checkReq) MenuToast(bridge::Ready() ? "Нет ключа или лимит на сегодня" : "Мост Android не запустился");
     }
 
-    void DrawMenu()
+    // ---------- меню «AI»: вкладки ----------
+    int    g_tab = 0;
+    double g_permAt = -10; int g_micPerm = -1;
+    std::string g_micTestText; bool g_micTestHeld = false; double g_micTestAt = -10;
+    bool   g_newVoiceFemale = false;
+    int    g_previewSeq = 0;
+
+    void PumpWhileMenu()
+    {   // игра стоит (главное меню / пауза) — сами крутим ИИ и речь, чтобы работали проверка ключа, загрузка, микрофон
+        SALivingEnsureSpeech();
+        claude::Pump();
+        speech::Frame();
+        talk::Frame();
+        std::string n;
+        while(speech::PopNotice(n)) MenuToast(n);
+        while(talk::PopNotify(n)) MenuToast(n);
+    }
+
+    // Строка «состояния»: точка, заголовок, пояснение. Возвращает правый край для кнопок.
+    void StatusRow(float& y, float x0, float x1, Rgb dot, const char* title, const std::string& text)
     {
-        settings::Data& s = settings::Get();
-        float W = Ww(), H = Hh();
-        DL()->AddRectFilled(ImVec2(0, 0), ImVec2(W, H), C(kNight, 0.93f));
-        float x0 = W * 0.12f, x1 = W * 0.88f;
-        float y = U(4);
-        Tx(F_HEAD, ImVec2(x0, y), C(kGold), "ИИ — ЖИВЫЕ ЛЮДИ");
-        ImVec2 cb(x1 - U(14), y), ce(x1, y + U(6));
-        if(Button(cb, ce, "Закрыть", kGrove)) { settings::Save(); g_menuOpen = false; g_blockMenuUntil = g_now + 0.4; return; }
-        y += U(9);
+        Panel(ImVec2(x0 - U(2), y - U(0.8f)), ImVec2(x1 + U(2), y + U(9.2f)), U(1.4f), 0.9f);
+        DL()->AddCircleFilled(ImVec2(x0 + U(0.6f), y + U(2.2f)), U(1.1f), C(dot), 20);
+        Tx(F_BODY, ImVec2(x0 + U(3.2f), y), C(kInk), title);
+        Tx(F_SMALL, ImVec2(x0 + U(3.2f), y + U(4.6f)), C(kDim), text.c_str(), (x1 - x0) * 0.56f);
+    }
+    // Кнопки справа в строке состояния (справа налево)
+    bool RowButton(float y, float& xr, const char* label, Rgb col, bool enabled = true)
+    {
+        float w = TS(F_SMALL, label).x + U(4);
+        ImVec2 a(xr - w, y + U(1.2f)), b(xr, y + U(7.2f));
+        xr -= w + U(1);
+        return Button(a, b, label, col, enabled);
+    }
+    void ProgressBar(float y, float x0, float x1, float k)
+    {
+        ImVec2 a(x0 + U(3.2f), y + U(8.0f)), b(x1, y + U(8.8f));
+        DL()->AddRectFilled(a, b, C(kPanel2), U(0.4f));
+        if(k >= 0) DL()->AddRectFilled(a, ImVec2(a.x + (b.x - a.x) * (k > 1 ? 1 : k), b.y), C(kGrove), U(0.4f));
+        else { float t = fmodf((float)g_now, 1.2f) / 1.2f; float w = (b.x - a.x) * 0.25f; float x = a.x + (b.x - a.x - w) * t; DL()->AddRectFilled(ImVec2(x, a.y), ImVec2(x + w, b.y), C(kGrove), U(0.4f)); }
+    }
 
-        // ключ
-        Panel(ImVec2(x0 - U(2), y - U(1.5f)), ImVec2(x1 + U(2), y + U(15)));
-        std::string masked = claude::HasKey() ? claude::MaskedKey() : std::string("не вставлен");
-        Row(y, x0, x1, "Ключ Anthropic (свой, в лог не пишется)", masked.c_str()); y += U(5.5f);
-        float bw = (x1 - x0 - U(2)) / 3;
-        if(Button(ImVec2(x0, y), ImVec2(x0 + bw, y + U(6)), "Вставить из буфера", kGold))
+    std::string KeyLine()
+    {
+        coopnet::Role r = coopnet::GetRole();
+        if(r == coopnet::CLIENT) return "Используется ключ хоста";
+        if(r == coopnet::HOST) return claude::HasKey() ? "Используется твой ключ (ты и друг)" : "Вставьте ключ — в коопе ИИ платит хост";
+        return claude::HasKey() ? "Используется твой ключ" : "Вставьте ключ";
+    }
+
+    void PasteKey(settings::Data& s)
+    {
+        char buf[512] = "";
+        if(platform::ClipboardGetText(buf, sizeof(buf)))
         {
-            char buf[512] = "";
-            if(platform::ClipboardGetText(buf, sizeof(buf)))
-            {
-                std::string k = buf; while(!k.empty() && (k.back() == ' ' || k.back() == '\n' || k.back() == '\r')) k.pop_back();
-                while(!k.empty() && (k[0] == ' ' || k[0] == '\n')) k.erase(0, 1);
-                if(k.rfind("sk-", 0) == 0 && k.size() > 20) { s.key = k; claude::Settings cs = claude::Get(); cs.key = k; claude::Configure(cs); settings::Save(); MenuToast("Ключ вставлен — нажми «Проверить»"); }
-                else MenuToast("В буфере нет ключа (должен начинаться с sk-)");
-            }
-            else MenuToast("Буфер обмена пуст");
+            std::string k = buf; while(!k.empty() && (k.back() == ' ' || k.back() == '\n' || k.back() == '\r')) k.pop_back();
+            while(!k.empty() && (k[0] == ' ' || k[0] == '\n')) k.erase(0, 1);
+            if(k.rfind("sk-", 0) == 0 && k.size() > 20) { s.key = k; claude::Settings cs = claude::Get(); cs.key = k; claude::Configure(cs); settings::Save(); MenuToast("Ключ вставлен — нажми «Проверить»"); }
+            else MenuToast("В буфере нет ключа (должен начинаться с sk-)");
         }
-        if(Button(ImVec2(x0 + bw + U(1), y), ImVec2(x0 + 2 * bw + U(1), y + U(6)), g_checkReq ? "Проверяю…" : "Проверить", kGrove, claude::HasKey() && !g_checkReq)) CheckKey();
-        if(Button(ImVec2(x0 + 2 * bw + U(2), y), ImVec2(x1, y + U(6)), "Удалить", kRed, claude::HasKey()))
-        { s.key.clear(); claude::Settings cs = claude::Get(); cs.key.clear(); claude::Configure(cs); settings::Save(); MenuToast("Ключ удалён"); }
-        y += U(10);
+        else MenuToast("Буфер обмена пуст");
+    }
 
-        // настройки
+    void TabMain(settings::Data& s, float x0, float x1, float& y)
+    {
+        speech::Status st = speech::Get();
+        // 1. ключ
+        {
+            bool ok = claude::Available();
+            std::string t = (claude::HasKey() ? claude::MaskedKey() + " · " : std::string()) + KeyLine();
+            StatusRow(y, x0, x1, ok ? kGrove : kGold, "1. Ключ ИИ (Anthropic)", t);
+            float xr = x1;
+            if(RowButton(y, xr, "Удалить", kRed, claude::HasKey())) { s.key.clear(); claude::Settings cs = claude::Get(); cs.key.clear(); claude::Configure(cs); settings::Save(); MenuToast("Ключ удалён"); }
+            if(RowButton(y, xr, g_checkReq ? "Проверяю…" : "Проверить", kGrove, claude::HasKey() && !g_checkReq)) CheckKey();
+            if(RowButton(y, xr, "Вставить из буфера", kGold)) PasteKey(s);
+            y += U(10.6f);
+        }
+        // 2. микрофон
+        {
+            if(g_now - g_permAt > 2) { g_permAt = g_now; g_micPerm = platform::HasPermission("android.permission.RECORD_AUDIO"); }
+            StatusRow(y, x0, x1, g_micPerm == 1 ? kGrove : kRed, "2. Микрофон", g_micPerm == 1 ? "Разрешение есть" : "Нет разрешения на микрофон — без него тебя не слышно");
+            float xr = x1;
+            if(g_micPerm != 1 && RowButton(y, xr, "Разрешить", kGold)) { if(!platform::RequestPermission("android.permission.RECORD_AUDIO")) platform::OpenAppSettings(); g_permAt = -10; }
+            y += U(10.6f);
+        }
+        // 3. распознавание
+        {
+            bool busyAsr = st.busy && st.busyText.find("аспозна") == std::string::npos && !st.asrFiles;
+            std::string t = st.asrReady ? Fmt("Готово (GigaAM, без интернета). Последняя фраза распознана за %.1f с", st.lastAsrSec)
+                          : st.asrFiles ? (st.loading ? "Загружается в память…" : "Файлы есть, движок не запустился — см. ошибку ниже")
+                          : st.busy ? st.busyText : "Не установлено. Скачается один раз (~215 МБ), дальше работает без интернета";
+            StatusRow(y, x0, x1, st.asrReady ? kGrove : (st.asrFiles || st.busy ? kGold : kRed), "3. Распознавание речи", t);
+            float xr = x1;
+            if(!st.asrFiles && !st.busy && RowButton(y, xr, "Скачать (215 МБ)", kGold)) speech::DownloadAsr();
+            if(st.busy && RowButton(y, xr, "Отмена", kRed)) speech::CancelBusy();
+            if(st.busy && !st.asrFiles) ProgressBar(y, x0, x1 - U(22), st.progress);
+            (void)busyAsr;
+            y += U(10.6f);
+        }
+        // 4. голоса
+        {
+            std::string t = st.ttsReady ? Fmt("Готово: голосов %d. Скорость озвучки x%.2f (меньше 1 — быстрее речи)", st.voices, st.lastRtf)
+                          : st.ttsFiles ? (st.loading ? "Загружаются в память…" : "Файлы есть, движок не запустился — см. ошибку ниже")
+                          : "Не установлены. Сохрани файл SALiving-voices.zip (пришлют в чат) в «Загрузки» и нажми «Найти»";
+            StatusRow(y, x0, x1, st.ttsReady ? kGrove : (st.ttsFiles ? kGold : kRed), "4. Голоса педов и Джарвиса", t);
+            float xr = x1;
+            if(!st.ttsFiles && !st.busy)
+            {
+                if(RowButton(y, xr, "Выбрать файл", kBlue)) { if(!speech::PickVoicePack()) MenuToast("Окно выбора файла не открылось"); }
+                if(RowButton(y, xr, "Найти в Загрузках", kGold)) { if(!speech::ImportVoicePackAuto()) MenuToast("Не нашёл SALiving-voices.zip в Загрузках — нажми «Выбрать файл»"); }
+            }
+            y += U(10.6f);
+        }
+        // 5. проверка
+        {
+            std::string t = talk::Capturing() ? (talk::Recognizing() ? "Распознаю…" : "Говори…") : g_micTestText.empty() ? "Зажми «Сказать фразу» и скажи что-нибудь — увидишь, как тебя слышно" : "Услышал: «" + g_micTestText + "»";
+            StatusRow(y, x0, x1, st.asrReady && st.ttsReady ? kGrove : kGold, "5. Проверка", t);
+            float xr = x1;
+            if(RowButton(y, xr, "Послушать голос", kBlue, st.ttsReady))
+            {
+                auto vs = speech::Voices();
+                if(!vs.empty()) { const speech::Voice& v = vs[g_previewSeq++ % vs.size()]; speech::StopSpeaking(); speech::Speak("Эй, ты. Д+а, ты. Чег+о уст+авился?", v.key, v.pitch, v.speed, "preview"); MenuToast("Голос: " + v.title); }
+            }
+            float w = TS(F_SMALL, "Сказать фразу").x + U(4);
+            ImVec2 a(xr - w, y + U(1.2f)), b(xr, y + U(7.2f));
+            bool held = HeldFrom(a, b) && st.asrReady;
+            Button(a, b, "Сказать фразу", kGold, st.asrReady);
+            if(held != g_micTestHeld)
+            {
+                g_micTestHeld = held;
+                if(held) talk::CaptureDown([](const std::string& txt) { g_micTestText = txt.empty() ? "(ничего не расслышал)" : txt; });
+                else talk::CaptureUp();
+            }
+            y += U(10.6f);
+        }
+        if(!st.error.empty()) { Tx(F_SMALL, ImVec2(x0, y), C(kRed), ("Ошибка речи: " + st.error).c_str(), x1 - x0); y += TS(F_SMALL, st.error.c_str(), x1 - x0).y + U(1.5f); }
+        claude::Usage t = claude::Today(), all = claude::Total();
+        std::string us = Fmt("сегодня %d запр. около $%.3f · всего %d около $%.2f · лимит %d в день", t.requests, claude::CostUsd(t), all.requests, claude::CostUsd(all), s.dailyLimit);
+        Row(y, x0, x1, "Расход ИИ", us.c_str()); y += U(5.0f);
+        const char* mode = coopnet::GetRole() == coopnet::HOST ? "кооп: ты хост (ИИ по твоему ключу)" : coopnet::GetRole() == coopnet::CLIENT ? "кооп: ИИ через хоста" : "одиночная игра";
+        std::string mem = world::MemoryKey().empty() ? std::string("игра не загружена") : "память сохранения «" + world::MemoryKey() + Fmt("»: людей %d", (int)world::W().chars.size());
+        Row(y, x0, x1, mode, mem.c_str()); y += U(5.0f);
+    }
+
+    void TabVoices(settings::Data& s, float x0, float x1, float& y)
+    {
+        speech::Status st = speech::Get();
+        static const char* engines[] = { "Своя", "Google" };
+        int ne = Chips(y, x0, x1, "Речь (распознавание и голоса)", engines, 2, s.engine);
+        if(ne != s.engine) { s.engine = ne; if(ne == 1) bridge::TtsInit(s.lang.c_str()); }
+        Toggle(y, x0, x1, "Голоса педов", s.voices);
+        Toggle(y, x0, x1, "Субтитры", s.subtitles);
+        Tx(F_SMALL, ImVec2(x0, y), C(kGold), "ГОЛОСА"); y += U(4);
+        auto vs = speech::Voices();
+        if(vs.empty()) { Tx(F_SMALL, ImVec2(x0, y), C(kDim), "Голосовой пакет не установлен — вкладка «Главное», шаг 4.", x1 - x0); y += U(5); }
+        for(auto& v : vs)
+        {
+            ImVec2 a(x0, y), b(x1, y + U(6.2f));
+            DL()->AddRectFilled(a, b, C(kPanel2), U(1));
+            std::string title = v.title + (v.female ? " · женский" : " · мужской") + (v.builtin ? "" : " · свой");
+            Tx(F_SMALL, ImVec2(a.x + U(1.5f), a.y + U(1.6f)), C(kInk), title.c_str());
+            float xr = x1 - U(1);
+            if(!v.builtin) { float w = U(12); if(Button(ImVec2(xr - w, y + U(0.6f)), ImVec2(xr, y + U(5.6f)), "Удалить", kRed)) { speech::DeleteVoice(v.key); MenuToast("Голос удалён"); } xr -= w + U(1); }
+            if(Button(ImVec2(xr - U(16), y + U(0.6f)), ImVec2(xr, y + U(5.6f)), "Послушать", kBlue, st.ttsReady))
+            { speech::StopSpeaking(); speech::Speak("Сл+ушай сюд+а. Ещё раз появ+ишься на н+ашей +улице — пожал+еешь.", v.key, v.pitch, v.speed, "preview"); }
+            y += U(7.0f);
+        }
+        y += U(1);
+        Tx(F_SMALL, ImVec2(x0, y), C(kGold), "ДОБАВИТЬ СВОЙ ГОЛОС (свой, друга)"); y += U(4);
+        const char* hint = "Нужно 15–20 секунд спокойной речи без пауз и шума. Нажми «Записать» и читай любой текст ровным голосом, потом «Готово». Или выбери готовый WAV-файл.";
+        Tx(F_SMALL, ImVec2(x0, y), C(kDim), hint, x1 - x0); y += TS(F_SMALL, hint, x1 - x0).y + U(1.5f);
+        static const char* gender[] = { "Мужской", "Женский" };
+        g_newVoiceFemale = Chips(y, x0, x1, "Какой голос", gender, 2, g_newVoiceFemale ? 1 : 0) == 1;
+        float bw = (x1 - x0 - U(1)) / 2;
+        if(speech::RecordingVoice())
+        {
+            float sec = speech::RecordSeconds();
+            if(Button(ImVec2(x0, y), ImVec2(x0 + bw, y + U(6.5f)), Fmt("Готово (записано %.0f с)", sec).c_str(), sec >= 8 ? kGrove : kGold))
+                speech::RecordVoiceFinish(Fmt("Мой голос %d", (int)speech::Voices().size() + 1), g_newVoiceFemale);
+        }
+        else if(Button(ImVec2(x0, y), ImVec2(x0 + bw, y + U(6.5f)), "Записать с микрофона", kGold, st.ttsReady))
+        { if(!speech::RecordVoiceStart()) MenuToast("Микрофон недоступен — проверь разрешение"); }
+        if(Button(ImVec2(x0 + bw + U(1), y), ImVec2(x1, y + U(6.5f)), "Из файла WAV", kBlue, st.ttsReady && !speech::RecordingVoice()))
+        { if(!speech::AddVoiceFromFile(Fmt("Мой голос %d", (int)speech::Voices().size() + 1), g_newVoiceFemale)) MenuToast("Окно выбора файла не открылось"); }
+        y += U(8);
+    }
+
+    // «‹ значение ›»: возвращает -1 / 0 / +1
+    int Stepper(float& y, float x0, float x1, const char* label, const std::string& value)
+    {
+        Tx(F_BODY, ImVec2(x0, y + U(0.6f)), C(kInk), label);
+        float bw = U(7), vw = U(30);
+        ImVec2 la(x1 - vw - 2 * bw - U(2), y), lb(la.x + bw, y + U(5));
+        ImVec2 ra(x1 - bw, y), rb(x1, y + U(5));
+        int r = 0;
+        if(Button(la, lb, "<", kLine)) r = -1;
+        if(Button(ra, rb, ">", kLine)) r = 1;
+        ImVec2 ts = TS(F_SMALL, value.c_str());
+        Tx(F_SMALL, ImVec2((lb.x + ra.x - ts.x) * 0.5f, y + U(1.2f)), C(kGold), value.c_str());
+        y += U(6.5f);
+        return r;
+    }
+
+    std::string VoiceTitle(const std::string& key) { speech::Voice v; return speech::FindVoice(key, v) ? v.title : std::string("(выберется сам)"); }
+    std::string NextVoice(const std::string& key, int dir)
+    {
+        auto vs = speech::Voices(); if(vs.empty()) return key;
+        int idx = -1; for(int i = 0; i < (int)vs.size(); ++i) if(vs[i].key == key) idx = i;
+        idx = idx < 0 ? 0 : (idx + dir + (int)vs.size()) % (int)vs.size();
+        return vs[idx].key;
+    }
+
+    void TabJarvis(settings::Data& s, float x0, float x1, float& y)
+    {
+        Toggle(y, x0, x1, "Джарвис — личный помощник", s.jarvis);
+        Toggle(y, x0, x1, "Кнопка «Джарвис» на экране (зажал — говоришь)", s.jarvisButton);
+        if(int d = Stepper(y, x0, x1, "Голос Джарвиса", VoiceTitle(s.jarvisVoice))) s.jarvisVoice = NextVoice(s.jarvisVoice, d);
+        if(int d = Stepper(y, x0, x1, "Высота голоса", Fmt("%.2f", s.jarvisPitch))) s.jarvisPitch = fminf(1.3f, fmaxf(0.7f, s.jarvisPitch + d * 0.03f));
+        if(int d = Stepper(y, x0, x1, "Скорость речи", Fmt("%.2f", s.jarvisSpeed))) s.jarvisSpeed = fminf(1.4f, fmaxf(0.7f, s.jarvisSpeed + d * 0.03f));
+        if(Button(ImVec2(x1 - U(24), y), ImVec2(x1, y + U(5.5f)), "Послушать", kBlue, speech::TtsReady())) { speech::StopSpeaking(); jarvis::Preview(); }
+        y += U(7);
+        static const char* addr[] = { "сэр", "босс", "шеф" };
+        int ai = s.jarvisAddress == "босс" ? 1 : s.jarvisAddress == "шеф" ? 2 : 0;
+        int na = Chips(y, x0, x1, "Как к тебе обращаться", addr, 3, ai);
+        if(na != ai) s.jarvisAddress = addr[na];
+        static const char* conf[] = { "Опасное", "Всегда", "Никогда" };
+        s.jarvisConfirm = Chips(y, x0, x1, "Переспрашивать «Подтверждаете?»", conf, 3, s.jarvisConfirm);
+        Toggle(y, x0, x1, "Кооп: другу можно менять общий мир через Джарвиса", s.jarvisFriend);
+        // справочник
+        speech::Status st = speech::Get();
+        bool lib = jarvis::LibraryFilePresent();
+        std::string t = lib ? "Скачан: Джарвис может собирать любые действия из команд игры (нужен ключ ИИ)" : st.busy ? st.busyText : "Не скачан (~1 МБ). Без него работают только готовые команды";
+        StatusRow(y, x0, x1, lib ? kGrove : kGold, "Справочник команд игры («даже то, чего нет в списке»)", t);
+        float xr = x1;
+        if(!st.busy && RowButton(y, xr, lib ? "Обновить" : "Скачать", kGold)) jarvis::DownloadLibrary();
+        y += U(10.6f);
+        const char* hint = "Вызов: зажми кнопку «Джарвис» и говори — или пункт Jarvis в меню CLEO (слушает 6 секунд). Примеры: «дай миниган и тысячу патронов», «сними розыск», "
+                           "«перенеси в квадрат C7», «перенеси на метку», «запомни это место как база», «дай инфернус», «сделай ночь и дождь», «полное здоровье и броня», «отмени». "
+                           "Без ключа и интернета понимает простые команды; с ключом — свободную речь и любые просьбы.";
+        Tx(F_SMALL, ImVec2(x0, y), C(kDim), hint, x1 - x0); y += TS(F_SMALL, hint, x1 - x0).y + U(1);
+    }
+
+    void TabSettings(settings::Data& s, float x0, float x1, float& y)
+    {
         static const char* models[] = { "Haiku 5.5", "Sonnet 5.5" };
         static const char* modelIds[] = { "claude-haiku-5-5", "claude-sonnet-5-5" };
         int mi = s.model == modelIds[1] ? 1 : 0;
@@ -239,35 +459,159 @@ namespace
         s.initiative = Chips(y, x0, x1, "Педы сами заговаривают", inits, 3, s.initiative);
         static const char* limits[] = { "100", "400", "1500" };
         int li = s.dailyLimit <= 100 ? 0 : (s.dailyLimit <= 400 ? 1 : 2);
-        int nl = Chips(y, x0, x1, "Лимит запросов в день", limits, 3, li);
+        int nl = Chips(y, x0, x1, "Лимит запросов ИИ в день", limits, 3, li);
         if(nl != li) { static const int lv[] = { 100, 400, 1500 }; s.dailyLimit = lv[nl]; claude::SetDailyLimit(s.dailyLimit); }
-        Toggle(y, x0, x1, "Голоса педов", s.voices);
-        Toggle(y, x0, x1, "Субтитры", s.subtitles);
+        static const char* forget[] = { "3 дня", "7 дней", "Никогда" };
+        int fi = s.forgetDays <= 0 ? 2 : (s.forgetDays <= 3 ? 0 : 1);
+        int nf = Chips(y, x0, x1, "Забывать неважных людей через", forget, 3, fi);
+        if(nf != fi) { static const int fv[] = { 3, 7, 0 }; s.forgetDays = fv[nf]; world::g_forgetDays = s.forgetDays; }
         Toggle(y, x0, x1, "Задержание по шагам (наручники, участок, суд)", s.realArrest);
         Toggle(y, x0, x1, "Розыск только по свидетелям", s.witnesses);
         Toggle(y, x0, x1, "Режиссёр города (планы банд, слухи)", s.director);
         Toggle(y, x0, x1, "Кооп: друг говорит через мой ключ", s.shareKeyWithFriend);
-
-        // расход
-        claude::Usage t = claude::Today(), all = claude::Total();
-        std::string us = Fmt("сегодня %d запр. ≈ $%.3f · всего %d ≈ $%.2f", t.requests, claude::CostUsd(t), all.requests, claude::CostUsd(all));
-        Row(y, x0, x1, "Расход", us.c_str()); y += U(5.5f);
-        const char* mode = coopnet::GetRole() == coopnet::HOST ? "кооп: ты хост (общий мир)" : coopnet::GetRole() == coopnet::CLIENT ? "кооп: ИИ через хоста" : "одиночная игра";
-        Row(y, x0, x1, "Режим", mode); y += U(6);
-
-        if(!g_confirmReset) { if(Button(ImVec2(x0, y), ImVec2(x0 + U(30), y + U(6)), "Новый мир (забыть всех)", kRed)) g_confirmReset = true; }
+        if(!g_confirmReset) { if(Button(ImVec2(x0, y), ImVec2(x0 + U(44), y + U(6)), "Забыть всех в этом сохранении", kRed)) g_confirmReset = true; }
         else
         {
-            Tx(F_SMALL, ImVec2(x0, y + U(1.5f)), C(kRed), "Точно? Все люди, связи и слухи будут забыты.");
-            if(Button(ImVec2(x1 - U(40), y), ImVec2(x1 - U(21), y + U(6)), "Да, забыть", kRed)) { world::Reset(); world::Save(world::DefaultPath()); g_confirmReset = false; MenuToast("Мир начат заново"); }
+            Tx(F_SMALL, ImVec2(x0, y + U(1.5f)), C(kRed), "Точно? Люди, связи и слухи этого сохранения будут забыты.");
+            if(Button(ImVec2(x1 - U(40), y), ImVec2(x1 - U(21), y + U(6)), "Да, забыть", kRed)) { json::Value u = world::W().usage; world::Reset(); world::W().usage = u; g_confirmReset = false; MenuToast("Память этого сохранения очищена"); }
             if(Button(ImVec2(x1 - U(19), y), ImVec2(x1, y + U(6)), "Нет", kGrove)) g_confirmReset = false;
         }
+        y += U(8);
+    }
+
+    void DrawMenu()
+    {
+        PumpWhileMenu();
+        settings::Data& s = settings::Get();
+        float W = Ww(), H = Hh();
+        DL()->AddRectFilled(ImVec2(0, 0), ImVec2(W, H), C(kNight, 0.95f));
+        float x0 = W * 0.10f, x1 = W * 0.90f;
+        float y = U(3);
+        Tx(F_HEAD, ImVec2(x0, y), C(kGold), "ИИ — ЖИВЫЕ ЛЮДИ");
+        if(Button(ImVec2(x1 - U(14), y), ImVec2(x1, y + U(6)), "Закрыть", kGrove))
+        {
+            if(g_micTestHeld) { g_micTestHeld = false; talk::CaptureUp(); }
+            speech::StopSpeaking();
+            settings::Save(); g_menuOpen = false; g_blockMenuUntil = g_now + 0.4; return;
+        }
+        y += U(8);
+        static const char* tabs[] = { "Главное", "Голоса", "Джарвис", "Настройки" };
+        float tw = (x1 - x0 - U(3)) / 4;
+        for(int i = 0; i < 4; ++i)
+        {
+            ImVec2 ta(x0 + i * (tw + U(1)), y), tb(ta.x + tw, y + U(5.5f));
+            bool on = g_tab == i;
+            DL()->AddRectFilled(ta, tb, C(on ? kGold : kPanel2), U(1));
+            ImVec2 ts = TS(F_SMALL, tabs[i]);
+            Tx(F_SMALL, ImVec2((ta.x + tb.x - ts.x) * 0.5f, (ta.y + tb.y - ts.y) * 0.5f), C(on ? kNight : kInk), tabs[i]);
+            if(Clicked(ta, tb)) { g_tab = i; g_confirmReset = false; }
+        }
+        y += U(8.5f);
+        // содержимое вкладки прокручивается пальцем, если не помещается
+        static float scroll[4] = {}, lastY = -1; static bool moved = false;
+        float top = y, bottom = H - U(2);
+        bool down = false; float fy = 0;
+        for(auto& f : g_f) if(f.down && f.downPos.y > top) { down = true; fy = f.pos.y; if(fabsf(f.pos.y - f.downPos.y) > U(2.5f)) moved = true; break; }
+        if(down) { if(lastY >= 0 && moved) scroll[g_tab] -= fy - lastY; lastY = fy; }
+        else { lastY = -1; }
+        g_dragScroll = moved;
+        if(!down) moved = false;
+        DL()->PushClipRect(ImVec2(0, top - U(1)), ImVec2(W, bottom), true);
+        g_clipA = ImVec2(0, top - U(1)); g_clipB = ImVec2(W, bottom);
+        y = top - scroll[g_tab];
+        if(g_tab == 0) TabMain(s, x0, x1, y);
+        else if(g_tab == 1) TabVoices(s, x0, x1, y);
+        else if(g_tab == 2) TabJarvis(s, x0, x1, y);
+        else TabSettings(s, x0, x1, y);
+        DL()->PopClipRect();
+        g_clipA = ImVec2(-1e9f, -1e9f); g_clipB = ImVec2(1e9f, 1e9f);
+        float maxScroll = (y + scroll[g_tab]) - bottom + U(2);
+        if(maxScroll < 0) maxScroll = 0;
+        if(scroll[g_tab] > maxScroll) scroll[g_tab] = maxScroll;
+        if(scroll[g_tab] < 0) scroll[g_tab] = 0;
+        if(maxScroll > 0)
+        {   // полоска прокрутки
+            float trackH = bottom - top, barH = trackH * trackH / (trackH + maxScroll), barY = top + (trackH - barH) * (scroll[g_tab] / maxScroll);
+            DL()->AddRectFilled(ImVec2(x1 + U(3), barY), ImVec2(x1 + U(3.6f), barY + barH), C(kGold, 0.7f), U(0.3f));
+        }
+
         if(g_now - g_menuToastAt < 4)
         {
             ImVec2 ts = TS(F_BODY, g_menuToast.c_str(), W * 0.7f);
             ImVec2 a((W - ts.x) * 0.5f - U(2), H - ts.y - U(6)), b((W + ts.x) * 0.5f + U(2), H - U(2));
             Panel(a, b); Tx(F_BODY, ImVec2(a.x + U(2), a.y + U(2)), C(kGold), g_menuToast.c_str(), W * 0.7f);
         }
+    }
+
+    // ---------- карточка персонажа (с выбором голоса) ----------
+    int   g_cardChar = 0;
+    std::string g_cardVoice; float g_cardPitch = 1, g_cardRate = 1;
+
+    void OpenCard(int charId)
+    {
+        world::Character* c = world::Find(charId); if(!c) return;
+        talk::EnsureVoice(*c);
+        g_cardChar = charId; g_cardVoice = c->voice; g_cardPitch = c->vpitch; g_cardRate = c->vrate;
+    }
+
+    void DrawCard()
+    {
+        world::Character* c = world::Find(g_cardChar);
+        if(!c) { g_cardChar = 0; return; }
+        float W = Ww(), H = Hh();
+        ImVec2 a(W * 0.5f - U(48), H * 0.08f), b(W * 0.5f + U(48), H * 0.94f);
+        DL()->AddRectFilled(ImVec2(0, 0), ImVec2(W, H), C(kBlack, 0.5f));
+        Panel(a, b, U(2.4f), 0.97f);
+        float x0 = a.x + U(3), x1 = b.x - U(3), y = a.y + U(2.5f);
+        std::string title = c->nick.empty() ? c->name : c->nick + " (" + c->name + ")";
+        Tx(F_HEAD, ImVec2(x0, y), C(kGold), title.c_str());
+        if(Button(ImVec2(x1 - U(9), y), ImVec2(x1, y + U(5.5f)), "X", kRed)) { g_cardChar = 0; speech::StopSpeaking(); return; }
+        y += U(7.5f);
+        const world::Relation& r = c->rel[world::WHO_CJ];
+        std::string who = Fmt("%s%s · %d лет%s%s%s", world::FactionName(c->faction), c->story.empty() ? "" : " · сюжетный персонаж", c->age,
+                              c->alive ? "" : " · погиб", r.payroll ? " · на зарплате" : "", r.informant ? " · информатор" : "");
+        Tx(F_SMALL, ImVec2(x0, y), C(kDim), who.c_str(), x1 - x0); y += U(4.2f);
+        std::string rel = Fmt("Доверие %d · уважение %d · симпатия %d · страх %d", r.trust, r.respect, r.liking, r.fear);
+        Tx(F_SMALL, ImVec2(x0, y), C(kInk), rel.c_str()); y += U(4.2f);
+        if(!c->summary.empty()) { Tx(F_SMALL, ImVec2(x0, y), C(kDim), c->summary.c_str(), x1 - x0); y += TS(F_SMALL, c->summary.c_str(), x1 - x0).y + U(1); }
+        if(!c->mem.empty())
+        {
+            const std::string& m = c->mem.back().text;
+            std::string line = "Помнит: " + m;
+            Tx(F_SMALL, ImVec2(x0, y), C(kDim), line.c_str(), x1 - x0); y += TS(F_SMALL, line.c_str(), x1 - x0).y + U(1);
+        }
+        y += U(1.5f);
+        Tx(F_SMALL, ImVec2(x0, y), C(kGold), "ГОЛОС"); y += U(4);
+        if(speech::Voices().empty()) { Tx(F_SMALL, ImVec2(x0, y), C(kDim), "Голосовой пакет не установлен (Настройки > AI).", x1 - x0); return; }
+        if(int d = Stepper(y, x0, x1, "Голос", VoiceTitle(g_cardVoice))) g_cardVoice = NextVoice(g_cardVoice, d);
+        if(int d = Stepper(y, x0, x1, "Высота", Fmt("%.2f", g_cardPitch))) g_cardPitch = fminf(1.3f, fmaxf(0.7f, g_cardPitch + d * 0.03f));
+        if(int d = Stepper(y, x0, x1, "Скорость", Fmt("%.2f", g_cardRate))) g_cardRate = fminf(1.4f, fmaxf(0.7f, g_cardRate + d * 0.03f));
+        float bw = (x1 - x0 - U(2)) / 3;
+        if(Button(ImVec2(x0, y), ImVec2(x0 + bw, y + U(6.5f)), "Послушать", kBlue, speech::TtsReady()))
+        {
+            speech::Voice v; float p = g_cardPitch, rt = g_cardRate;
+            if(speech::FindVoice(g_cardVoice, v)) { p *= v.pitch; rt *= v.speed; }
+            speech::StopSpeaking();
+            speech::Speak(c->faction == world::F_POLICE ? "Полиц+ия! Р+уки, чтоб я в+идел!" : "Ну здор+ово. Чег+о хот+ел?", g_cardVoice, p, rt, "preview");
+        }
+        if(Button(ImVec2(x0 + bw + U(1), y), ImVec2(x0 + 2 * bw + U(1), y + U(6.5f)), "Сохранить", kGrove))
+        {
+            c->voice = g_cardVoice; c->vpitch = g_cardPitch; c->vrate = g_cardRate;
+            if(!c->story.empty()) { world::StoryVoice sv; sv.voice = c->voice; sv.pitch = c->vpitch; sv.rate = c->vrate; world::SetStoryVoice(c->story, sv); }
+            Feed(c->story.empty() ? "Голос сохранён (для этого сохранения)" : "Голос сохранён (во всех сохранениях)");
+            LOG_INFO("Голос: #%d %s — назначен «%s» (%.2f, %.2f)%s", c->id, c->name.c_str(), c->voice.c_str(), c->vpitch, c->vrate, c->story.empty() ? "" : ", сюжетный — во всех сохранениях");
+            g_cardChar = 0;
+        }
+        if(Button(ImVec2(x0 + 2 * bw + U(2), y), ImVec2(x1, y + U(6.5f)), "Вернуть как было", kRed))
+        {
+            if(!c->story.empty()) world::ClearStoryVoice(c->story);
+            c->voice.clear(); talk::EnsureVoice(*c);
+            g_cardVoice = c->voice; g_cardPitch = c->vpitch; g_cardRate = c->vrate;
+            Feed("Голос — как был по умолчанию");
+        }
+        y += U(8);
+        const char* hint = c->story.empty() ? "Голос этого человека действует в этом сохранении." : "Это сюжетный персонаж: его голос одинаков во всех сохранениях.";
+        Tx(F_SMALL, ImVec2(x0, y), C(kDim), hint, x1 - x0);
     }
 
     // ---------- телефон ----------
@@ -356,9 +700,13 @@ namespace
                 std::string line = Fmt("%s — %s%s. Доверие %d, уважение %d, симпатия %d, страх %d", c.nick.empty() ? c.name.c_str() : c.nick.c_str(),
                                        world::FactionName(c.faction), c.alive ? "" : " (погиб)", r.trust, r.respect, r.liking, r.fear);
                 ImVec2 ts = TS(F_SMALL, line.c_str(), wrap);
+                ImVec2 ra(x0 - U(0.8f), y - U(0.4f)), rb(b.x - U(3), y + ts.y + U(0.4f));
+                if(HeldFrom(ra, rb)) DL()->AddRectFilled(ra, rb, C(kLine), U(0.8f));
                 Tx(F_SMALL, ImVec2(x0, y), C(c.alive ? kInk : kDim), line.c_str(), wrap);
+                if(Clicked(ra, rb)) { OpenCard(c.id); g_phoneOpen = false; }
                 y += ts.y + U(1.2f);
             }
+            Tx(F_SMALL, ImVec2(x0, y + U(0.5f)), C(kGold), "Нажми на человека — карточка и выбор голоса"); y += U(4.5f);
             std::string fs = "Банды: " + world::FactionSummary(world::WHO_CJ);
             Tx(F_SMALL, ImVec2(x0, y + U(1)), C(kDim), fs.c_str(), wrap);
         }
@@ -388,7 +736,7 @@ namespace
         ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
         bool held = HeldFrom(a, b);
         if(held != g_talkHeld) { g_talkHeld = held; if(held) talk::PttDown(); else talk::PttUp(); }
-        bool listening = talk::Listening(), thinking = talk::Thinking();
+        bool listening = talk::Listening() && !talk::Capturing(), thinking = talk::Thinking() || (talk::Recognizing() && !talk::Capturing());
         Rgb ring = listening ? kRed : (thinking ? kGold : kBlue);
         DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.6f)), r, C(kBlack, 0.45f), 40);
         DL()->AddCircleFilled(c, r - U(0.4f), C(kPanel, 0.9f), 40);
@@ -432,9 +780,10 @@ namespace
             btn.push_back({ "Дать денег", 1 });
             if(int d = talk::PendingDemand()) btn.push_back({ Fmt("Заплатить $%d", d), 2 });
             btn.push_back({ talk::PhoneMode() ? "Положить трубку" : "Уйти", 3 });
+            btn.push_back({ "Карточка", 5 });
         }
         if(game::Wanted() > 0 && !police::Arresting()) btn.push_back({ "Сдаться", 4 });
-        float bw = U(20), bh = U(6), y = H * 0.70f, x = W * 0.5f - (btn.size() * (bw + U(1))) * 0.5f;
+        float bw = U(20), bh = U(6), y = H * 0.86f, x = W * 0.5f - (btn.size() * (bw + U(1))) * 0.5f;
         for(auto& b : btn)
         {
             ImVec2 a(x, y), e(x + bw, y + bh);
@@ -445,6 +794,7 @@ namespace
                 else if(b.second == 2) talk::PayDemand();
                 else if(b.second == 3) talk::EndConversation();
                 else if(b.second == 4) police::Surrender();
+                else if(b.second == 5) { if(world::Character* ch = talk::Current()) OpenCard(ch->id); }
             }
             x += bw + U(1);
         }
@@ -454,9 +804,9 @@ namespace
     {
         float W = Ww(), H = Hh();
         float y = H * 0.80f, wrap = W * 0.6f;
-        if(talk::Listening() && !talk::Partial().empty())
+        if((talk::Listening() || talk::Recognizing()) && !talk::Capturing())
         {
-            std::string s = "Ты: " + talk::Partial() + "…";
+            std::string s = talk::Recognizing() ? "Распознаю…" : (talk::Partial().empty() ? "Слушаю…" : "Ты: " + talk::Partial() + "…");
             ImVec2 ts = TS(F_BODY, s.c_str(), wrap);
             TxShadow(F_BODY, ImVec2((W - ts.x) * 0.5f, y - ts.y), C(kDim), s.c_str(), wrap);
             y -= ts.y + U(1);
@@ -513,6 +863,58 @@ namespace
         }
     }
 
+    // ---------- Джарвис: кнопка и плашка ----------
+    bool g_jarvisHeld = false;
+    void DrawJarvis(const settings::Data& s)
+    {
+        if(!s.jarvis) return;
+        jarvis::View v = jarvis::GetView();
+        if(s.jarvisButton)
+        {
+            float r = U(6.2f) * s.jarvisS;
+            ImVec2 c(s.jarvisX * Ww(), s.jarvisY * Hh());
+            ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
+            bool held = HeldFrom(a, b);
+            if(held != g_jarvisHeld) { g_jarvisHeld = held; if(held) jarvis::ButtonDown(); else jarvis::ButtonUp(); }
+            bool active = v.visible && v.state != jarvis::IDLE && v.state != jarvis::SPEAKING;
+            float t = (float)g_now;
+            DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.5f)), r, C(kBlack, 0.45f), 40);
+            DL()->AddCircleFilled(c, r - U(0.4f), C(kPanel, 0.9f), 40);
+            DL()->AddCircle(c, r - U(0.5f), C(held ? kRed : kGold), 40, U(0.55f));
+            // «реактор»: кольцо из сегментов
+            for(int i = 0; i < 8; ++i)
+            {
+                float ang = i * 0.7854f + (active ? t * 2.0f : 0);
+                ImVec2 p(c.x + cosf(ang) * r * 0.48f, c.y + sinf(ang) * r * 0.48f);
+                DL()->AddCircleFilled(p, r * 0.09f, C(kGold, active ? 1.0f : 0.75f), 10);
+            }
+            DL()->AddCircleFilled(c, r * 0.18f, C(held ? kRed : kGold), 16);
+            ImVec2 ts = TS(F_SMALL, "ДЖАРВИС");
+            TxShadow(F_SMALL, ImVec2(c.x - ts.x * 0.5f, b.y + U(0.4f)), C(kGold), "ДЖАРВИС");
+        }
+        if(!v.visible) return;
+        float W = Ww(), wrap = W * 0.46f;
+        const char* stt = v.state == jarvis::LISTENING ? (v.listenLeft > 0 ? "Слушаю… (коснись, когда договоришь)" : "Слушаю…")
+                        : v.state == jarvis::RECOGNIZING ? "Распознаю…" : v.state == jarvis::THINKING ? "Секунду…" : "";
+        std::string body;
+        if(!v.heard.empty()) body += "Ты: " + v.heard + "\n";
+        if(!v.reply.empty()) body += v.reply;
+        float h = U(5.5f);
+        ImVec2 bs = body.empty() ? ImVec2(0, 0) : TS(F_SMALL, body.c_str(), wrap);
+        h += bs.y + (body.empty() ? 0 : U(1));
+        h += v.done.size() * U(3.4f) + (v.done.empty() ? 0 : U(0.6f));
+        ImVec2 a((W - wrap) * 0.5f - U(2), U(12)), b((W + wrap) * 0.5f + U(2), U(12) + h + U(1.5f));
+        DL()->AddRectFilled(a, b, C(kPanel, 0.93f), U(1.6f));
+        DL()->AddRect(a, b, C(kGold, 0.9f), U(1.6f), 0, U(0.3f));
+        float y = a.y + U(1.2f);
+        Tx(F_SMALL, ImVec2(a.x + U(2), y), C(kGold), "ДЖАРВИС");
+        if(*stt) { ImVec2 ts = TS(F_SMALL, stt); Tx(F_SMALL, ImVec2(b.x - U(2) - ts.x, y), C(v.state == jarvis::LISTENING ? kRed : kDim), stt); }
+        y += U(4.2f);
+        if(!body.empty()) { Tx(F_SMALL, ImVec2(a.x + U(2), y), C(kInk), body.c_str(), wrap); y += bs.y + U(1); }
+        for(auto& d : v.done) { Tx(F_SMALL, ImVec2(a.x + U(2), y), C(kGrove), ("· " + d).c_str(), wrap); y += U(3.4f); }
+        if(Clicked(a, b)) jarvis::TapPlate();
+    }
+
     bool Frame(bool fromMenu)
     {
         uint64_t nowUs = (uint64_t)(NowSec() * 1e6);
@@ -541,9 +943,11 @@ namespace
             else
             {
                 talk::SetSpeechSink(nullptr);
-                if(g_keypad) DrawKeypad();
+                if(g_cardChar) DrawCard();
+                else if(g_keypad) DrawKeypad();
                 else
                 {
+                    DrawJarvis(settings::Get());
                     DrawSubtitles();
                     DrawContextButtons();
                     DrawTalkButton(settings::Get());
@@ -615,6 +1019,12 @@ bool Init(void* h)
     LOG_INFO("Интерфейс готов");
     return true;
 }
+
+#ifdef SALIVING_PREVIEW
+void PreviewFrame(bool menu, int tab) { g_menuOpen = menu; g_tab = tab; Frame(menu); }
+void PreviewCard(int id) { OpenCard(id); }
+void PreviewPhone(bool open, int tab) { g_phoneOpen = open; g_phoneTab = tab; }
+#endif
 
 void AttachSAUtils(ISAUtils* sau)
 {

@@ -54,7 +54,10 @@ namespace world
         bool  secretlyLoyal = false;     // двойная игра: на словах друг, на деле сливает своим (знает только мир)
         bool  exposed = false;           // его банда узнала о связях с игроком
         std::string goal; int goalUntilMin = 0; int goalTarget = 0;   // долгая цель (минуты игрового времени)
-        float pitch = 1.0f, rate = 1.0f; // голос
+        float pitch = 1.0f, rate = 1.0f; // голос Android (Google)
+        std::string voice;               // свой голос: ключ из speech::Voices() (пусто — ещё не выбран)
+        float vpitch = 1.0f, vrate = 1.0f; // поправки своего голоса (высота, скорость)
+        std::string story;               // сюжетный персонаж (ключ: «sweet», «ryder»…): имя и голос общие для всех сохранений
         json::Value dialog;              // последние сообщения разговора (для ИИ)
         int lastTalkDay = -1, lastTalkMin = 0;
         // в игре (не сохраняется)
@@ -119,7 +122,24 @@ namespace world
     void Reset();
     bool Load(const std::string& path);
     bool Save(const std::string& path);
-    std::string DefaultPath();
+    std::string DefaultPath();              // папка SALiving + старый общий файл (0.1.0)
+    std::string BaseDir();                  // …/SALiving
+
+    // ---- память по сохранениям: у каждого сохранения игры своя память (имя файла сохранения = ключ) ----
+    void SwitchTo(const std::string& saveName);   // игра загрузила сохранение: взять его память (нет — новая)
+    void SaveAs(const std::string& saveName);     // игра сохранилась: записать память под этим именем
+    void NewGame();                               // новая игра: пустая память
+    const std::string& MemoryKey();               // «GTASAsf3», «SACoop_1», «new» или пусто (игра ещё не загружена)
+
+    // ---- сюжетные персонажи: голос общий для всех сохранений ----
+    struct StoryVoice { std::string voice; float pitch = 1, rate = 1; };
+    bool GetStoryVoice(const std::string& story, StoryVoice& out);
+    void SetStoryVoice(const std::string& story, const StoryVoice& v);
+    void ClearStoryVoice(const std::string& story);
+    const char* StoryName(const std::string& story);   // «Свит Джонсон» или nullptr
+
+    int  ForgetUnimportant(int keepDays);         // забыть неважных (возвращает, сколько забыто)
+    extern int g_forgetDays;                      // из настроек (0 — не забывать)
 
     // ---- персонажи ----
     Character* Find(int id);

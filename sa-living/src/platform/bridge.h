@@ -50,4 +50,10 @@ namespace bridge
     // ---- воспроизведение готового звука (своя озвучка); можно из любого потока ----
     void PlayPcm(const float* samples, int n, int sampleRate, float pitch, float speed, const std::string& id);
     void PlayStop();
+
+    // ---- выбор файла на телефоне (системное окно «Файлы»): копия кладётся в destPath ----
+    bool PickFile(const std::string& destPath);
+    int  PickState(std::string* result);   // 0 ничего, 1 выбирают, 2 готово (путь), -1 отмена, -2 ошибка (текст)
+    void PickReset();
+    void OpenUrl(const std::string& url);
 }

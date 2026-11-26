@@ -4,6 +4,7 @@
 #include <mod/amlmod.h>
 #include <mod/logger.h>
 #include <jni.h>
+#include <dlfcn.h>
 
 #include <atomic>
 #include <deque>
@@ -308,5 +309,67 @@ void PlayPcm(const float* samples, int n, int sampleRate, float pitch, float spe
 }
 
 void PlayStop() { CallVoid("playStop"); }
+
+// ---- выбор файла, ссылка ----
+static jobject CurrentActivity()
+{
+    typedef jobject (*GetActivityFn)(void* self);
+    static GetActivityFn getActivity = nullptr;
+    if(!getActivity)
+    {
+        void* h = dlopen("libAML.so", RTLD_NOW | RTLD_NOLOAD);
+        if(h) getActivity = (GetActivityFn)dlsym(h, "_ZN3AML18GetCurrentActivityEv");
+        if(!getActivity) getActivity = (GetActivityFn)dlsym(RTLD_DEFAULT, "_ZN3AML18GetCurrentActivityEv");
+    }
+    return getActivity ? getActivity(aml) : nullptr;
+}
+
+bool PickFile(const std::string& destPath)
+{
+    if(!g_ready) return false;
+    Env j; if(!j.env) return false;
+    jobject act = CurrentActivity();
+    if(!act) { logger->Error("Выбор файла: AML не отдал Activity"); return false; }
+    jmethodID m = M(j.env, "pickFile", "(Landroid/app/Activity;Ljava/lang/String;)V");
+    if(j.Fail() || !m) return false;
+    jstring d = ToJ(j.env, destPath);
+    j.env->CallStaticVoidMethod(g_cls, m, act, d);
+    j.env->DeleteLocalRef(d);
+    return !j.Fail();
+}
+
+int PickState(std::string* result)
+{
+    if(!g_ready) return 0;
+    Env j; if(!j.env) return 0;
+    jfieldID fs = j.env->GetStaticFieldID(g_cls, "pickState", "I");
+    jfieldID fr = j.env->GetStaticFieldID(g_cls, "pickResult", "Ljava/lang/String;");
+    if(j.Fail() || !fs || !fr) return 0;
+    int st = j.env->GetStaticIntField(g_cls, fs);
+    if(result)
+    {
+        jstring r = (jstring)j.env->GetStaticObjectField(g_cls, fr);
+        *result = r ? FromJ(j.env, r) : std::string();
+        if(r) j.env->DeleteLocalRef(r);
+    }
+    return st;
+}
+
+void PickReset()
+{
+    if(!g_ready) return;
+    Env j; if(!j.env) return;
+    jfieldID fs = j.env->GetStaticFieldID(g_cls, "pickState", "I");
+    if(!j.Fail() && fs) j.env->SetStaticIntField(g_cls, fs, 0);
+}
+
+void OpenUrl(const std::string& url)
+{
+    if(!g_ready) return;
+    Env j; if(!j.env) return;
+    jstring u = ToJ(j.env, url);
+    j.env->CallStaticVoidMethod(g_cls, M(j.env, "openUrl", "(Ljava/lang/String;)V"), u);
+    j.env->DeleteLocalRef(u); j.Fail();
+}
 
 } // namespace bridge

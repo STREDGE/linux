@@ -225,6 +225,7 @@ public final class Bridge
         {
             java.util.ArrayList<String[]> jobs = new java.util.ArrayList<String[]>();
             java.util.ArrayList<String[]> unz = new java.util.ArrayList<String[]>();
+            java.util.ArrayList<String[]> unzAll = new java.util.ArrayList<String[]>();
             for(String line : plan.split("\n"))
             {
                 String[] p = line.split("\t");
@@ -242,6 +243,7 @@ public final class Bridge
                     }
                 }
                 else if(p.length >= 4 && p[0].equals("unzip")) unz.add(new String[] { p[1], p[2], p[3] });
+                else if(p.length >= 3 && p[0].equals("unzipall")) unzAll.add(new String[] { p[1], p[2] });
             }
             long total = 0, done = 0;
             for(String[] j : jobs) { java.io.File f = new java.io.File(j[1]); if(!new java.io.File(j[1] + ".ok").exists()) total += 1; }
@@ -252,7 +254,7 @@ public final class Bridge
                 java.io.File f = new java.io.File(j[1]);
                 if(new java.io.File(j[1] + ".ok").exists()) continue;
                 f.getParentFile().mkdirs();
-                nativeDl(0, n, total, f.getName());
+                nativeDl(0, 0, 0, f.getName());
                 fetch(j[0], f);
                 new java.io.File(j[1] + ".ok").createNewFile();
                 n++;
@@ -264,9 +266,100 @@ public final class Bridge
                 unzipOne(u[0], u[1], u[2]);
                 new java.io.File(u[2] + ".ok").createNewFile();
             }
+            for(String[] u : unzAll) unzipAll(u[0], u[1]);
             nativeDl(1, total, total, "готово");
         }
         catch(Throwable t) { nativeDl(2, 0, 0, t.getClass().getSimpleName() + ": " + t.getMessage()); }
+    }
+
+    // Весь архив в папку (голосовой пакет). Прогресс — в байтах архива.
+    static void unzipAll(String zip, String dir) throws Exception
+    {
+        java.io.File zf = new java.io.File(zip);
+        long total = zf.length(), done = 0;
+        java.io.FileInputStream fis = new java.io.FileInputStream(zf);
+        java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(new java.io.BufferedInputStream(fis, 1 << 16));
+        java.util.zip.ZipEntry e;
+        byte[] b = new byte[1 << 16];
+        long lastReport = 0;
+        while((e = z.getNextEntry()) != null)
+        {
+            String name = e.getName();
+            if(e.isDirectory() || name.contains("..")) continue;
+            java.io.File out = new java.io.File(dir, name);
+            out.getParentFile().mkdirs();
+            java.io.File tmp = new java.io.File(out.getPath() + ".part");
+            java.io.FileOutputStream os = new java.io.FileOutputStream(tmp);
+            int r;
+            while((r = z.read(b)) > 0)
+            {
+                if(sDlCancel) { os.close(); z.close(); throw new java.io.IOException("отменено"); }
+                os.write(b, 0, r);
+                done = fis.getChannel().position();
+                if(done - lastReport > (1 << 20)) { lastReport = done; nativeDl(0, done >> 10, total >> 10, "распаковка " + out.getName()); }
+            }
+            os.close();
+            if(out.exists()) out.delete();
+            if(!tmp.renameTo(out)) { z.close(); throw new java.io.IOException("не переименовать " + out); }
+        }
+        z.close();
+    }
+
+    // ================= Выбор файла на телефоне (системное окно «Файлы») =================
+    // 0 — ничего, 1 — выбирают/копируют, 2 — готово (pickResult — путь к копии), -1 — отмена, -2 — ошибка (pickResult — текст)
+    public static volatile int pickState = 0;
+    public static volatile String pickResult = "";
+    static String sPickDest = "";
+
+    public static void pickFile(final android.app.Activity act, String destPath)
+    {
+        sPickDest = destPath; pickState = 1; pickResult = "";
+        act.runOnUiThread(new PickOpener(act));
+    }
+
+    static final class PickOpener implements Runnable
+    {
+        final android.app.Activity act;
+        PickOpener(android.app.Activity a) { act = a; }
+        public void run()
+        {
+            try
+            {
+                android.app.FragmentManager fm = act.getFragmentManager();
+                android.app.Fragment old = fm.findFragmentByTag("saliving_picker");
+                if(old != null) fm.beginTransaction().remove(old).commitAllowingStateLoss();
+                fm.beginTransaction().add(new Picker(), "saliving_picker").commitAllowingStateLoss();
+            }
+            catch(Throwable t) { pickResult = "окно выбора не открылось: " + t; pickState = -2; }
+        }
+    }
+
+    static void pickCopy(android.app.Activity act, android.net.Uri uri)
+    {
+        try
+        {
+            java.io.File out = new java.io.File(sPickDest);
+            out.getParentFile().mkdirs();
+            InputStream in = act.getContentResolver().openInputStream(uri);
+            java.io.FileOutputStream os = new java.io.FileOutputStream(out);
+            byte[] buf = new byte[1 << 16]; int n;
+            while((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            os.close(); in.close();
+            pickResult = out.getAbsolutePath(); pickState = 2;
+        }
+        catch(Throwable t) { pickResult = "не удалось скопировать: " + t; pickState = -2; }
+    }
+
+    // Открыть ссылку в браузере
+    public static void openUrl(final String url)
+    {
+        try
+        {
+            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            sCtx.startActivity(i);
+        }
+        catch(Throwable t) {}
     }
 
     static String getText(String url) throws Exception
@@ -291,7 +384,15 @@ public final class Bridge
         InputStream is = c.getInputStream();
         java.io.FileOutputStream os = new java.io.FileOutputStream(tmp);
         byte[] b = new byte[65536]; int r;
-        while((r = is.read(b)) > 0) { if(sDlCancel) { os.close(); is.close(); throw new java.io.IOException("отменено"); } os.write(b, 0, r); }
+        long len = 0; try { len = c.getContentLengthLong(); } catch(Throwable t) {}
+        long got = 0, last = 0;
+        while((r = is.read(b)) > 0)
+        {
+            if(sDlCancel) { os.close(); is.close(); throw new java.io.IOException("отменено"); }
+            os.write(b, 0, r);
+            got += r;
+            if(got - last > (1 << 20)) { last = got; nativeDl(0, got >> 10, len >> 10, out.getName()); }
+        }
         os.close(); is.close(); c.disconnect();
         if(out.exists()) out.delete();
         if(!tmp.renameTo(out)) throw new java.io.IOException("не переименовать " + out);
