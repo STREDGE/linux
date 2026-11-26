@@ -7,7 +7,7 @@ namespace life
 {
     void Frame();
     void RequestProfile(world::Character& c);     // придумать прошлое/манеру речи (ИИ, в фоне)
-    void OnKill(uintptr_t victim, int weapon);   // игрок убил педа
+    void OnKill(uintptr_t victim, int weapon, int playerId);   // игрок убил педа
     void SpawnHelpers(int faction, int count, bool hostile);  // позвать своих (call gang)
     void Ambush(int faction, int count);         // засада на игрока
     void RunDirector(bool force);

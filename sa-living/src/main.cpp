@@ -261,7 +261,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
     bool r = GenericLoad(ok);
     if(g_ok)
     {
-        talk::EndConversation(); jarvis::OnWorldSwitch(false); claude::AbortAll("загрузка игры");
+        talk::EndConversation(); jarvis::OnWorldSwitch(false); police::Reset(); claude::AbortAll("загрузка игры");
         // имя файла, из которого игра реально грузится; ms_ValidSaveName — запасной вариант (его могло перезаписать меню)
         std::string a = g_loadFileName ? g_loadFileName : "", b = g_validSaveName ? g_validSaveName : "";
         std::string n = !a.empty() && (world::HasMemory(a) || b.empty() || !world::HasMemory(b)) ? a : !b.empty() ? b : "default";
@@ -273,7 +273,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
 
 SDECL_HOOKv(MenuNewGame)
 {
-    if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); claude::AbortAll("новая игра"); world::NewGame(); }
+    if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); police::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
     MenuNewGame();
 }
 

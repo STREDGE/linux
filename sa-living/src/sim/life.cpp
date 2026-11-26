@@ -1,4 +1,5 @@
 #include "life.h"
+#include "sim/police.h"
 
 #include <math.h>
 #include <string.h>
@@ -65,16 +66,20 @@ namespace
                     LOG_INFO("Персонаж #%d %s погиб", c.id, c.name.c_str());
                     if(c.rel[world::WHO_CJ].met) world::News(Fmt("%s погиб.", c.name.c_str()));
                 }
+                game::KeepPed(ped, false);      // тело — игре (иначе тела копятся в пуле до вылета)
                 c.pedRef = 0; continue;
             }
             if(ped)
             {
                 float d = game::Dist(game::Pos(ped), me);
-                if(d > 160 && !game::OnScreen(ped) && talk::Current() != &c) { game::DeletePed(ped); c.pedRef = 0; }
+                // далеко: отпускаем педа игре — она уберёт его сама и правильно (удалять самим нельзя: он может сидеть за рулём)
+                if(d > 160 && !game::OnScreen(ped) && talk::Current() != &c && !police::Arresting()) { game::KeepPed(ped, false); c.pedRef = 0; }
                 continue;
             }
             // вывести персонажа «домой», когда игрок рядом
             if(!c.alive || c.jailUntilDay > world::Day() || c.home.x == 0) continue;
+            if(!c.story.empty() || (c.model >= 290 && c.model <= 299)) continue;   // сюжетных (Свит, Смоук…) выводит только игра — иначе двойники
+            if(game::OnMission() || game::CutsceneRunning() || police::Arresting()) continue;
             if(game::Dist2D(c.home, me) > 70 || game::Dist2D(c.home, me) < 25) continue;
             if(g_spawnTried.count(c.id) && now - g_spawnTried[c.id] < 300) continue;
             g_spawnTried[c.id] = now;
@@ -99,7 +104,7 @@ namespace
             if(c.goalUntilMin && nowMin > c.goalUntilMin) { LOG_INFO("Цель #%d истекла: %s", c.id, c.goal.c_str()); c.goal.clear(); continue; }
             bool hunt = c.goal.rfind("hunt_player", 0) == 0 || c.goal.rfind("revenge", 0) == 0;
             if(!hunt || c.goalTarget != world::WHO_CJ) continue;
-            if(game::OnMission() || talk::InConversation()) continue;
+            if(game::OnMission() || talk::InConversation() || police::Arresting() || game::CutsceneRunning()) continue;
             if(world::Rand(0, 1000) > (NightTime() ? 25 : 8)) continue;   // раз в несколько минут
             uintptr_t ped = world::PedOf(c);
             if(!ped)
@@ -121,7 +126,7 @@ namespace
         {
             auto& s = W.fac[f];
             if(s.plan.find("засада") == std::string::npos || f == W.playerGang || s.truce) continue;
-            if(!NightTime() || game::OnMission() || world::Rand(0, 1000) > 6) continue;
+            if(!NightTime() || game::OnMission() || police::Arresting() || game::CutsceneRunning() || world::Rand(0, 1000) > 6) continue;
             Ambush(f, world::Rand(3, 4));
             world::News(Fmt("%s устроили засаду!", world::FactionName(f)));
             s.plan.clear();
@@ -132,7 +137,7 @@ namespace
     void Initiative()
     {
         int lvl = settings::Get().initiative;
-        if(!lvl || !claude::Available() || talk::InConversation() || game::OnMission() || game::CutsceneRunning()) return;
+        if(!lvl || !claude::Available() || talk::InConversation() || game::OnMission() || game::CutsceneRunning() || police::Arresting()) return;
         double now = talk::Now();
         if(now < g_nextInit) return;
         uintptr_t pl = game::Player(); if(!pl) return;
@@ -178,7 +183,7 @@ namespace
     {
         if(!settings::Get().director || !claude::Available() || g_directorReq) return;
         int h = game::Hour();
-        if(g_directorHour >= 0 && ((h - g_directorHour + 24) % 24) < 3) return;
+        if(g_directorHour >= 0 && ((h - g_directorHour + 24) % 24) < 6) return;   // раз в 6 игровых часов (было 3 — около 20 платных запросов в час)
         g_directorHour = h;
         RunDirector(false);
     }
@@ -221,7 +226,7 @@ void RunDirector(bool force)
         "news":{"type":"array","items":{"type":"string"}},
         "police":{"type":"object","additionalProperties":false,"required":["heat_change","start_internal_affairs"],
           "properties":{"heat_change":{"type":"integer"},"start_internal_affairs":{"type":"boolean"}}}}}})", fmt);
-    r.format = fmt; r.maxTokens = 1200; r.effort = "medium"; r.cache = false; r.tag = "режиссёр";
+    r.format = fmt; r.maxTokens = 2000; r.effort = "low"; r.cache = false; r.tag = "режиссёр";
     g_directorReq = claude::Send(r, nullptr, [](claude::Result& res) {
         g_directorReq = 0;
         json::Value v;
@@ -277,10 +282,11 @@ void RequestProfile(Character& c)
     });
 }
 
-void OnKill(uintptr_t victim, int weapon)
+void OnKill(uintptr_t victim, int weapon, int playerId)
 {
     (void)weapon;
-    if(!victim) return;
+    if(!victim || playerId != 0) return;     // убийства друга в коопе считаются у него
+    bool mission = game::OnMission();
     auto& W = world::W();
     int t = game::PedType(victim);
     int fac = world::FactionOfPedType(t);
@@ -289,7 +295,8 @@ void OnKill(uintptr_t victim, int weapon)
     int sev = t == game::PT_COP ? 5 : (game::IsGang(t) ? 3 : 4);
     world::Event& e = world::AddEvent("kill", Fmt("убил: %s", who.c_str()), game::Pos(victim), sev, world::WHO_CJ);
     e.victimFaction = fac; e.victimChar = c ? c->id : 0;
-    if(c) { c->alive = false; c->pedRef = 0; }
+    if(c) { game::KeepPed(victim, false); c->alive = false; c->pedRef = 0; }
+    if(mission) return;                      // по сюжету миссии: без мести, жара и вражды банд
     world::GangReactToKill(fac, world::WHO_CJ, sev >= 4 ? 2 : 1);
     if(fac == world::F_POLICE)
     {
@@ -318,7 +325,7 @@ void SpawnHelpers(int faction, int count, bool hostile)
         game::Vec at = Around(game::Pos(pl), 28.0f + i * 3);
         uintptr_t p = game::SpawnPed(fm->pedType, fm->models[world::Rand(0, 2)], at);
         if(!p) continue;
-        if(hostile) { game::GiveWeapon(p, world::Rand(0, 2) ? 22 : 28, 120); game::SetCurrentWeapon(p, 22); game::TaskAttack(p, pl); }
+        if(hostile) { int w = world::Rand(0, 2) ? 22 : 28; game::GiveWeapon(p, w, 120); game::SetCurrentWeapon(p, w); game::TaskAttack(p, pl); }
         else game::TaskGoTo(p, game::Pos(pl), 6, 3.0f);
         game::KeepPed(p, false);      // временные: игра уберёт сама
     }

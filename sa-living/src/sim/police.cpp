@@ -3,11 +3,13 @@
 #include <mod/amlmod.h>
 #include <mod/logger.h>
 #include <math.h>
+#include <algorithm>
 
 #include <vector>
 
 #include "ai/claude.h"
 #include "game/game.h"
+#include "jarvis/script.h"
 #include "settings.h"
 #include "sim/life.h"
 #include "talk/talk.h"
@@ -111,9 +113,16 @@ namespace
         if(!count) return;                      // никто не видел — розыска нет
 
         world::Event* ev = nullptr;
-        if(sev >= 2)
+        static double s_lastEvAt = -100; static int s_lastEvType = -1, s_lastEvId = 0;
+        if(sev >= 2 && type == s_lastEvType && now - s_lastEvAt < 10)
+        {   // та же очередь выстрелов — одно событие, а не по событию на пулю
+            for(auto& e : world::W().events) if(e.id == s_lastEvId) { e.anonWitnesses = std::max(e.anonWitnesses, count); ev = &e; }
+            s_lastEvAt = now;
+        }
+        else if(sev >= 2)
         {
             world::Event& e = world::AddEvent("crime", CrimeText(type), at, sev, world::WHO_CJ);
+            s_lastEvAt = now; s_lastEvType = type; s_lastEvId = e.id;
             e.anonWitnesses = count;
             game::ForEachPed([&](uintptr_t p) {
                 if(world::Character* c = world::FindByPed(p)) if(game::Dist(game::Pos(p), at) < 35) { world::AddWitness(e, c->id); world::Remember(*c, Fmt("Видел, как %s %s", world::W().playerNick.c_str(), CrimeText(type))); }
@@ -121,7 +130,7 @@ namespace
             ev = &e;
         }
         if(!caller) return;
-        if(g_rep.active) { if(Severity(type) > Severity(g_rep.type)) { g_rep.type = type; g_rep.pos = pos; g_rep.victim = victim; } return; }
+        if(g_rep.active) { if(Severity(type) > Severity(g_rep.type)) { g_rep.type = type; g_rep.pos = pos; g_rep.victim = victim; if(ev) g_rep.eventId = ev->id; } return; }
         g_rep.active = true; g_rep.callerRef = game::Ref(caller); g_rep.at = now + 7.0 + world::Rand(0, 4);
         g_rep.wanted = self; g_rep.type = type; g_rep.pos = pos; g_rep.victim = victim; g_rep.imm = imm; g_rep.eventId = ev ? ev->id : 0;
         game::TaskPhone(caller, 8000);
@@ -132,6 +141,11 @@ namespace
     {
         if(!g_rep.active || talk::Now() < g_rep.at) return;
         g_rep.active = false;
+        {   // за эти секунды всё могло измениться: игрок погиб, арестован, в участке, катсцена, миссия
+            uintptr_t p0 = game::Player();
+            if(!p0 || !game::Alive(p0) || Arresting() || game::CutsceneRunning() || game::OnMission()) return;
+        }
+        if(FindWanted) g_rep.wanted = (uintptr_t)FindWanted(-1);   // не хранить старый указатель (могла быть загрузка)
         uintptr_t caller = game::FromRef(g_rep.callerRef);
         if(!caller || !game::Alive(caller)) { talk::Notify("Свидетель не успел позвонить"); return; }
         uintptr_t pl = game::Player();
@@ -161,6 +175,22 @@ namespace
     std::vector<std::pair<std::string, std::string>> g_jailEpisodes;
     size_t g_jailIdx = 0;
     bool   g_inOrigArrest = false;
+    bool   g_inHook = false;
+    bool   g_passNextArrest = false;     // следующий вызов ArrestPlayer — обычный «Busted» игры (наш сценарий не берём)
+    bool   g_locked = false;             // управление заблокировали МЫ (снимать только свою блокировку)
+    bool   g_handsUp = false;
+    bool   g_calledHelp = false;
+    uint8_t* g_gameState = nullptr;      // CGameLogic::GameState: 2 — «арестован», игра сама затемнит и перенесёт в участок
+    void (*SetPedState)(uintptr_t, int) = nullptr;
+
+    // Игра уже считает игрока арестованным (состояние педа 63, GameState 2) — снимаем, иначе он заморожен
+    // и через 3 с игра сама затемнит экран и перенесёт его, посреди нашего сценария.
+    void CancelGameArrest()
+    {
+        if(uintptr_t pl = game::Player()) if(SetPedState) SetPedState(pl, 1 /*PED_IDLE*/);
+        if(g_gameState && *g_gameState == 2) *g_gameState = 0;
+    }
+    void Lock(bool on) { if(on) { game::LockPlayer(true); g_locked = true; } else if(g_locked) { game::LockPlayer(false); g_locked = false; } }
 
     typedef void (*ArrestPlayer_t)(uintptr_t);
     ArrestPlayer_t ArrestPlayerOrig = nullptr;
@@ -174,7 +204,9 @@ namespace
     uintptr_t FindCop(float r)
     {
         uintptr_t pl = game::Player();
-        return game::NearestPed(game::Pos(pl), r, [](uintptr_t p) { return game::PedType(p) == game::PT_COP; });
+        // сначала пеший коп (не тот, что проезжает мимо и не пилот вертолёта)
+        uintptr_t c = game::NearestPed(game::Pos(pl), r, [](uintptr_t p) { return game::PedType(p) == game::PT_COP && game::Alive(p) && !game::Vehicle(p); });
+        return c ? c : game::NearestPed(game::Pos(pl), r * 0.5f, [](uintptr_t p) { return game::PedType(p) == game::PT_COP && game::Alive(p); });
     }
 
     game::Vec NearestStation()
@@ -190,8 +222,10 @@ namespace
     {
         LOG_ERROR("Задержание: %s — обычный «Busted» игры", why);
         g_st = ST_NONE;
-        game::LockPlayer(false);
-        if(ArrestPlayerOrig && g_playerInfoForArrest) { g_inOrigArrest = true; ArrestPlayerOrig(g_playerInfoForArrest); g_inOrigArrest = false; }
+        Lock(false);
+        uintptr_t pl = game::Player();
+        if(g_inHook && ArrestPlayerOrig && g_playerInfoForArrest) { g_inOrigArrest = true; ArrestPlayerOrig(g_playerInfoForArrest); g_inOrigArrest = false; }
+        else if(pl && SetPedState) { g_passNextArrest = true; SetPedState(pl, 63 /*PED_ARRESTED*/); }   // игра сама вызовет ArrestPlayer в следующем кадре
     }
 
     std::string ChargesText()
@@ -207,12 +241,13 @@ namespace
     {
         uintptr_t pl = game::Player();
         game::Vec st = NearestStation();
-        if(game::Vehicle(pl)) game::TaskLeaveCar(pl);
-        game::Teleport(pl, st);
+        if(game::Vehicle(pl) && script::Ready()) script::Do(0x0362, { script::Arg::I(game::Ref(pl)), script::Arg::F(st.x), script::Arg::F(st.y), script::Arg::F(st.z) });   // WARP_CHAR_FROM_CAR_TO_COORD: правильно освобождает место в машине
+        else game::Teleport(pl, st);
+        g_handsUp = false;
         auto& p = world::W().pcase[world::WHO_CJ];
         // статьи из недавних событий, о которых знает полиция
         for(auto& e : world::W().events)
-            if(e.who == world::WHO_CJ && e.reported && e.day >= world::Day() - 3 && e.kind == "crime")
+            if(e.who == world::WHO_CJ && e.reported && e.day >= world::Day() - 3 && (e.kind == "crime" || e.kind == "kill"))
             {
                 bool dup = false; for(auto& c : p.charges) if(c == e.text) dup = true;
                 if(!dup) p.charges.push_back(e.text);
@@ -253,7 +288,7 @@ namespace
         std::string facts = Fmt("Статьи: %s. Улики: %d/100. Интерес полиции к нему: %d/100. Розыск при задержании: %d зв. Раньше сидел: %d дн. "
                                 "Есть ли адвокат/связи: %s. Речь обвиняемого: %s",
                                 ChargesText().c_str(), p.evidence, p.heat, g_starsAtArrest, p.jailDays,
-                                g_scene.canLawyer ? "нет" : "да, был звонок",
+                                g_calledHelp ? "да, был звонок" : "нет",
                                 g_statement.empty() ? "(молчал)" : g_statement.c_str());
         json::Value msg = json::Value::Object(); msg["role"] = "user"; msg["content"] = facts;
         r.messages = json::Value::Array(); r.messages.push(msg);
@@ -290,16 +325,18 @@ namespace
         SetStage(ST_COURT);
     }
 
+    void Finish();
     void BeginJail()
     {
         auto& W = world::W();
         auto& p = W.pcase[world::WHO_CJ];
         if(g_scene.fine > 0) game::AddMoney(-std::min(g_scene.fine, game::Money()));
-        if(g_scene.days <= 0) { SetStage(ST_RELEASE); return; }
+        if(g_scene.days <= 0) { Finish(); return; }      // оправдан / штраф / условно — на свободу (раньше игрок оставался заблокирован)
         p.jailDays += g_scene.days;
         W.day += g_scene.days;
         g_jailEpisodes.clear(); g_jailIdx = 0;
-        g_scene = Scene(); g_scene.kind = SCENE_JAIL; g_scene.title = "Тюрьма"; g_scene.days = g_scene.days;
+        int days = g_scene.days;
+        g_scene = Scene(); g_scene.kind = SCENE_JAIL; g_scene.title = "Тюрьма"; g_scene.days = days;
         g_scene.text = "Срок идёт…";
         if(!claude::Available())
         {
@@ -347,7 +384,8 @@ namespace
         st.x += 3.0f;
         game::Teleport(pl, st);
         game::ClearTask(pl);
-        game::LockPlayer(false);
+        Lock(false);
+        CancelGameArrest();
         game::SetWanted(0);
         auto& p = world::W().pcase[world::WHO_CJ];
         p.charges.clear(); p.evidence = world::Clamp(p.evidence - 40, 0, 100); p.heat = world::Clamp(p.heat - 30, 0, 100);
@@ -361,13 +399,15 @@ namespace
     SDECL_HOOKv(ArrestPlayerH, uintptr_t self)
     {
         g_playerInfoForArrest = self;
-        if(g_inOrigArrest || !settings::Get().enabled || !settings::Get().realArrest) { ArrestPlayerH(self); return; }
-        if(g_st != ST_NONE) return;          // наш сценарий уже идёт
-        StartArrest(0);
+        // обычный «Busted» игры: наш выключен, идёт миссия/катсцена (провал миссии — дело игры), или мы сами попросили
+        if(g_inOrigArrest || g_passNextArrest || !settings::Get().enabled || !settings::Get().realArrest || game::OnMission() || game::CutsceneRunning())
+        { g_passNextArrest = false; ArrestPlayerH(self); return; }
+        if(g_st == ST_NONE) { g_inHook = true; StartArrest(0); g_inHook = false; }
+        if(g_st != ST_NONE) CancelGameArrest();   // забираем арест себе: игра не должна держать игрока «арестованным»
     }
     SDECL_HOOKv(RegisterKillH, uintptr_t ped, int weapon, bool head, int playerId)
     {
-        life::OnKill(ped, weapon);
+        life::OnKill(ped, weapon, playerId);
         RegisterKillH(ped, weapon, head, playerId);
     }
 }
@@ -375,6 +415,9 @@ namespace
 bool Install(void* h)
 {
     FindWanted = (FindWanted_t)aml->GetSym(h, "_Z16FindPlayerWantedi");
+    g_gameState = (uint8_t*)aml->GetSym(h, "_ZN10CGameLogic9GameStateE");
+    SetPedState = (void(*)(uintptr_t, int))aml->GetSym(h, "_ZN4CPed11SetPedStateE9ePedState");
+    if(!g_gameState || !SetPedState) LOG_ERROR("Полиция: нет CGameLogic::GameState / CPed::SetPedState — арест может зависать");
     void* rc  = (void*)aml->GetSym(h, "_ZN7CWanted13RegisterCrimeE10eCrimeTypeRK7CVectoryb");
     void* rci = (void*)aml->GetSym(h, "_ZN7CWanted25RegisterCrime_ImmediatelyE10eCrimeTypeRK7CVectoryb");
     void* ap  = (void*)aml->GetSym(h, "_ZN11CPlayerInfo12ArrestPlayerEv");
@@ -418,16 +461,20 @@ void StartArrest(uintptr_t cop)
 {
     if(g_st != ST_NONE) return;
     uintptr_t pl = game::Player(); if(!pl) return;
-    if(!cop) cop = FindCop(45.0f);
     g_starsAtArrest = game::Wanted();
+    if(game::OnMission() || game::CutsceneRunning()) { Fallback("идёт миссия"); return; }
+    if(!cop) cop = FindCop(45.0f);
     if(!cop) { Fallback("рядом нет полицейского"); return; }
+    g_calledHelp = false;
     talk::EndConversation();
     g_copRef = game::Ref(cop);
     world::Character& c = world::Promote(cop);
     world::Remember(c, Fmt("Задержал %s (розыск %d зв.)", world::W().playerNick.c_str(), g_starsAtArrest));
-    game::LockPlayer(true);
+    Lock(true);
+    // в машине: сначала выйти (руки поднимет в Frame, когда будет на ногах — иначе задача выхода перезаписывается)
+    g_handsUp = false;
     if(game::Vehicle(pl)) game::TaskLeaveCar(pl);
-    game::TaskAnim(pl, "handsup", "ped", false, 0, true);
+    else { game::TaskAnim(pl, "handsup", "ped", false, 0, true); g_handsUp = true; }
     game::TaskAimAt(cop, pl, 3000);
     talk::Say(c.nick.empty() ? c.name : c.nick, "Полиция! Руки, чтоб я видел! Не двигаться!", false, c.id, c.pitch, c.rate, true);
     SetStage(ST_HANDS);
@@ -440,7 +487,8 @@ void Release(const char* why)
     uintptr_t pl = game::Player();
     if(g_st >= ST_STATION) { Finish(); return; }
     if(game::Vehicle(pl)) game::TaskLeaveCar(pl); else game::ClearTask(pl);
-    game::LockPlayer(false);
+    Lock(false);
+    CancelGameArrest();
     game::SetWanted(0);
     if(uintptr_t cop = Cop()) game::TaskWander(cop);
     g_st = ST_NONE;
@@ -478,7 +526,7 @@ void SceneSpeak(const std::string& text)
 void SceneCallHelp()
 {
     if(g_st != ST_STATION || !g_scene.canLawyer) return;
-    g_scene.canLawyer = false;
+    g_scene.canLawyer = false; g_calledHelp = true;
     // свой человек в полиции может вытащить
     for(auto& c : world::W().chars)
     {
@@ -518,13 +566,25 @@ void Crime(int crimeType, int severity, const char* text, bool cops)
     (void)crimeType;
 }
 
+void Reset()
+{
+    // загрузка сохранения / новая игра: ничего от прошлого ареста не тянуть
+    if(g_st != ST_NONE) LOG_INFO("Задержание сброшено (загрузка игры)");
+    g_st = ST_NONE; g_scene = Scene(); g_rep.active = false; g_jailEpisodes.clear(); g_jailIdx = 0;
+    g_handsUp = false; g_passNextArrest = false; g_calledHelp = false;
+    if(g_courtReq) { claude::Cancel(g_courtReq); g_courtReq = 0; }
+    Lock(false);
+}
+
 void Frame()
 {
     ProcessReport();
     if(g_st == ST_NONE) return;
+    if(g_gameState && *g_gameState == 2) *g_gameState = 0;      // игра не должна сама затемнять и переносить, пока идёт наш сценарий
     uintptr_t pl = game::Player();
     uintptr_t cop = Cop();
     if(!pl) return;
+    if(g_st == ST_HANDS && !g_handsUp && !game::Vehicle(pl)) { game::TaskAnim(pl, "handsup", "ped", false, 0, true); g_handsUp = true; }
     switch(g_st)
     {
         case ST_HANDS:

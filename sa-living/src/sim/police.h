@@ -10,7 +10,8 @@ namespace police
     void Frame();
 
     // Задержание
-    bool Arresting();                 // идёт наш сценарий задержания
+    bool Arresting();
+    void Reset();                          // загрузка сохранения / новая игра                 // идёт наш сценарий задержания
     void Surrender();                 // игрок сдался (кнопка)
     void StartArrest(uintptr_t cop);  // коп решил задержать
     void Release(const char* why);    // отпустить (взятка, договорились)

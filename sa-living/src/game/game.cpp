@@ -76,6 +76,7 @@ namespace
     GetPedRef_t GetPedRef; GetPed_t GetPed; GetPad_t GetPad; GiveWeapon_t GiveWeaponFn; SetCurWeapon_t SetCurWeaponFn;
     ClearWeapons_t ClearWeaponsFn; AddPed_t AddPed; RemovePed_t RemovePed; RequestModel_t RequestModel; LoadAll_t LoadAll;
     SetCreatedBy_t SetCreatedBy; AnimBlockIndex_t AnimBlockIndex; OnScreen_t OnScreenFn;
+    void (*SetDecisionMaker)(uintptr_t, int) = nullptr;   // CPedIntelligence::SetPedDecisionMakerType
 
     // конструкторы задач
     void* ctorGoTo; void* ctorFollow; void* ctorFlee; void* ctorKill; void* ctorStand; void* ctorTurn;;
@@ -175,6 +176,7 @@ bool Init(void* h)
     RequestModel = (RequestModel_t)Sym(h, "_ZN10CStreaming12RequestModelEii");
     LoadAll      = (LoadAll_t)Sym(h, "_ZN10CStreaming22LoadAllRequestedModelsEb");
     SetCreatedBy = (SetCreatedBy_t)Sym(h, "_ZN4CPed16SetCharCreatedByEh");
+    SetDecisionMaker = (void(*)(uintptr_t, int))Sym(h, "_ZN16CPedIntelligence23SetPedDecisionMakerTypeEi", false);
     AnimBlockIndex = (AnimBlockIndex_t)Sym(h, "_ZN12CAnimManager22GetAnimationBlockIndexEPKc", false);
     OnScreenFn   = (OnScreen_t)Sym(h, "_ZN7CEntity13GetIsOnScreenEv", false);
     CalcScreen   = (CalcScreen_t)Sym(h, "_ZN7CSprite15CalcScreenCoorsERK5RwV3dPS0_PfS4_bb", false);
@@ -492,6 +494,11 @@ void ClearWeapons(uintptr_t ped) { if(ped && ClearWeaponsFn) ClearWeaponsFn(ped)
 uintptr_t SpawnPed(int pedType, int model, const Vec& at)
 {
     if(!AddPed || !RequestModel || !LoadAll) return 0;
+    {   // пул педов почти полон — не создаём (при полном пуле игра падает в конструкторе педа)
+        Pool p; int freeSlots = 0;
+        if(GetPool(g_pedPool, p)) for(int i = 0; i < p.size; ++i) if(F<uint8_t>(p.flags, i) & 0x80) ++freeSlots;
+        if(freeSlots < 12) { LOG_INFO("Не создаю педа: свободных мест в пуле %d", freeSlots); return 0; }
+    }
     RequestModel(model, 2);
     LoadAll(false);
     uintptr_t ped = AddPed(pedType, (unsigned)model, at, false);
@@ -499,7 +506,17 @@ uintptr_t SpawnPed(int pedType, int model, const Vec& at)
     return ped;
 }
 void DeletePed(uintptr_t ped) { if(ped && RemovePed && !IsPlayer(ped)) RemovePed(ped); }
-void KeepPed(uintptr_t ped, bool keep) { if(ped && SetCreatedBy) SetCreatedBy(ped, keep ? 2 : 1); }
+void KeepPed(uintptr_t ped, bool keep)
+{
+    if(!ped || !SetCreatedBy) return;
+    uintptr_t intel = F<uintptr_t>(ped, kPedIntel);
+    int dm = intel ? F<int>(intel, 0x160) : -1;              // CPedIntelligence::m_iDecisionMakerType
+    if(dm < 0) { uintptr_t st = F<uintptr_t>(ped, 0x728); if(st) dm = F<int8_t>(st, 0x32); }   // CPedStats::m_iDefaultDecisionMaker
+    SetCreatedBy(ped, keep ? 2 : 1);
+    // SetCharCreatedBy(2) ставит «решатель» -1 (как у педов миссий) — пед перестаёт бояться ствола, убегать, звать своих.
+    // Возвращаем его обычные реакции.
+    if(keep && intel && SetDecisionMaker && dm >= 0) SetDecisionMaker(intel, dm);
+}
 
 // ---------------- мир ----------------
 int Hour()   { return g_clockH ? *(uint8_t*)g_clockH : 12; }
