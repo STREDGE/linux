@@ -33,6 +33,7 @@ namespace
         int eventId = 0;
     };
     PendingReport g_rep;
+    double g_releasedAt = -100, g_lastCrimeAt = -100;   // выход из участка / последнее преступление игрока
     bool g_bypass = false;
     double g_lastCrimeLog = 0;
 
@@ -81,6 +82,7 @@ namespace
         if(g_bypass || !settings::Get().enabled || !settings::Get().witnesses || self != mine || dontCare) { orig(self, type, pos, victim, dontCare); return; }
 
         int sev = Severity(type);
+        g_lastCrimeAt = talk::Now();
         uintptr_t pl = game::Player();
         game::Vec at = pl ? game::Pos(pl) : pos;
 
@@ -190,6 +192,28 @@ namespace
         if(uintptr_t pl = game::Player()) if(SetPedState) SetPedState(pl, 1 /*PED_IDLE*/);
         if(g_gameState && *g_gameState == 2) *g_gameState = 0;
     }
+    // Полиция игры не мешает нашему сценарию (не пытается арестовать/стрелять параллельно — руки дёргались)
+    void PoliceIgnore(bool on) { if(script::Ready()) script::Do(0x01F7, { script::Arg::I(0), script::Arg::I(on ? 1 : 0) }); }   // SET_POLICE_IGNORE_PLAYER
+
+    // Перенос как у скриптов игры: улица (не интерьер), коллизия и мир вокруг, земля под ногами, камера, без затемнения.
+    // Раньше простой перенос оставлял игрока в недогруженном тёмном месте.
+    void SafeTeleport(game::Vec st)
+    {
+        uintptr_t pl = game::Player(); if(!pl) return;
+        if(!script::Ready()) { game::LoadScene(st); game::Teleport(pl, st); return; }
+        using script::Arg;
+        int me = game::Ref(pl);
+        script::Do(0x04BB, { Arg::I(0) });                                   // SET_AREA_VISIBLE 0
+        script::Do(0x0860, { Arg::I(me), Arg::I(0) });                       // SET_CHAR_AREA_VISIBLE
+        script::Do(0x04E4, { Arg::F(st.x), Arg::F(st.y) });                  // REQUEST_COLLISION
+        script::Do(0x03CB, { Arg::F(st.x), Arg::F(st.y), Arg::F(st.z) });    // LOAD_SCENE
+        if(game::Vehicle(pl)) script::Do(0x0362, { Arg::I(me), Arg::F(st.x), Arg::F(st.y), Arg::F(st.z) });   // WARP_CHAR_FROM_CAR_TO_COORD
+        else                  script::Do(0x00A1, { Arg::I(me), Arg::F(st.x), Arg::F(st.y), Arg::F(-100.0f) });   // SET_CHAR_COORDINATES, −100 — на землю
+        script::Do(0x0373, {});                                              // SET_CAMERA_BEHIND_PLAYER
+        script::Do(0x02EB, {});                                              // RESTORE_CAMERA_JUMPCUT
+        script::Do(0x016A, { Arg::I(300), Arg::I(1) });                      // DO_FADE: проявить экран
+    }
+
     void Lock(bool on) { if(on) { game::LockPlayer(true); g_locked = true; } else if(g_locked) { game::LockPlayer(false); g_locked = false; } }
 
     typedef void (*ArrestPlayer_t)(uintptr_t);
@@ -223,6 +247,7 @@ namespace
         LOG_ERROR("Задержание: %s — обычный «Busted» игры", why);
         g_st = ST_NONE;
         Lock(false);
+        PoliceIgnore(false);
         uintptr_t pl = game::Player();
         if(g_inHook && ArrestPlayerOrig && g_playerInfoForArrest) { g_inOrigArrest = true; ArrestPlayerOrig(g_playerInfoForArrest); g_inOrigArrest = false; }
         else if(pl && SetPedState) { g_passNextArrest = true; SetPedState(pl, 63 /*PED_ARRESTED*/); }   // игра сама вызовет ArrestPlayer в следующем кадре
@@ -241,9 +266,7 @@ namespace
     {
         uintptr_t pl = game::Player();
         game::Vec st = NearestStation();
-        game::LoadScene(st);                     // мир вокруг участка — до переноса (иначе игрок в пустоте)
-        if(game::Vehicle(pl) && script::Ready()) script::Do(0x0362, { script::Arg::I(game::Ref(pl)), script::Arg::F(st.x), script::Arg::F(st.y), script::Arg::F(st.z) });   // WARP_CHAR_FROM_CAR_TO_COORD: правильно освобождает место в машине
-        else game::Teleport(pl, st);
+        SafeTeleport(st);
         g_handsUp = false;
         auto& p = world::W().pcase[world::WHO_CJ];
         // статьи из недавних событий, о которых знает полиция
@@ -383,12 +406,14 @@ namespace
         uintptr_t pl = game::Player();
         game::Vec st = NearestStation();
         st.x += 3.0f;
-        game::LoadScene(st);
-        game::Teleport(pl, st);
+        SafeTeleport(st);
         game::ClearTask(pl);
         Lock(false);
         CancelGameArrest();
         game::SetWanted(0);
+        if(script::Ready()) script::Do(0x0110, { script::Arg::I(0) });       // CLEAR_WANTED_LEVEL — по-игровому (сбрасывает и «очки» розыска)
+        PoliceIgnore(false);
+        g_releasedAt = talk::Now();
         auto& p = world::W().pcase[world::WHO_CJ];
         p.charges.clear(); p.evidence = world::Clamp(p.evidence - 40, 0, 100); p.heat = world::Clamp(p.heat - 30, 0, 100);
         g_scene = Scene(); g_scene.kind = SCENE_RELEASE; g_scene.title = "На свободе"; g_scene.text = "Ты вышел из участка. Изъятое оружие осталось у полиции.";
@@ -473,6 +498,10 @@ void StartArrest(uintptr_t cop)
     world::Character& c = world::Promote(cop);
     world::Remember(c, Fmt("Задержал %s (розыск %d зв.)", world::W().playerNick.c_str(), g_starsAtArrest));
     Lock(true);
+    // Розыск снимаем сразу (звёзды запомнили) и просим полицию игры не вмешиваться: иначе другие копы
+    // параллельно «арестовывали» по-своему — руки дёргались вверх-вниз, могли и стрелять.
+    game::SetWanted(0);
+    PoliceIgnore(true);
     // в машине: сначала выйти (руки поднимет в Frame, когда будет на ногах — иначе задача выхода перезаписывается)
     g_handsUp = false;
     if(game::Vehicle(pl)) game::TaskLeaveCar(pl);
@@ -492,6 +521,7 @@ void Release(const char* why)
     Lock(false);
     CancelGameArrest();
     game::SetWanted(0);
+    PoliceIgnore(false);
     if(uintptr_t cop = Cop()) game::TaskWander(cop);
     g_st = ST_NONE;
     talk::Notify(Fmt("Тебя отпустили (%s)", why));
@@ -576,11 +606,21 @@ void Reset()
     g_handsUp = false; g_passNextArrest = false; g_calledHelp = false;
     if(g_courtReq) { claude::Cancel(g_courtReq); g_courtReq = 0; }
     Lock(false);
+    PoliceIgnore(false);
 }
 
 void Frame()
 {
     ProcessReport();
+    {   // 15 с после выхода из участка: если звёзды появились без нового преступления — это хвост ареста, снимаем
+        double now = talk::Now();
+        if(now - g_releasedAt < 15 && game::Wanted() > 0 && g_lastCrimeAt < g_releasedAt)
+        {
+            LOG_INFO("После выхода из участка появился розыск %d зв. без преступления — снят", game::Wanted());
+            game::SetWanted(0);
+            if(script::Ready()) script::Do(0x0110, { script::Arg::I(0) });
+        }
+    }
     if(g_st == ST_NONE) return;
     if(g_gameState && *g_gameState == 2) *g_gameState = 0;      // игра не должна сама затемнять и переносить, пока идёт наш сценарий
     uintptr_t pl = game::Player();

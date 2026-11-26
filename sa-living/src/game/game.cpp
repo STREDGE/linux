@@ -481,11 +481,18 @@ bool TaskAnim(uintptr_t ped, const char* anim, const char* block, bool loop, int
     void* t = NewTask(); if(!t) return false;
     // 0x08 — по окончании плавно выйти из анимации (без него пед застывал на последнем кадре, задача не кончалась).
     // «Держать позу» (руки вверх) — тоже с таймером; holdLast у игры оставляет позу на теле навсегда.
-    if(holdLast && ms <= 0) ms = 8000;
-    bool timed = loop || holdLast;
-    int flags = 0x10 | 0x08 | (timed ? 0x02 : 0);
+    // Три вида:
+    //  loop     — повторять ms (0x02 цикл, 0x08 плавный выход в конце);
+    //  holdLast — проиграть один раз и ДЕРЖАТЬ последний кадр ms (без 0x08 игра замирает на последнем кадре,
+    //             задача кончается по таймеру и плавно снимает позу). Раньше «руки вверх» шли циклом:
+    //             руки поднимались и опускались по кругу;
+    //  иначе    — один раз и плавно выйти.
+    int flags, time;
+    if(loop)          { flags = 0x10 | 0x08 | 0x02; time = ms > 0 ? ms : 4000; }
+    else if(holdLast) { flags = 0x10;               time = ms > 0 ? ms : 8000; }
+    else              { flags = 0x10 | 0x08;        time = -1; }
     ((void(*)(void*, const char*, const char*, int, float, int, bool, bool, bool, bool))ctorNamedAnim)
-        (t, anim, block, flags, 4.0f, timed ? ms : -1, false, false, false, false);
+        (t, anim, block, flags, 4.0f, time, false, false, false, false);
     return Assign(ped, t);
 }
 
