@@ -437,14 +437,19 @@ namespace
     // ---------- ход ----------
     void FinishTurn(Character* c, int who, claude::Result& res, bool remoteFriend, json::Value* outActions);
 
-    bool SendTurn(Character& c, int who, const std::string& userText, bool important, bool remoteFriend, std::function<void(json::Value)> remoteDone = nullptr)
+    // Ответ одними инструментами (жест, отношение, «стоять») без слов — для игрока это молчание: человек стоит и ничего
+    // не говорит, пока не скажешь ещё что-то (тест 0.2.10: 21 ответ из 28 такие, «никто не отвечает секунд 20»).
+    // Тогда сразу второй запрос: результаты инструментов + просьба сказать вслух (cont = true, не больше одного раза).
+    const char* const kSayNudge = "[Ты пока ничего не сказал вслух — для него ты молчишь. Скажи коротко, что отвечаешь, от первого лица. Уже сделанное инструментами не повторяй.]";
+
+    bool SendTurn(Character& c, int who, const std::string& userText, bool important, bool remoteFriend, std::function<void(json::Value)> remoteDone = nullptr, bool cont = false)
     {
         if(!claude::HasKey()) { if(!remoteFriend) Notify("Нет ключа ИИ: Меню > ИИ > Вставить ключ"); return false; }
         if(claude::LimitReached()) { if(!remoteFriend) Notify("Лимит запросов ИИ на сегодня исчерпан"); return false; }
         bool phone = !remoteFriend && g_c.phone && g_c.charId == c.id;
 
         json::Value dialog = c.dialog; TrimDialog(dialog);
-        std::string turn = remoteFriend ? userText : (Situation(c, who, phone) + "\n" + userText);
+        std::string turn = (remoteFriend || cont) ? userText : (Situation(c, who, phone) + "\n" + userText);
         AppendUser(dialog, turn);
 
         claude::Request req;
@@ -485,7 +490,7 @@ namespace
                     g_c.buf.erase(0, e);
                 }
             },
-            [charId, who, userTurn, remoteFriend, remoteDone](claude::Result& r) {
+            [charId, who, userTurn, remoteFriend, remoteDone, cont](claude::Result& r) {
                 Character* ch = world::Find(charId);
                 if(!ch) return;
                 if(!remoteFriend) { if(!g_c.buf.empty()) { SpeakChunk(ch, g_c.buf); g_c.buf.clear(); } g_c.reqId = 0; g_c.lastAt = Now(); }
@@ -509,6 +514,14 @@ namespace
                     rep["text"] = r.text; rep["actions"] = actions; rep["charId"] = ch->id;
                     rep["name"] = ch->nick.empty() ? ch->name : ch->nick; rep["pitch"] = ch->pitch; rep["rate"] = ch->rate;
                     remoteDone(rep);
+                }
+                // промолчал (одни инструменты) — пусть договорит, пока разговор с ним идёт
+                bool silent = r.text.find_first_not_of(" \t\r\n") == std::string::npos;
+                if(!cont && silent && r.stopReason == "tool_use" && !r.tools.empty())
+                {
+                    bool still = remoteFriend || (g_c.active && g_c.charId == charId && g_c.reqId == 0 && !Listening() && !Recognizing());   // уже говоришь ему снова — ответит на новое
+                    TRACE("РАЗГОВОР", "#%d ответил только действием (%d инстр.)%s", charId, (int)r.tools.size(), still ? " — прошу сказать вслух" : ", разговор уже закончен");
+                    if(still) SendTurn(*ch, who, kSayNudge, false, remoteFriend, remoteDone, true);
                 }
             });
         if(!id) { if(!remoteFriend) Notify("ИИ недоступен (нет связи или ключа)"); return false; }
