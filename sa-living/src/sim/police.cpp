@@ -34,6 +34,9 @@ namespace
         int eventId = 0;
     };
     PendingReport g_rep;
+    game::Vec g_lastOutdoor; bool g_haveOutdoor = false;
+    void (*FindPoliceRestart)(game::Vec, game::Vec*, float*) = nullptr;   // CRestart::FindClosestPoliceRestartPoint
+    float g_stationHeading = 0;
     double g_releasedAt = -100, g_lastCrimeAt = -100;   // выход из участка / последнее преступление игрока
     bool g_bypass = false;
     double g_lastCrimeLog = 0;
@@ -80,7 +83,17 @@ namespace
     {
         Register_t orig = imm ? RegisterCrimeImm : RegisterCrime;
         uintptr_t mine = FindWanted ? (uintptr_t)FindWanted(-1) : 0;
-        if(self == mine && !g_bypass) TRACE("ИГРА", "CWanted::RegisterCrime%s тип %d «%s» (%.1f,%.1f,%.1f)%s", imm ? "_Immediately" : "", type, CrimeText(type), pos.x, pos.y, pos.z, dontCare ? " (не важно)" : "");
+        if(self == mine && !g_bypass)
+        {   // одинаковые подряд (стрельба — десятки в секунду) склеиваем: строка раз в 2 с с числом повторов
+            static int s_type = -1, s_rep = 0; static double s_at = -10; double n = talk::Now();
+            if(type == s_type && n - s_at < 2) ++s_rep;
+            else
+            {
+                TRACE("ИГРА", "CWanted::RegisterCrime%s тип %d «%s» (%.1f,%.1f,%.1f)%s%s", imm ? "_Immediately" : "", type, CrimeText(type), pos.x, pos.y, pos.z,
+                      dontCare ? " (не важно)" : "", s_rep ? world::Fmt(" [перед этим ещё %d таких]", s_rep).c_str() : "");
+                s_type = type; s_at = n; s_rep = 0;
+            }
+        }
         if(g_bypass || !settings::Get().enabled || !settings::Get().witnesses || self != mine || dontCare) { orig(self, type, pos, victim, dontCare); return; }
 
         int sev = Severity(type);
@@ -113,8 +126,15 @@ namespace
             if(d < bestD) { bestD = d; caller = p; }
         });
         double now = talk::Now();
-        TRACE("ПРЕСТУПЛЕНИЕ", "тип %d «%s», тяжесть %d, свидетелей %d, звонит %s, (%.1f,%.1f,%.1f)", type, CrimeText(type), sev, count,
-              caller ? world::Fmt("P#%d", game::Ref(caller)).c_str() : "никто", at.x, at.y, at.z);
+        {
+            static int s_type = -1; static double s_at = -10;
+            if(type != s_type || now - s_at > 2)
+            {
+                TRACE("ПРЕСТУПЛЕНИЕ", "тип %d «%s», тяжесть %d, свидетелей %d, звонит %s, (%.1f,%.1f,%.1f)", type, CrimeText(type), sev, count,
+                      caller ? world::Fmt("P#%d", game::Ref(caller)).c_str() : "никто", at.x, at.y, at.z);
+                s_type = type; s_at = now;
+            }
+        }
         if(now - g_lastCrimeLog > 3) { g_lastCrimeLog = now; LOG_INFO("Преступление: %s, свидетелей %d, %s", CrimeText(type), count, caller ? "кто-то звонит в полицию" : "звонить некому"); }
         if(!count) return;                      // никто не видел — розыска нет
 
@@ -212,7 +232,8 @@ namespace
         script::Do(0x04E4, { Arg::F(st.x), Arg::F(st.y) });                  // REQUEST_COLLISION
         script::Do(0x03CB, { Arg::F(st.x), Arg::F(st.y), Arg::F(st.z) });    // LOAD_SCENE
         if(game::Vehicle(pl)) script::Do(0x0362, { Arg::I(me), Arg::F(st.x), Arg::F(st.y), Arg::F(st.z) });   // WARP_CHAR_FROM_CAR_TO_COORD
-        else                  script::Do(0x00A1, { Arg::I(me), Arg::F(st.x), Arg::F(st.y), Arg::F(-100.0f) });   // SET_CHAR_COORDINATES, −100 — на землю
+        else                  script::Do(0x00A1, { Arg::I(me), Arg::F(st.x), Arg::F(st.y), Arg::F(st.z) });      // SET_CHAR_COORDINATES: высота точки игры (−100 находил крышу)
+        script::Do(0x0173, { Arg::I(me), Arg::F(g_stationHeading) });       // SET_CHAR_HEADING
         script::Do(0x0373, {});                                              // SET_CAMERA_BEHIND_PLAYER
         script::Do(0x02EB, {});                                              // RESTORE_CAMERA_JUMPCUT
         script::Do(0x016A, { Arg::I(300), Arg::I(1) });                      // DO_FADE: проявить экран
@@ -237,9 +258,19 @@ namespace
         return c ? c : game::NearestPed(game::Pos(pl), r * 0.5f, [](uintptr_t p) { return game::PedType(p) == game::PT_COP && game::Alive(p); });
     }
 
+    // Последнее место игрока на улице: в интерьере координаты «внутренние» (241,75,1005 — это участок изнутри),
+    // по ним ближайший участок считался неверно (переносило в Сан-Фиерро на крышу).
+
     game::Vec NearestStation()
     {
-        game::Vec pl = game::Pos(game::Player());
+        uintptr_t p0 = game::Player();
+        game::Vec pl = (p0 && game::AreaCode(p0) == 0) ? game::Pos(p0) : (g_haveOutdoor ? g_lastOutdoor : game::Pos(p0));
+        if(FindPoliceRestart)
+        {   // точки, где игра сама выпускает игрока после «Busted» — на улице у входа, с правильной высотой
+            game::Vec out; float h = 0;
+            FindPoliceRestart(pl, &out, &h);
+            if(out.x != 0 || out.y != 0) { g_stationHeading = h; return out; }
+        }
         static const game::Vec st[] = { { 1555.0f, -1675.6f, 16.2f }, { -1605.6f, 711.5f, 13.9f }, { 2337.0f, 2455.0f, 14.97f } };
         const game::Vec* best = &st[0];
         for(auto& s : st) if(game::Dist2D(s, pl) < game::Dist2D(*best, pl)) best = &s;
@@ -409,7 +440,6 @@ namespace
     {
         uintptr_t pl = game::Player();
         game::Vec st = NearestStation();
-        st.x += 3.0f;
         SafeTeleport(st);
         game::ClearTask(pl);
         Lock(false);
@@ -450,6 +480,7 @@ bool Install(void* h)
 {
     FindWanted = (FindWanted_t)aml->GetSym(h, "_Z16FindPlayerWantedi");
     g_gameState = (uint8_t*)aml->GetSym(h, "_ZN10CGameLogic9GameStateE");
+    FindPoliceRestart = (void(*)(game::Vec, game::Vec*, float*))aml->GetSym(h, "_ZN8CRestart29FindClosestPoliceRestartPointE7CVectorPS0_Pf");
     SetPedState = (void(*)(uintptr_t, int))aml->GetSym(h, "_ZN4CPed11SetPedStateE9ePedState");
     if(!g_gameState || !SetPedState) LOG_ERROR("Полиция: нет CGameLogic::GameState / CPed::SetPedState — арест может зависать");
     void* rc  = (void*)aml->GetSym(h, "_ZN7CWanted13RegisterCrimeE10eCrimeTypeRK7CVectoryb");
@@ -618,11 +649,15 @@ void Reset()
 
 void Frame()
 {
+    if(uintptr_t p0 = game::Player()) if(game::AreaCode(p0) == 0) { g_lastOutdoor = game::Pos(p0); g_haveOutdoor = true; }
     ProcessReport();
     {   // 15 с после выхода из участка: если звёзды появились без нового преступления — это хвост ареста, снимаем
         double now = talk::Now();
-        if(now - g_releasedAt < 15 && game::Wanted() > 0 && g_lastCrimeAt < g_releasedAt)
+        static int s_cleared = 0; static double s_for = -1;
+        if(s_for != g_releasedAt) { s_for = g_releasedAt; s_cleared = 0; }
+        if(now - g_releasedAt < 15 && game::Wanted() > 0 && g_lastCrimeAt < g_releasedAt && s_cleared < 2)   // не больше 2 раз: если игра ставит снова — это место, а не хвост ареста
         {
+            ++s_cleared;
             LOG_INFO("После выхода из участка появился розыск %d зв. без преступления — снят", game::Wanted());
             game::SetWanted(0);
             if(script::Ready()) script::Do(0x0110, { script::Arg::I(0) });

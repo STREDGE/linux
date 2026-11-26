@@ -27,6 +27,7 @@ namespace
 {
     // ---- разговор ----
     bool g_memberAct = false;
+    double g_nextWarm = 0, g_lastTalkReq = -1000;   // прогрев кэша правил педов
     struct Conv
     {
         int  charId = 0;
@@ -193,7 +194,28 @@ namespace
     void StopVoice() { speech::StopSpeaking(); bridge::TtsStop(); }
 
     // ---------- озвучка по фразам ----------
-    void SpeakChunk(Character* c, const std::string& text) { SpeakAs(c, c ? c->name : "", text); }
+    void SubAppend(Character* c, const std::string& delta);
+    // Фраза — это ремарка/рассуждение, а не прямая речь? («Чен замирает и оглядывается…», «CJ — брат по Grove?»)
+    // Такое модель иногда пишет в ответ — вслух и в субтитры не пускаем.
+    bool IsNarration(Character* c, const std::string& raw)
+    {
+        std::string s = raw; while(!s.empty() && (s[0] == ' ' || s[0] == '\n')) s.erase(0, 1);
+        if(s.empty()) return true;
+        if(s[0] == '*' || s[0] == '(' || s[0] == '[') return true;
+        if(s.find("от лица") != std::string::npos || s.compare(0, 10, "Ответ") == 0) return true;   // «Ответ от лица Андре: …»
+        if(!c) return false;
+        auto startsWord = [&](const std::string& w) { return w.size() > 1 && s.compare(0, w.size(), w) == 0 && (s.size() == w.size() || s[w.size()] == ' ' || s[w.size()] == ','); };
+        std::string first = c->name.substr(0, c->name.find(' '));
+        if(startsWord(first) || startsWord(c->name) || (!c->nick.empty() && startsWord(c->nick))) return true;   // говорит о себе в третьем лице
+        if(s.compare(0, 3, "CJ ") == 0 && s.find('?') != std::string::npos && s.find("CJ,") == std::string::npos) return true;    // «CJ — брат…?» — рассуждение о собеседнике
+        return false;
+    }
+    void SpeakChunk(Character* c, const std::string& text)
+    {
+        if(IsNarration(c, text)) { TRACE("РЕМАРКА", "не озвучено (ремарка/рассуждение): %s", text.c_str()); return; }
+        SubAppend(c, text);
+        SpeakAs(c, c ? c->name : "", text);
+    }
 
     size_t SentenceEnd(const std::string& s)
     {
@@ -374,8 +396,11 @@ namespace
         req.maxTokens = 1200;
         req.tag = "разговор";
         // Живой разговор: ответ нужен за секунду-две. «Быстро» — без размышления; «Умнее» — с коротким размышлением.
+        g_lastTalkReq = Now();
         req.effort = "low";
-        req.noThinking = true;          // живой разговор — всегда без размышления (игрок просил быстрее; «Умнее» — для Джарвиса)
+        // С коротким размышлением: без него модель вслух проговаривала ремарки и свои рассуждения (тест 0.2.6).
+        // Задержка с размышлением на low по логам 1,2–2 с — разница с «без» небольшая.
+        req.noThinking = false;
         (void)important;
 
         int charId = c.id;
@@ -389,8 +414,7 @@ namespace
             [charId, remoteFriend](const std::string& delta) {
                 if(remoteFriend) return;
                 Character* ch = world::Find(charId);
-                SubAppend(ch, delta);
-                g_c.buf += delta;
+                g_c.buf += delta;              // субтитры — по готовым фразам (SpeakChunk), чтобы ремарки не мелькали на экране
                 size_t e;
                 while((e = SentenceEnd(g_c.buf)) != std::string::npos)
                 {
@@ -998,6 +1022,26 @@ void HandleHostReply(const json::Value& rep)
 }
 
 // ---------- кадр ----------
+// Прогрев кэша правил педов: первый ответ нового разговора без него шёл 7 с (запись 6–7 тыс. токенов в кэш),
+// с ним — как остальные (1–2 с). Раз в 4 минуты, если разговоров не было; цена — около цента в час.
+static void WarmFrame(double now)
+{
+    if(now < g_nextWarm) return;
+    g_nextWarm = now + 30;                                       // повторная проверка через 30 с
+    if(!claude::HasKey() || claude::LimitReached() || game::GamePaused() || !game::Player()) return;
+    if(coopnet::GetRole() == coopnet::CLIENT) return;            // у друга разговоры идут через хоста
+    if(now - g_lastTalkReq < 240) return;                        // недавно говорили — кэш и так тёплый
+    claude::Request req;
+    json::Value rules = json::Value::Object(); rules["type"] = "text"; rules["text"] = WorldRules();
+    json::Value cc = json::Value::Object(); cc["type"] = "ephemeral"; rules["cache_control"] = cc;
+    req.system = json::Value::Array(); req.system.push(rules);
+    req.tools = Tools();
+    json::Value m = json::Value::Object(); m["role"] = "user"; m["content"] = "warmup";
+    req.messages = json::Value::Array(); req.messages.push(m);
+    req.effort = "low"; req.noThinking = false; req.cache = false; req.warmOnly = true; req.tag = "прогрев кэша";
+    if(claude::Send(req, nullptr, nullptr)) { g_lastTalkReq = now; g_nextWarm = now + 240; }
+}
+
 // Игрок навёл ствол на собеседника: пед замечает сразу (рефлекс без ИИ), а ИИ потом решает, что сказать
 static double g_aimCheck = 0; static bool g_aimed = false;
 static void AimFrame(double now)
@@ -1069,6 +1113,7 @@ void Frame()
     }
 
     AimFrame(Now());
+    WarmFrame(Now());
     if(g_c.active && g_c.reqId == -1 && Now() - g_c.sentAt > 30) { g_c.reqId = 0; Notify("Хост не ответил"); }
 
     // голос: отзвучавшие фразы (конец речи → можно завершить разговор)

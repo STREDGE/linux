@@ -29,6 +29,7 @@ namespace
         bool cancelled = false;
         bool gotStop = false;
         double sentAt = 0;
+        bool warm = false;
     };
     std::map<int, Pending> g_pending;
     struct Proxied { TextFn onText; DoneFn onDone; std::string tag; double at = 0; };
@@ -202,8 +203,8 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
 
     json::Value body = json::Value::Object();
     body["model"] = g_s.model;
-    body["max_tokens"] = req.maxTokens;
-    body["stream"] = true;
+    body["max_tokens"] = req.warmOnly ? 0 : req.maxTokens;
+    body["stream"] = !req.warmOnly;       // max_tokens 0 с потоком API отклоняет
     if(req.system.size()) body["system"] = req.system;
     if(req.tools.size()) body["tools"] = req.tools;
     body["messages"] = req.messages;
@@ -224,7 +225,7 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
     int id = bridge::HttpPost(g_s.url.c_str(), headers, body.dump(), req.timeoutMs);
     if(!id) return 0;
     Pending& p = g_pending[id];
-    p.onText = onText; p.onDone = onDone; p.tag = req.tag; p.sentAt = Mono();
+    p.onText = onText; p.onDone = onDone; p.tag = req.tag; p.sentAt = Mono(); p.warm = req.warmOnly;
     {   // в подробный лог: что спросили (последнее сообщение — обстановка и слова игрока / результаты инструментов)
         std::string last;
         if(req.messages.isArray() && req.messages.size())
@@ -318,7 +319,14 @@ void Pump()
         auto it = g_pending.find(e.id);
         if(it == g_pending.end()) continue;
         Pending& p = it->second;
-        if(!e.done) { OnLine(p, e.text); continue; }
+        if(!e.done) { if(!p.warm) OnLine(p, e.text); continue; }
+        if(p.warm)
+        {   // прогрев: ответа нет, нужен только код
+            TRACE("ИИ<", "#%d %s: HTTP %d за %.2f с", e.id, p.tag.c_str(), e.status, Mono() - p.sentAt);
+            if(e.status != 200) LOG_ERROR("[ИИ] прогрев кэша: HTTP %d %s", e.status, HumanError(e.status, e.text).c_str());
+            g_pending.erase(it);
+            continue;
+        }
         p.r.status = e.status;
         if(e.status == 200 && p.gotStop && p.r.error.empty()) p.r.ok = true;
         else if(e.status == 200 && p.r.error.empty()) { p.r.ok = !p.blocks.empty(); if(!p.r.ok) p.r.error = "Ответ оборвался"; }

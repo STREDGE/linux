@@ -47,7 +47,8 @@ namespace claude
         json::Value messages;                   // массив сообщений
         int  maxTokens = 600;
         std::string effort;                     // пусто — из настроек
-        bool noThinking = false;                // без «размышления» (быстрее; Haiku 5.5 разрешает при effort low…high)
+        bool noThinking = false;
+        bool warmOnly = false;                  // прогрев кэша: max_tokens 0, без потока, ответа нет                // без «размышления» (быстрее; Haiku 5.5 разрешает при effort low…high)
         json::Value format;                     // если задан — output_config.format (ответ по схеме)
         bool cache = true;                      // кэш подсказки (верхнеуровневый cache_control)
         int  timeoutMs = 45000;
