@@ -98,6 +98,8 @@ mkdir -p /tmp/preview && cd /tmp/preview && bash <repo>/tools/preview/build.sh
 Ждём тест игрока в одиночку (`saliving.txt`). Голосовой пакет `SALiving-voices.zip` в репозиторий **не класть**
 (лицензия моделей неясна) — отправляется игроку файлом; как собрать — `sa-living/STATUS.md` §6.
 Справочник команд Sanny Builder в мод/репозиторий не вшивать (скачивается на телефон).
+Отладка SA Living: подробный лог `Documents/AMLModLogs/net.saliving.mod/trace/trace_*.txt` (всегда включён,
+метки игрока «ОТМЕТКА»), разбор — `sa-living/tools/trace/trace_tool.py`.
 
 Отдельный мод в папке `sa-living/` (свой код, своя сборка, свой `libSALiving.so`). **С коопом не смешивать**:
 не подключать `src/` коопа, нужное копировать; общие — только `third_party/`.
