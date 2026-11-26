@@ -241,6 +241,7 @@ namespace
     {
         uintptr_t pl = game::Player();
         game::Vec st = NearestStation();
+        game::LoadScene(st);                     // мир вокруг участка — до переноса (иначе игрок в пустоте)
         if(game::Vehicle(pl) && script::Ready()) script::Do(0x0362, { script::Arg::I(game::Ref(pl)), script::Arg::F(st.x), script::Arg::F(st.y), script::Arg::F(st.z) });   // WARP_CHAR_FROM_CAR_TO_COORD: правильно освобождает место в машине
         else game::Teleport(pl, st);
         g_handsUp = false;
@@ -382,6 +383,7 @@ namespace
         uintptr_t pl = game::Player();
         game::Vec st = NearestStation();
         st.x += 3.0f;
+        game::LoadScene(st);
         game::Teleport(pl, st);
         game::ClearTask(pl);
         Lock(false);

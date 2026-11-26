@@ -336,6 +336,24 @@ namespace
                 Done(Fmt("Машина: %s", jbrain::VehicleName(model)));
                 return Fmt("создана %s (номер для команд %d)%s", jbrain::VehicleName(model), handle, in["enter"].b() ? ", игрок за рулём" : " перед игроком");
             }
+            if(a == "explode_near")
+            {
+                if(Client() && !settings::Get().jarvisFriend) return "в коопе машины вокруг взрывает только хост";
+                std::string who = jbrain::Lower(in["who"].str());
+                float radius = in.has("radius") ? (float)in["radius"].num() : 40.0f; if(radius < 5) radius = 5; if(radius > 120) radius = 120;
+                game::Vec me = game::Pos(game::Player()); uintptr_t mine = game::PlayerVehicle();
+                std::vector<int> cars;
+                game::ForEachVehicle([&](uintptr_t v) {
+                    if(v == mine || game::Dist(game::Pos(v), me) > radius) return;
+                    if(who.find("pol") != std::string::npos || who.find("коп") != std::string::npos) { if(!game::IsPoliceCar(game::Model(v)) && game::Model(v) != 523) return; }
+                    if(who == "empty" && game::VehDriver(v)) return;
+                    int h = script::CarHandle(v); if(h > 0) cars.push_back(h);
+                });
+                if(cars.size() > 25) cars.resize(25);
+                for(int h : cars) script::Do(0x020B, { Arg::I(h) });       // EXPLODE_CAR
+                Done(Fmt("Взорвано машин: %d", (int)cars.size()));
+                return cars.empty() ? "подходящих машин рядом нет" : Fmt("взорвано машин: %d", (int)cars.size());
+            }
             if(a == "jetpack") { script::Do(0x07A7, { Arg::I(Me()) }); Done("Джетпак"); return "джетпак выдан"; }
             if(a == "delete")
             {
@@ -502,7 +520,7 @@ namespace
 {"name":"place","description":"Свои места игрока: save — запомнить текущее место под именем, delete — забыть, list — перечислить.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["save","delete","list"]},"name":{"type":"string"}}}},
 {"name":"player","description":"Игрок: health (100 — полное), armour (100), money (прибавить, можно отрицательное), god (бессмертие), never_tired (бег без усталости), infinite_ammo (патроны пополняются сами). Указывай только то, что меняешь.","input_schema":{"type":"object","properties":{"health":{"type":"integer"},"armour":{"type":"integer"},"money":{"type":"integer"},"god":{"type":"boolean"},"never_tired":{"type":"boolean"},"infinite_ammo":{"type":"boolean"}}}},
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
-{"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack"]},"model":{"type":"string"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
+{"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак; explode_near — взорвать машины вокруг (who: all, police, empty; radius — метров, по умолчанию 40, до 120; машину игрока не трогает).","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack","explode_near"]},"model":{"type":"string"},"who":{"type":"string"},"radius":{"type":"number"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
 {"name":"world","description":"Мир: hour/minute — время; weather — номер (0–1 ясно, 4 пасмурно, 8 дождь, 9 туман, 16 гроза, 19 песчаная буря; -1 — как в игре); time_scale — скорость игры (1 — обычная, 0.4 — замедление); traffic и peds — плотность машин и людей (0 — нет, 1 — обычно, 2 — много); clear_area — убрать всех вокруг.","input_schema":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"},"weather":{"type":"integer"},"time_scale":{"type":"number"},"traffic":{"type":"number"},"peds":{"type":"number"},"clear_area":{"type":"boolean"}}}},
 {"name":"people","description":"Люди вокруг игрока (прохожие, бандиты, копы). action: list — кто рядом (номер, кто, расстояние); kill — убить; flee — разбежаться от игрока; attack — напасть на игрока; follow — идти за игроком (охрана); calm — оставить в покое (вернуться к своим делам). who: all, gang (любая банда), grove, ballas, vagos, aztecas, rifa, triads, danang, mafia, cops, civil (прохожие). ids — номера из list (если нужно конкретных). radius — метров (по умолчанию 50, до 150). Игрока и друга никогда не трогает.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["list","kill","flee","attack","follow","calm"]},"who":{"type":"string"},"ids":{"type":"array","items":{"type":"integer"}},"radius":{"type":"number"}}}},
 {"name":"undo","description":"Отменить последнее действие (перенос, время, погоду, розыск, бессмертие, созданную машину).","input_schema":{"type":"object","properties":{}}},
@@ -589,7 +607,7 @@ namespace
         }
         json::Value um = json::Value::Object(); um["role"] = "user"; um["content"] = results;
         g_hist.push(um);
-        if(++g_round >= 6) { Reply(Fmt("Слишком длинная цепочка, %s. Остановился на сделанном.", Sir())); return; }
+        if(++g_round >= 8) { Reply(Fmt("Слишком длинная цепочка, %s. Остановился на сделанном.", Sir())); return; }
         SendRound();
     }
 

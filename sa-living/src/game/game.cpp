@@ -78,6 +78,8 @@ namespace
     ClearWeapons_t ClearWeaponsFn; AddPed_t AddPed; RemovePed_t RemovePed; RequestModel_t RequestModel; LoadAll_t LoadAll;
     SetCreatedBy_t SetCreatedBy; AnimBlockIndex_t AnimBlockIndex; OnScreen_t OnScreenFn;
     void (*SetDecisionMaker)(uintptr_t, int) = nullptr;   // CPedIntelligence::SetPedDecisionMakerType
+    int  (*ComputeDoorPass)(uintptr_t, int) = nullptr;    // CCarEnterExit::ComputeTargetDoorToEnterAsPassenger
+    void (*LoadSceneFn)(const Vec&) = nullptr;            // CStreaming::LoadScene
 
     // конструкторы задач
     void* ctorGoTo; void* ctorFollow; void* ctorFlee; void* ctorKill; void* ctorStand; void* ctorTurn;;
@@ -178,6 +180,8 @@ bool Init(void* h)
     LoadAll      = (LoadAll_t)Sym(h, "_ZN10CStreaming22LoadAllRequestedModelsEb");
     SetCreatedBy = (SetCreatedBy_t)Sym(h, "_ZN4CPed16SetCharCreatedByEh");
     SetDecisionMaker = (void(*)(uintptr_t, int))Sym(h, "_ZN16CPedIntelligence23SetPedDecisionMakerTypeEi", false);
+    ComputeDoorPass = (int(*)(uintptr_t, int))Sym(h, "_ZN13CCarEnterExit35ComputeTargetDoorToEnterAsPassengerERK8CVehiclei", false);
+    LoadSceneFn = (void(*)(const Vec&))Sym(h, "_ZN10CStreaming9LoadSceneERK7CVector", false);
     AnimBlockIndex = (AnimBlockIndex_t)Sym(h, "_ZN12CAnimManager22GetAnimationBlockIndexEPKc", false);
     OnScreenFn   = (OnScreen_t)Sym(h, "_ZN7CEntity13GetIsOnScreenEv", false);
     CalcScreen   = (CalcScreen_t)Sym(h, "_ZN7CSprite15CalcScreenCoorsERK5RwV3dPS0_PfS4_bb", false);
@@ -335,6 +339,16 @@ uintptr_t NearestPoliceCar(const Vec& at, float radius)
     return best;
 }
 
+void ForEachVehicle(const std::function<void(uintptr_t veh)>& fn)
+{
+    Pool p; if(!GetPool(g_vehPool, p)) return;
+    for(int i = 0; i < p.size; ++i)
+    {
+        if(F<uint8_t>(p.flags, i) & 0x80) continue;
+        fn(p.objs + (uintptr_t)i * 0xC68);
+    }
+}
+
 uintptr_t NearestVehicle(const Vec& at, float radius)
 {
     Pool p; if(!GetPool(g_vehPool, p)) return 0;
@@ -403,7 +417,13 @@ bool TaskEnterCar(uintptr_t ped, uintptr_t veh, bool driver, int seat)
     if(!veh) return false;
     void* t = NewTask(); if(!t) return false;
     if(driver) ((void(*)(void*, uintptr_t))ctorEnterDriver)(t, veh);
-    else       ((void(*)(void*, uintptr_t, int, bool))ctorEnterPass)(t, veh, seat, false);
+    else
+    {   // задача ждёт НОМЕР ДВЕРИ, а не места (0 — «любая»). Номер места 1 игра принимала за дверь и падала
+        // в CVehicleAnimGroup::ComputeAnimDoorOffsets (вылет при аресте, 0.2.3). Переводим место → дверь, как скрипты игры.
+        int door = 0;
+        if(seat >= 0 && seat < (int)F<uint8_t>(veh, 0x5EC) && ComputeDoorPass) door = ComputeDoorPass(veh, seat);
+        ((void(*)(void*, uintptr_t, int, bool))ctorEnterPass)(t, veh, door, false);
+    }
     return Assign(ped, t);
 }
 bool TaskLeaveCar(uintptr_t ped)
@@ -468,6 +488,8 @@ bool TaskAnim(uintptr_t ped, const char* anim, const char* block, bool loop, int
         (t, anim, block, flags, 4.0f, timed ? ms : -1, false, false, false, false);
     return Assign(ped, t);
 }
+
+void LoadScene(const Vec& at) { if(LoadSceneFn) LoadSceneFn(at); }
 
 void ClearTask(uintptr_t ped) { void* m = Mgr(ped); if(m) SetTask(m, nullptr, kSlotPrimary, false); }
 

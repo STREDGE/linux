@@ -518,7 +518,8 @@ namespace
     bool RiskyName(const std::string& n)
     {
         static const char* risky[] = { "MISSION", "SAVE", "FAIL", "KILL", "EXPLODE", "DELETE", "REMOVE", "DESTROY", "RESTART", "GANG_WAR", "ZONE", "CUTSCENE", "CREDITS" };
-        for(const char* r : risky) if(n.find(r) != std::string::npos) return true;
+        std::string m = n; for(const char* ok : { "NO_SAVE", "_SAVED" }) { size_t q; while((q = m.find(ok)) != std::string::npos) m.erase(q, strlen(ok)); }   // NO_SAVE — не про сохранение игры
+        for(const char* r : risky) if(m.find(r) != std::string::npos) return true;
         return false;
     }
     bool ForbiddenName(const std::string& n)

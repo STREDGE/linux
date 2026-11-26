@@ -51,6 +51,15 @@
 `CLEAR_THIS_BIG_PRINT_NOW` с плохим номером → `script::RunGuarded` (sigsetjmp, SIGSEGV/SIGBUS/SIGFPE/SIGILL
 только своего потока, остальное — прежнему обработчику; проверено на компьютере), упавшая команда в `jbrain::Ban`.
 
+### 0.2.4 — по тесту 0.2.3 (2026-11-26)
+
+Вылет при аресте: `CTaskComplexEnterCarAsPassenger` ждёт номер двери, а не места (место 1 → падение в
+`CVehicleAnimGroup::ComputeAnimDoorOffsets`); теперь `CCarEnterExit::ComputeTargetDoorToEnterAsPassenger`.
+`CStreaming::LoadScene` перед переносом в участок. Разговор всегда `noThinking` (замер был 1.3–2.0 с
+с размышлением на low). `PttDown` больше не ставит «стоять» поверх следования/бегства/прицела. Пед в машине:
+`move get_out` / выйти и пойти следом / уехать; в обстановке — «ты в машине», «ты идёшь за ним».
+Рефлекс на ствол у своих Grove — руки вверх. Джарвис: `vehicle explode_near`, 8 раундов, `NO_SAVE` не «опасно».
+
 ### 0.2.3 — полная проверка игровой логики (2026-11-26)
 
 Два проверяющих (с дизассемблером libGTASA 2.10) прошли talk/game/world/hud и sim/police/life. Исправлено:

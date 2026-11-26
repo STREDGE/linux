@@ -90,6 +90,10 @@ namespace
             s += Fmt(" Собеседник (%s) в %.0f м от тебя", WhoName(who), d);
             if(game::PlayerInVehicle()) s += ", сидит в машине";
             s += ".";
+            if(game::Vehicle(ped)) s += " ТЫ СИДИШЬ ЗА РУЛЁМ/В МАШИНЕ (выйти — move get_out).";
+            int at = game::ActiveTaskType(ped);
+            if(at == 936) s += " Ты сейчас идёшь за ним.";
+            else if(at == 933) s += " Ты сейчас держишь его на прицеле.";
             if(game::PlayerTarget() == ped) s += " ОН ЦЕЛИТСЯ В ТЕБЯ ИЗ ОРУЖИЯ.";
             int w = game::Wanted();
             if(w > 0) s += Fmt(" Его разыскивает полиция: %d зв.", w);
@@ -370,7 +374,7 @@ namespace
         req.tag = "разговор";
         // Живой разговор: ответ нужен за секунду-две. «Быстро» — без размышления; «Умнее» — с коротким размышлением.
         req.effort = "low";
-        req.noThinking = settings::Get().effort != "medium";
+        req.noThinking = true;          // живой разговор — всегда без размышления (игрок просил быстрее; «Умнее» — для Джарвиса)
         (void)important;
 
         int charId = c.id;
@@ -678,14 +682,16 @@ void PttDown()
     if(Character* c = Current())
     {
         uintptr_t ped = world::PedOf(*c);
-        if(ped && !g_c.phone && !game::Vehicle(ped) && !game::IsScriptPed(ped))
-        {   // стоять и смотреть на CJ (поворот задаём сразу — задача «повернуться» перезаписалась бы стоянием)
+        int at = ped ? game::ActiveTaskType(ped) : -1;
+        bool idle = at == -1 || at == 203 || at == 912 || at == 401 || at == 920;   // нет задачи / стоит / гуляет / жест / поворот
+        if(ped && idle && !g_c.phone && !game::Vehicle(ped) && !game::IsScriptPed(ped))
+        {   // стоять и смотреть на CJ (если он идёт за CJ, бежит или целится — не сбиваем: раньше «пошли со мной» ломалось) (поворот задаём сразу — задача «повернуться» перезаписалась бы стоянием)
             game::Vec a = game::Pos(ped), b = game::Pos(game::Player());
             game::SetHeading(ped, atan2f(-(b.x - a.x), b.y - a.y));
             game::TaskStand(ped, 15000);
         }
     }
-    for(int id : g_c.group) if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); if(mp && !game::Vehicle(mp)) game::TaskStand(mp, 15000); }
+    for(int id : g_c.group) if(Character* m = world::Find(id)) { uintptr_t mp = world::PedOf(*m); int mt = mp ? game::ActiveTaskType(mp) : 0; if(mp && !game::Vehicle(mp) && (mt == -1 || mt == 203 || mt == 912)) game::TaskStand(mp, 15000); }
     BeginListen();
 }
 
@@ -794,11 +800,28 @@ std::string ExecutePhysical(Character* c, uintptr_t ped, int who, const std::str
             }
         return "нет такого жеста";
     }
+    if(n == "move" && ped && !phone && game::Alive(ped) && game::Vehicle(ped) && !game::IsScriptPed(ped))
+    {   // пед в машине: выйти (и, если звали, потом пойти за CJ); уйти/убежать — просто уехать (машина продолжит ехать)
+        const std::string& m = in["mode"].str();
+        if(m == "get_out" || m == "follow_player" || m == "come_closer")
+        {
+            game::TaskLeaveCar(ped);
+            if(m != "get_out")
+            {
+                int ref = game::Ref(ped);
+                Later(2.5, [ref, pl]() { uintptr_t p = game::FromRef(ref); if(p && game::Alive(p) && !game::Vehicle(p)) game::TaskFollow(p, pl); });
+            }
+            return m == "get_out" ? "выходишь из машины" : "выходишь из машины и идёшь за ним";
+        }
+        if(m == "go_away" || m == "flee") { if(!g_memberAct) g_c.endAfterSpeech = true; return "уезжаешь"; }
+        return "ты в машине — сначала выйди (get_out)";
+    }
     if(n == "move")
     {
         if(!needPed()) return "ты не рядом";
         const std::string& m = in["mode"].str(); bool run = in["run"].b();
         int ms = run ? 6 : 4;
+        if(m == "get_out") return "ты и так не в машине";
         if(m == "follow_player") return game::TaskFollow(ped, pl) ? "идёшь за ним" : "не вышло";
         if(m == "come_closer") return game::TaskGoTo(ped, game::Pos(pl), ms, 1.2f) ? "подходишь" : "не вышло";
         if(m == "flee") { if(c) world::ChangeRelation(*c, who, 0, 0, 0, 5, ""); if(!g_memberAct) EndConversation(); return game::TaskFlee(ped, pl) ? "убегаешь" : "не вышло"; }
@@ -992,8 +1015,10 @@ static void AimFrame(double now)
         Character* c = Current();
         int courage = c ? c->tr.courage : 50;
         bool gang = game::IsGang(game::PedType(ped)) || game::PedType(ped) == game::PT_COP;
+        bool own = c && c->faction == world::W().playerGang && c->rel[world::WHO_CJ].liking > -30;
         const char* what;
-        if(gang && courage >= 55) { game::GiveWeapon(ped, 22, 30); game::SetCurrentWeapon(ped, 22); game::TaskAimAt(ped, pl, 8000); what = "навёл ствол в ответ"; }
+        if(own)                   { game::TaskAnim(ped, "handsup", "ped", false, 2500, true); what = "свой: поднял руки — «эй, это я!»"; }
+        else if(gang && courage >= 55) { game::GiveWeapon(ped, 22, 30); game::SetCurrentWeapon(ped, 22); game::TaskAimAt(ped, pl, 8000); what = "навёл ствол в ответ"; }
         else if(courage < 35)     { game::TaskFlee(ped, pl, 60.0f, 20000); what = "бросился бежать"; }
         else                      { game::TaskAnim(ped, "handsup", "ped", false, 6000, true); what = "поднял руки"; }
         LOG_INFO("Ствол на #%d: %s", c ? c->id : 0, what);

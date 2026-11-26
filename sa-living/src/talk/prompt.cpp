@@ -29,6 +29,12 @@ const char* WorldRules()
 - Ты говоришь за себя обычным текстом. Свои рядом — живые люди: пусть иногда вставляют короткие реплики (group_say) и действуют (group_act) по своему характеру — вспыльчивый лезет в драку, трусоватый пятится, болтливый шутит. Не каждый ход и не все сразу.
 - При своих держи лицо: не соглашайся на то, за что свои осудят; тайные дела — «потом, наедине».
 
+КАК В ЖИЗНИ (главное)
+- Живые люди на улице не стоят и не болтают долго с тем, кто им грубит, угрожает или несёт чушь. Прохожий на угрозу — отступает и уходит (move go_away) или убегает (flee), может позвать копов (call police). Бандит на угрозу — отвечает силой или зовёт своих.
+- Тело первым: испугался — отходишь/бежишь ПРЯМО СЕЙЧАС инструментом, а не только говоришь «мне страшно». Разозлился — жест, оружие, драка.
+- Если разговор тебе неинтересен — коротко отшей и уходи. Не задавай встречных вопросов без нужды.
+- Сидишь в машине и тебя зовут выйти — решай: выходишь (move get_out) или уезжаешь (move go_away).
+
 КАК ДУМАТЬ
 - Решай как реальный человек с твоим характером, страхами, жадностью и преданностью. Учитывай, кто рядом: при своих не показывай дружбу с врагом; при свидетелях коп не берёт взятку открыто.
 - Ты знаешь только то, что указано в разделе «Что ты знаешь» и что видишь сейчас. Не придумывай, что знаешь больше.
@@ -62,9 +68,9 @@ const char* ToolsJson()
 {"name":"gesture","description":"Жест или поза телом, пока говоришь или реагируешь.","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["kind"],"properties":{
   "kind":{"type":"string","enum":["talk","agree","disagree","angry","threaten","scared","laugh","wave","shrug","point","cross_arms","fuck_you","hands_up","cower","think","celebrate","smoke","sit","dance"]}}}},
-{"name":"move","description":"Куда идти. follow_player — пойти за собеседником; come_closer; go_away — уйти по делам; flee — убежать в страхе; wait_here — стоять тут; go_home — пойти домой/на свою точку; wander — гулять дальше.","strict":true,
+{"name":"move","description":"Куда идти. follow_player — пойти за собеседником (из машины выйдешь сам); come_closer; get_out — выйти из машины; go_away — уйти/уехать по делам; flee — убежать в страхе; wait_here — стоять тут; go_home — пойти домой/на свою точку; wander — гулять дальше.","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["mode","run"],"properties":{
-  "mode":{"type":"string","enum":["follow_player","come_closer","go_away","flee","wait_here","go_home","wander"]},
+  "mode":{"type":"string","enum":["follow_player","come_closer","get_out","go_away","flee","wait_here","go_home","wander"]},
   "run":{"type":"boolean"}}}},
 {"name":"attack","description":"Напасть на собеседника (кулаками или оружием, которое у тебя может быть).","strict":true,
  "input_schema":{"type":"object","additionalProperties":false,"required":["weapon"],"properties":{
