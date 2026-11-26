@@ -587,6 +587,7 @@ void SetSpeechSink(std::function<void(const std::string&)> fn) { g_sink = std::m
 
 static bool BeginListen()
 {
+    if(g_waitFinal || g_listening) { Notify("Секунду, распознаю прошлую фразу…"); return false; }
     StopVoice();
     g_partial.clear();
     if(settings::Get().engine == 0)
@@ -617,7 +618,7 @@ static void EndListen()
 
 void CaptureDown(std::function<void(const std::string&)> sink)
 {
-    if(g_listening) return;
+    if(g_listening || g_waitFinal || g_captureActive) return;
     g_capture = std::move(sink); g_captureActive = true;
     if(!BeginListen()) { g_captureActive = false; g_capture = nullptr; }
 }
@@ -628,6 +629,7 @@ bool Recognizing() { return g_waitFinal; }
 void PttDown()
 {
     if(g_captureActive) return;
+    if(g_waitFinal) { Notify("Секунду, распознаю прошлую фразу…"); return; }
     if(g_sink) { BeginListen(); return; }
     if(!g_c.phone)
     {
@@ -936,6 +938,7 @@ void Frame()
         else if(se.kind == bridge::STT_ERROR)
         {
             g_listening = false; g_waitFinal = false;
+            if(g_captureActive) { auto fn = std::move(g_capture); g_capture = nullptr; g_captureActive = false; if(fn) fn(""); }
             int code = atoi(se.text.c_str());
             if(code == 7 || code == 6) Notify("Не расслышал — скажи ещё раз");
             else if(code == 9) Notify("Нет разрешения на микрофон");
@@ -947,7 +950,7 @@ void Frame()
     {
         if(!g_waitFinal && !g_listening) continue;                 // уже не ждём (отменили)
         g_waitFinal = false; g_listening = false;
-        if(!hd.ok) { Notify("Распознавание: " + hd.error); if(g_captureActive) { g_captureActive = false; g_capture = nullptr; } continue; }
+        if(!hd.ok) { Notify("Распознавание: " + hd.error); if(g_captureActive) { auto fn = std::move(g_capture); g_capture = nullptr; g_captureActive = false; if(fn) fn(""); } continue; }
         g_partial = hd.text;
         OnPlayerSaid(hd.text);
     }

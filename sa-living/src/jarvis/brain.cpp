@@ -548,7 +548,7 @@ bool LoadLibrary(const std::string& path, std::string& err)
             const json::Value& at = c["attrs"];
             k.cond = at["is_condition"].b();
             k.bad = at["is_unsupported"].b() || at["is_nop"].b() || at["is_branch"].b() || at["is_segment"].b() || at["is_variadic"].b() || ForbiddenName(k.name);
-            for(auto& p : c["input"].arr())  { Param q; q.name = p["name"].str(); q.type = p["type"].str(); if(q.type == "arguments") k.bad = true; k.params.push_back(q); }
+            for(auto& p : c["input"].arr())  { Param q; q.name = p["name"].str(); q.type = p["type"].str(); if(q.type == "arguments" || p["source"].str().compare(0, 3, "var") == 0) k.bad = true; k.params.push_back(q); }   // команды над переменными сценария нам не нужны и опасны
             for(auto& p : c["output"].arr()) { Param q; q.name = p["name"].str(); q.type = p["type"].str(); q.out = true; k.params.push_back(q); }
             if(k.name.empty() || k.bad) continue;
             k.search = Lower(k.name + " " + k.cls + " " + k.member + " " + k.desc);
@@ -635,6 +635,9 @@ bool Compile(const std::string& name, const json::Value& args, const Context& ct
         if(IsStringType(p.type))
         {
             if(isNum && str.empty()) { err = c.name + ": параметр " + p.name + " должен быть строкой"; return false; }
+            // у игры под такие параметры буферы на 8 (ключ текста, зона) или 16 байт — длиннее нельзя
+            size_t cap = p.type == "string" ? 15 : 7;
+            if(str.size() > cap) { err = c.name + ": параметр " + p.name + " — не длиннее " + std::to_string(cap) + " латинских символов (это ключ, а не текст)"; return false; }
             out.args.push_back(script::Arg::S(str));
         }
         else if(IsFloatType(p.type))

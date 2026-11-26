@@ -47,6 +47,7 @@ void LogError(const char* fmt, ...)
 static bool   g_ok = false;
 static double g_nextSave = 0, g_nextBridgeTry = 0, g_nextSync = 0;
 static bool   g_ttsAsked = false, g_speechInit = false;
+static char*  g_loadFileName = nullptr;       // CGenericGameStorage::ms_LoadFileName — файл, из которого игра грузится
 static char*  g_validSaveName = nullptr;      // CGenericGameStorage::ms_ValidSaveName — имя файла последнего сохранения/загрузки
 
 // Расход ИИ — общий для всех сохранений (отдельный файл)
@@ -223,7 +224,7 @@ SDECL_HOOKb(GenericSave, int slot)
         SaveUsageFile();
         std::string name = g_validSaveName && g_validSaveName[0] ? g_validSaveName : "default";
         // служебное сохранение SA Coop «мир для друга» — не отдельная игра, память под ним не ведём
-        if(name.find("SACoopWorld") == std::string::npos) world::SaveAs(name);
+        if(name.find("SACoopWorld") == std::string::npos) { jarvis::BeforeGameSave(); world::SaveAs(name); jarvis::AfterGameSave(); }
     }
     return r;
 }
@@ -234,15 +235,19 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
     bool r = GenericLoad(ok);
     if(g_ok)
     {
-        talk::EndConversation();
-        world::SwitchTo(g_validSaveName && g_validSaveName[0] ? g_validSaveName : "default");
+        talk::EndConversation(); jarvis::OnWorldSwitch(false); claude::AbortAll("загрузка игры");
+        // имя файла, из которого игра реально грузится; ms_ValidSaveName — запасной вариант (его могло перезаписать меню)
+        std::string a = g_loadFileName ? g_loadFileName : "", b = g_validSaveName ? g_validSaveName : "";
+        std::string n = !a.empty() && (world::HasMemory(a) || b.empty() || !world::HasMemory(b)) ? a : !b.empty() ? b : "default";
+        LogInfo("Загрузка игры: файл «%s» (последнее имя «%s») — память «%s»", a.c_str(), b.c_str(), n.c_str());
+        world::SwitchTo(n);
     }
     return r;
 }
 
 SDECL_HOOKv(MenuNewGame)
 {
-    if(g_ok) { talk::EndConversation(); world::NewGame(); }
+    if(g_ok) { talk::EndConversation(); jarvis::OnWorldSwitch(true); claude::AbortAll("новая игра"); world::NewGame(); }
     MenuNewGame();
 }
 
@@ -282,14 +287,19 @@ ON_MOD_LOAD()
     jarvis::Init(h, world::BaseDir());
     InstallCleoScript();
     g_validSaveName = (char*)aml->GetSym(h, "_ZN19CGenericGameStorage16ms_ValidSaveNameE");
+    g_loadFileName  = (char*)aml->GetSym(h, "_ZN19CGenericGameStorage15ms_LoadFileNameE");
 
     void* gp = (void*)aml->GetSym(h, "_ZN5CGame7ProcessEv");
     void* gs = (void*)aml->GetSym(h, "_ZN19CGenericGameStorage11GenericSaveEi");
     if(gp) aml->Hook(gp, (void*)HookOf_GameProcess, (void**)&GameProcess);
     if(gs) aml->Hook(gs, (void*)HookOf_GenericSave, (void**)&GenericSave);
     if(void* gl = (void*)aml->GetSym(h, "_ZN19CGenericGameStorage11GenericLoadERb")) aml->Hook(gl, (void*)HookOf_GenericLoad, (void**)&GenericLoad);
+    else LogError("GenericLoad не найден — память не будет переключаться по сохранениям");
     if(void* ng = (void*)aml->GetSym(h, "_Z12Menu_NewGamev")) aml->Hook(ng, (void*)HookOf_MenuNewGame, (void**)&MenuNewGame);
+    else LogError("Menu_NewGame не найден — новая игра не начнёт память с чистого листа");
     if(void* hm = (void*)aml->GetSym(h, "_ZN4CHud14SetHelpMessageEPKcPtbbbj")) aml->Hook(hm, (void*)HookOf_SetHelpMessageH, (void**)&SetHelpMessageH);
+    else LogError("CHud::SetHelpMessage не найден — пункт Jarvis в меню CLEO не сработает (кнопка на экране работает)");
+    if(!gs) LogError("GenericSave не найден — память не будет сохраняться вместе с игрой");
     g_ok = gameOk && gp;
     LogInfo("SA Living: %s (интерфейс %s, мост Android %s)", g_ok ? "готов" : "НЕ все функции игры найдены",
             hudOk ? "есть" : "нет", bridge::Ready() ? "есть" : "позже");

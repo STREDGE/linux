@@ -29,7 +29,8 @@ namespace
         bool gotStop = false;
     };
     std::map<int, Pending> g_pending;
-    struct Proxied { TextFn onText; DoneFn onDone; std::string tag; };
+    struct Proxied { TextFn onText; DoneFn onDone; std::string tag; double at = 0; };
+    double Mono() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
     std::map<int, Proxied> g_proxied;
     int g_nextProxy = 1000000;
 
@@ -181,7 +182,7 @@ int Send(const Request& req, TextFn onText, DoneFn onDone)
         int id = g_nextProxy++;
         json::Value m = json::Value::Object(); m["t"] = "ai"; m["rid"] = id; m["req"] = ReqToJ(req);
         if(!coopnet::Send(m)) return 0;
-        g_proxied[id] = Proxied{ onText, onDone, req.tag };
+        g_proxied[id] = Proxied{ onText, onDone, req.tag, Mono() };
         return id;
     }
     if(!HasKey() || !bridge::Ready()) return 0;
@@ -220,6 +221,22 @@ void Cancel(int id)
     auto pt = g_proxied.find(id); if(pt != g_proxied.end()) { pt->second.onText = nullptr; pt->second.onDone = nullptr; }
 }
 int  InFlight() { return (int)(g_pending.size() + g_proxied.size()); }
+
+// Загрузка другой игры / новая игра: ответы на старые запросы не должны попасть в новую память.
+// Ждущим сообщаем об ошибке (чтобы сняли свои «жду ответа»), сами ответы потом молча отбрасываются.
+void AbortAll(const char* why)
+{
+    std::vector<DoneFn> fns;
+    for(auto& kv : g_pending)
+    {
+        if(!kv.second.cancelled && kv.second.onDone) fns.push_back(kv.second.onDone);
+        kv.second.cancelled = true; kv.second.onText = nullptr; kv.second.onDone = nullptr;
+    }
+    for(auto& kv : g_proxied) if(kv.second.onDone) fns.push_back(kv.second.onDone);
+    g_proxied.clear();
+    Result r; r.error = why ? why : "отменено";
+    for(auto& fn : fns) fn(r);
+}
 
 void HandleProxyRequest(const json::Value& m)
 {
@@ -260,6 +277,16 @@ void HandleProxyResult(const json::Value& m)
 
 void Pump()
 {
+    // друг в коопе: хост не ответил за минуту (отключился) — не ждать вечно
+    if(!g_proxied.empty())
+    {
+        double now = Mono();
+        std::vector<DoneFn> late;
+        for(auto it = g_proxied.begin(); it != g_proxied.end();)
+            if(now - it->second.at > 60) { if(it->second.onDone) late.push_back(it->second.onDone); it = g_proxied.erase(it); }
+            else ++it;
+        if(!late.empty()) { Result r; r.error = "Хост не ответил"; for(auto& fn : late) fn(r); }
+    }
     bridge::HttpEvent e;
     int guard = 0;
     while(guard++ < 2000 && bridge::PollHttp(e))

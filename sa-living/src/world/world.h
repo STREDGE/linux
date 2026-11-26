@@ -129,7 +129,8 @@ namespace world
     void SwitchTo(const std::string& saveName);   // игра загрузила сохранение: взять его память (нет — новая)
     void SaveAs(const std::string& saveName);     // игра сохранилась: записать память под этим именем
     void NewGame();                               // новая игра: пустая память
-    const std::string& MemoryKey();               // «GTASAsf3», «SACoop_1», «new» или пусто (игра ещё не загружена)
+    const std::string& MemoryKey();
+    bool HasMemory(const std::string& saveName);      // есть ли уже память под таким сохранением               // «GTASAsf3», «SACoop_1», «new» или пусто (игра ещё не загружена)
 
     // ---- сюжетные персонажи: голос общий для всех сохранений ----
     struct StoryVoice { std::string voice; float pitch = 1, rate = 1; };

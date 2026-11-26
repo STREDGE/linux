@@ -41,6 +41,11 @@ namespace jarvis
     // Кооп: друг получил «выдать другу»
     void OnCoopMessage(const json::Value& m);
 
+    // Память привязана к сохранению (см. world::SwitchTo/SaveAs/NewGame)
+    void OnWorldSwitch(bool newGame);  // ДО смены памяти: забыть разговор, «отмени», места
+    void BeforeGameSave();
+    void AfterGameSave();
+
     // Перехват «подсказки» с меткой SALJRV — так нас зовёт скрипт из меню CLEO
     bool OnHelpLabel(const char* label);
 }

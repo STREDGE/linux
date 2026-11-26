@@ -46,7 +46,7 @@ namespace
     int    g_seq = 0;
 
     struct Place { std::string name; game::Vec pos; };
-    std::vector<Place> g_places; std::string g_placesKey;
+    std::vector<Place> g_places; std::string g_placesKey; bool g_placesLoaded = false;
 
     double Now() { return talk::Now(); }
     const char* Sir() { return settings::Get().jarvisAddress.c_str(); }
@@ -100,8 +100,8 @@ namespace
     std::string PlacesPath() { return g_base + "/places_" + (world::MemoryKey().empty() ? std::string("new") : world::MemoryKey()) + ".json"; }
     void LoadPlaces()
     {
-        if(g_placesKey == world::MemoryKey() && !g_placesKey.empty()) return;
-        g_placesKey = world::MemoryKey(); g_places.clear();
+        if(g_placesLoaded && g_placesKey == world::MemoryKey()) return;
+        g_placesKey = world::MemoryKey(); g_places.clear(); g_placesLoaded = true;
         FILE* f = fopen(PlacesPath().c_str(), "rb"); if(!f) return;
         std::string s; char buf[8192]; size_t n; while((n = fread(buf, 1, sizeof(buf), f)) > 0) s.append(buf, n); fclose(f);
         json::Value v; if(!json::Parse(s, v)) return;
@@ -119,6 +119,7 @@ namespace
     {
         LoadPlaces();
         std::string t = jbrain::Lower(raw);
+        if(t.empty()) return nullptr;
         for(auto& p : g_places) { std::string n = jbrain::Lower(p.name); if(t == n || t.find(n) != std::string::npos || n.find(t) != std::string::npos) return &p; }
         // «на базу» → «база»: сравнить без последних двух букв
         for(auto& p : g_places)
@@ -326,7 +327,11 @@ namespace
                 if(in.has("color1")) script::Do(0x0229, { Arg::I(handle), Arg::I(in["color1"].i()), Arg::I(in.has("color2") ? in["color2"].i() : in["color1"].i()) });
                 if(in["enter"].b() && car < 0) script::Do(0x036A, { Arg::I(Me()), Arg::I(handle) });
                 g_lastCar = handle;
-                Undoable([handle]() { script::Do(0x00A6, { Arg::I(handle) }); });
+                Undoable([handle]() {
+                    if(MyCar() == handle)      // игрок внутри — сначала наружу, иначе машина исчезнет вместе с ним
+                    { game::Vec p = game::Pos(game::Player()); script::Do(0x0362, { Arg::I(Me()), Arg::F(p.x + 2), Arg::F(p.y), Arg::F(p.z) }); }
+                    script::Do(0x00A6, { Arg::I(handle) });
+                });
                 Done(Fmt("Машина: %s", jbrain::VehicleName(model)));
                 return Fmt("создана %s (номер для команд %d)%s", jbrain::VehicleName(model), handle, in["enter"].b() ? ", игрок за рулём" : " перед игроком");
             }
@@ -495,6 +500,12 @@ namespace
             Reply(Fmt("Связи с ИИ нет, %s: %s.", Sir(), r.error.c_str()));
             return;
         }
+        if(r.stopReason == "max_tokens" && !r.tools.empty())      // команда оборвалась на полуслове — не выполнять огрызок
+        {
+            g_hist = json::Value::Array();
+            Reply(Fmt("Слишком длинная команда, %s. Скажите короче.", Sir()));
+            return;
+        }
         json::Value am = json::Value::Object(); am["role"] = "assistant"; am["content"] = r.assistantContent;
         if(r.assistantContent.size()) g_hist.push(am);
         if(r.tools.empty())
@@ -526,7 +537,7 @@ namespace
         req.system = json::Value::Array(); req.system.push(sys);
         req.tools = Tools();
         req.messages = g_hist;
-        req.maxTokens = 900;
+        req.maxTokens = 4000;
         req.tag = "джарвис";
         Show(THINKING);
         g_req = claude::Send(req, OnAiText, OnAiDone);
@@ -578,6 +589,22 @@ void Init(void* h, const std::string& baseDir)
     LOG_INFO("[ДЖАРВИС] готов: команды игры %s, справочник %s", script::Ready() ? "есть" : "НЕТ", LibraryFilePresent() ? "скачан" : "не скачан");
 }
 
+// Загрузка другой игры / новая игра: всё, что относилось к прошлой, забыть
+void OnWorldSwitch(bool newGame)
+{
+    if(g_req) { claude::Cancel(g_req); g_req = 0; }
+    speech::StopSpeaking(); g_sayPending = 0; g_buf.clear();
+    g_undo.clear(); g_lastCar = -1; g_infAmmo = false; g_round = 0;
+    g_hist = json::Value::Array();
+    g_holding = false; g_autoStopAt = 0;
+    g_view = View();
+    g_places.clear(); g_placesLoaded = false;
+    if(newGame) remove((g_base + "/places_new.json").c_str());
+}
+// Сохранение игры меняет имя памяти — свои места переезжают под новое имя
+void BeforeGameSave() { LoadPlaces(); }
+void AfterGameSave()  { g_placesKey = world::MemoryKey(); g_placesLoaded = true; if(!g_places.empty()) SavePlaces(); }
+
 bool LibraryFilePresent() { struct stat st; return stat((g_base + "/commands.json").c_str(), &st) == 0 && st.st_size > 100000; }
 bool LibraryReady()
 {
@@ -595,7 +622,7 @@ void DownloadLibrary()
     if(!speech::DownloadExtra(kLibraryUrl, g_base + "/commands.json", "справочник команд игры")) talk::Notify("Сейчас идёт другая загрузка — попробуй позже");
 }
 
-void ButtonDown() { if(!settings::Get().jarvis || g_holding) return; g_holding = true; g_autoStopAt = 0; StartListening(); }
+void ButtonDown() { if(!settings::Get().jarvis || g_holding || talk::Capturing()) return; g_holding = true; g_autoStopAt = 0; StartListening(); }
 void ButtonUp()   { if(!g_holding) return; g_holding = false; if(talk::Capturing()) { talk::CaptureUp(); Show(RECOGNIZING); } }
 void Trigger()
 {

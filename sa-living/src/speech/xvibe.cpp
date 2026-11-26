@@ -548,7 +548,7 @@ bool SaveVoiceState(const std::string& key, const std::string& path, std::string
         while(off < bytes) { unsigned k = (unsigned)std::min<size_t>(bytes - off, 1u << 20); if(gzwrite(f, (char*)p + off, k) != (int)k) { ok = false; err = "нет места"; break; } off += k; }
         if(!ok) break;
     }
-    gzclose(f);
+    if(gzclose(f) != Z_OK && ok) { ok = false; err = "нет места"; }      // хвост дописывается при закрытии
     if(!ok) { remove(tmp.c_str()); return false; }
     remove(path.c_str());
     if(rename(tmp.c_str(), path.c_str()) != 0) { err = "не переименовать файл голоса"; return false; }
@@ -570,7 +570,9 @@ bool LoadVoiceState(const std::string& key, const std::string& path, std::string
         if(pos + 2 > d.size()) { err = "файл голоса обрезан"; ReleaseAll(vs.state); return false; }
         uint8_t code = d[pos], nd = d[pos + 1]; pos += 2;
         std::vector<int64_t> shape(nd);
+        if(nd > 8 || pos + (size_t)nd * 8 > d.size()) { err = "файл голоса обрезан"; ReleaseAll(vs.state); return false; }
         memcpy(shape.data(), d.data() + pos, nd * 8); pos += nd * 8;
+        for(auto x : shape) if(x < 0 || x > (1 << 24)) { err = "файл голоса испорчен"; ReleaseAll(vs.state); return false; }
         size_t n = 1; for(auto x : shape) n *= (size_t)x;
         ONNXTensorElementDataType t = code == 1 ? ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 : code == 2 ? ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL : ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
         size_t bytes = n * ElemSize(t);

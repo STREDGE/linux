@@ -211,6 +211,7 @@ namespace
     std::deque<TtsJob> g_ttsQ;
     std::thread g_asrThread, g_ttsThread;
     bool g_threads = false;
+    std::mutex g_playMx;                    // запуск звука и «замолчи» — по очереди (берётся раньше g_ttsMx и g_mx)
     std::atomic<int> g_gen{ 0 };            // растёт при StopSpeaking — старые фразы бросаем
     std::atomic<int> g_pending{ 0 };        // фраз в очереди / звучит
     std::atomic<uint64_t> g_seq{ 0 };
@@ -286,6 +287,7 @@ namespace
                 bool ok = xvibe::Loaded() && EnsureVoice(j.voice, err);
                 if(ok) ok = xvibe::Generate(j.voice, j.text, [&](const float* p, int n) { all.insert(all.end(), p, p + n); return j.gen == g_gen.load(); }, err);
                 double dt = NowSec() - t0, len = all.size() / 24000.0;
+                std::lock_guard<std::mutex> pl(g_playMx);                 // «замолчи» не должно вклиниться между проверкой и запуском звука
                 if(j.gen != g_gen.load()) continue;
                 if(!ok || all.empty())
                 {
@@ -613,7 +615,7 @@ bool TtsReady() { std::lock_guard<std::mutex> l(g_mx); return g_st.ttsReady; }
 
 bool Listen()
 {
-    if(!AsrReady() || g_micMode != MIC_NONE) return false;
+    if(!AsrReady() || g_micMode != MIC_NONE || g_asrBusy) return false;     // прошлая фраза ещё распознаётся — не начинаем новую запись
     if(!bridge::MicStart()) return false;
     g_micMode = MIC_HEAR; g_micDrop = false; g_micSince = NowSec();
     return true;
@@ -636,6 +638,7 @@ void Speak(const std::string& text, const std::string& voiceKey, float pitch, fl
 
 void StopSpeaking()
 {
+    std::lock_guard<std::mutex> pl(g_playMx);
     g_gen++;
     {
         std::lock_guard<std::mutex> l(g_ttsMx);

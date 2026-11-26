@@ -105,6 +105,7 @@ static std::string KeyOf(const std::string& saveName)
     return k.empty() ? "save" : k;
 }
 const std::string& MemoryKey() { return g_key; }
+bool HasMemory(const std::string& saveName) { struct stat st; return stat(MemoryPath(KeyOf(saveName)).c_str(), &st) == 0; }
 
 void SwitchTo(const std::string& saveName)
 {

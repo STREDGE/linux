@@ -47,7 +47,7 @@ bool Run(uint16_t opcode, std::vector<Arg>& args, bool* flag)
             case Arg::FLOAT: t = 0x06; put(&t, 1); put(&a.f, 4); break;
             case Arg::STR:
                 if(a.s.size() <= 7) { t = 0x09; put(&t, 1); char b[8] = {}; memcpy(b, a.s.data(), a.s.size()); put(b, 8); }
-                else { t = 0x0E; put(&t, 1); uint8_t len = (uint8_t)(a.s.size() > 100 ? 100 : a.s.size()); put(&len, 1); put(a.s.data(), len); }
+                else { t = 0x0F; put(&t, 1); char b[16] = {}; memcpy(b, a.s.data(), a.s.size() > 15 ? 15 : a.s.size()); put(b, 16); }   // строка на 16 байт; длиннее игра не вместит
                 break;
             case Arg::OUT_INT: case Arg::OUT_FLOAT:
             { t = 0x03; put(&t, 1); uint16_t idx = (uint16_t)outIndex++; put(&idx, 2); break; }

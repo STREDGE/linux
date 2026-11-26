@@ -56,6 +56,7 @@ namespace claude
     // 0 — не отправлен (нет ключа / лимит / мост не готов)
     int  Send(const Request& req, TextFn onText, DoneFn onDone);
     void Cancel(int id);                        // ответ будет проигнорирован
+    void AbortAll(const char* why);             // загрузка другой игры: всем ждущим — ошибка, ответы отбросить
     void Pump();
     int  InFlight();
 
