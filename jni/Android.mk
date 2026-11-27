@@ -5,7 +5,7 @@ include $(LOCAL_PATH)/jni/opus.mk
 include $(CLEAR_VARS)
 LOCAL_MODULE := SACoop
 LOCAL_CPP_EXTENSION := .cpp
-LOCAL_SRC_FILES := src/main.cpp src/settings.cpp src/trace/ctrace.cpp src/net/session.cpp src/net/tailscale.cpp src/net/ts_blob.S src/game/gta.cpp src/coop/coop.cpp src/coop/sync.cpp src/coop/world.cpp src/coop/logshare.cpp src/coop/crowd.cpp src/coop/mission.cpp \
+LOCAL_SRC_FILES := src/main.cpp src/settings.cpp src/trace/ctrace.cpp src/net/session.cpp src/net/tailscale.cpp src/net/ts_blob.S src/game/gta.cpp src/coop/coop.cpp src/coop/sync.cpp src/coop/world.cpp src/coop/logshare.cpp src/coop/modsync.cpp src/coop/crowd.cpp src/coop/mission.cpp \
                    src/ui/menu.cpp src/ui/overlay.cpp src/ui/imgui_rw.cpp src/platform/android.cpp src/voice/voice.cpp \
                    third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp \
                    third_party/imgui/imgui_widgets.cpp third_party/imgui/imgui_tables.cpp \

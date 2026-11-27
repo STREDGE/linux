@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 16;   // 16: лог друга в файл хоста (LOG_CHUNK/LOG_ACK); 15: «Новая игра» в лобби
+    constexpr uint8_t  kProtocolVersion = 17;   // 17: сверка модов (PKT_MODS); 16: лог друга в файл хоста (LOG_CHUNK/LOG_ACK); 15: «Новая игра» в лобби
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -34,6 +34,7 @@ namespace net
         PKT_LOBBY        = 20,// хост -> клиент: лобби (что выбрано, «Запуск»), раз в секунду
         PKT_LOG_CHUNK    = 21,// клиент -> хост: кусок его SA_LOG.txt (хост дописывает в свой с пометкой «Д»)
         PKT_LOG_ACK      = 22,// хост -> клиент: кусок записан
+        PKT_MODS         = 23,// в обе стороны: список модов (AML и CLEO) для сверки, раз в 3 с
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -334,6 +335,18 @@ namespace net
     };
     constexpr int kLogChunkHeaderSize = (int)sizeof(Header) + 12;
     struct LogAckPacket     { Header hdr; uint32_t run; uint32_t seq; };
+
+    // Список модов («a|имя|размер», «c|имя|размер», …) — частями
+    constexpr int kModsChunkMax = 1000;
+    struct ModsPacket
+    {
+        Header   hdr;
+        uint32_t hash;            // весь список (новый — значит, изменился)
+        uint16_t part, parts;
+        uint16_t len, pad;
+        uint8_t  data[kModsChunkMax];
+    };
+    constexpr int kModsHeaderSize = (int)sizeof(Header) + 12;
 
     // Лобби: хост выбирает сохранение и жмёт «Запуск» — launchId меняется, друг загружается
     // LOBBY_NEW: хост начинает новую игру — друг тоже начинает новую (мир не передаётся), сюжет ведёт хост

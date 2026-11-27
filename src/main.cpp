@@ -19,9 +19,10 @@
 #include "ui/menu.h"
 #include "ui/overlay.h"
 #include "trace/ctrace.h"
+#include "coop/modsync.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 1.4.9, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 1.5.0, SA Coop Team)
 
 // Строки этого логгера идут в общий Documents/SA_LOG.txt (FLogger::Sink → ctrace)
 static FLogger   g_fileLog("sacoop.txt");
@@ -110,6 +111,8 @@ ON_MOD_LOAD()
     g_fileLog.Info("SA Coop %s, символов найдено %d из %d", modinfo->VersionString(), found, total);
     g_fileLog.Info("Режим из настроек: %s, адрес хоста: %s, порт: %u",
                    settings::RoleToString(st.net.role), st.net.hostAddress, (unsigned)st.net.port);
+
+    modsync::Init(st.enabled ? st.net.role : net::Role::Off);   // не «Подключиться» — вернуть моды, выключенные для коопа
 
     if(!st.enabled)
     {

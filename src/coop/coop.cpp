@@ -17,6 +17,7 @@
 #include "coop/sync.h"
 #include "coop/world.h"
 #include "coop/logshare.h"
+#include "coop/modsync.h"
 #include "coop/crowd.h"
 #include "coop/mission.h"
 #include "net/tailscale.h"
@@ -573,6 +574,7 @@ namespace
         g_echoRemote = net::RemoteState();
         g_echoAnnounced = false;
         g_cfg = c;
+        modsync::OnRoleChanged(c.role);     // не «Подключиться» — вернуть моды, выключенные для коопа
         g_tsHost = false; g_tsHostBridge = 0; g_tsClientWait = false; g_tsLastFind = -9; g_tsInfo[0] = 0;
         ts::CloseBridge();
 
@@ -904,6 +906,7 @@ namespace
         g_where = "подробный лог коопа";
         TracePlayers(now, local, me, &rs);
         logshare::Frame(g_cfg.role, g_session.Connected(), now);
+        modsync::Frame(g_cfg.role, g_session.Connected(), true, now);
 
         // Загрузились в мир хоста — встать рядом с ним (один раз)
         if(world::TeleportPending() && sc.rs && !InVehicle(local) && PedTeleport)
@@ -1041,6 +1044,7 @@ namespace
 static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
 {
     if(type == net::PKT_LOG_CHUNK || type == net::PKT_LOG_ACK) { logshare::OnPacket(type, data, len); return; }
+    if(type == net::PKT_MODS) { modsync::OnPacket(type, data, len); return; }
     if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK || type == net::PKT_LOBBY) world::OnPacket(type, data, len);
     else if(type == net::PKT_PEDS || type == net::PKT_WORLD_TIME) crowd::OnPacket(type, data, len);
     else if(type == net::PKT_BLIPS || (type == net::PKT_RELIABLE && len >= 1 && mission::HandlesReliable(data[0]))) mission::OnPacket(type, data, len);
@@ -1061,6 +1065,7 @@ bool Install(void* h, FLogger* log)
     sync::SetSession(&g_session);
     world::SetSession(&g_session);
     logshare::SetSession(&g_session);
+    modsync::SetSession(&g_session);
     RegisterInterface(SACOOP_NET_INTERFACE, &g_netApi);
     Log(false, "Канал данных для других модов (SACoopNet) зарегистрирован");
     if(!gta::Init(h, 0))
@@ -1225,7 +1230,12 @@ void GiveWeapon(bool toFriend, int weapon, int ammo)
     g_giveQueue.push_back(GiveReq{ toFriend, weapon, ammo });
 }
 bool CanGiveToFriend() { return g_cfg.role == net::Role::Host && g_session.Connected(); }
-bool PopNotice(char* out, size_t len) { return world::PopNotice(out, len) || sync::PopNotice(out, (int)len); }
+bool PopNotice(char* out, size_t len)
+{
+    std::string m;
+    if(modsync::PopNotice(m)) { snprintf(out, len, "%s", m.c_str()); return true; }
+    return world::PopNotice(out, len) || sync::PopNotice(out, (int)len);
+}
 
 void MenuTick()
 {
@@ -1239,6 +1249,7 @@ void MenuTick()
     TraceNet(now);
     world::Tick(g_cfg.role, g_session.Connected(), false, now);
     logshare::Frame(g_cfg.role, g_session.Connected(), now);
+    modsync::Frame(g_cfg.role, g_session.Connected(), false, now);
 }
 
 bool MenuUpdateTick() { return world::RunDeferredLoad(true); }

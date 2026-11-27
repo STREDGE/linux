@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "coop/coop.h"
+#include "coop/modsync.h"
 #include "platform/android.h"
 #include "voice/voice.h"
 #include "settings.h"
@@ -911,6 +912,13 @@ namespace
                 Text(F_BODY, ImVec2(dc.x + U(2.2f), (a.y + b.y - TextSize(F_BODY, "Ag").y) * 0.5f), C(kInk), names[i], half - U(7));
             }
             y += h + U(2);
+        }
+        // сверка модов (AML и CLEO) с хостом
+        for(const auto& ml : modsync::LobbyLines())
+        {
+            Rgb c = ml.level == 0 ? kGrove : ml.level == 1 ? kGold : kRed;
+            Text(F_SMALL, ImVec2(px, y), C(c), ml.text.c_str(), pw);
+            y += TextSize(F_SMALL, ml.text.c_str(), pw).y + U(1.2f);
         }
         if(!l.isHost)
         {
