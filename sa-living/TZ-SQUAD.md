@@ -1,7 +1,7 @@
 # ТЗ: Отряд с ИИ (SA Living + режим S.W.A.T. из SA Story) — черновик на согласование
 
 **Статус:** ТЗ согласовано по ответам игрока, код не начат. Писать код — после команды игрока «начинай».
-**Схема:** [`docs/squad_scheme.png`](docs/squad_scheme.png). Связанное ТЗ — база: [`../sa-story/docs/TZ-BASE.md`](../sa-story/docs/TZ-BASE.md).
+**Схема:** [`docs/squad_scheme.png`](docs/squad_scheme.png). **Своя тактика спецназа (210 действий, самописные руки/водитель/пилот):** [`TZ-SQUAD-TACTICS.md`](TZ-SQUAD-TACTICS.md). Связанное ТЗ — база: [`../sa-story/docs/TZ-BASE.md`](../sa-story/docs/TZ-BASE.md).
 
 ## 1. Что сказал игрок
 
