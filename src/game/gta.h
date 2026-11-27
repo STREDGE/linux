@@ -168,6 +168,10 @@ namespace gta
     extern uintptr_t (*ClumpGetAssociation)(uintptr_t clump, unsigned anim);
     extern void      (*AddAnimBlockRef)(int block);
     extern void      (*VehSetWindowOpen)(uintptr_t veh, uint8_t door);
+    // особые модели педов миссий (ячейки 290..299): имя ставит сценарий хоста, у друга его надо поставить так же
+    extern void      (*RequestSpecialModel)(int model, const char* name, int flags);
+    extern bool      (*DirFindItem)(uintptr_t dir, const char* name, unsigned* pos, unsigned* size);
+    extern uintptr_t ModelInfoPtrs, ExtraObjectsDir;
     extern void      (*AnimSetDeleteCallback)(uintptr_t assoc, void* cb, void* data);
     extern void      (*AnimSetCurrentTime)(uintptr_t assoc, float t);
     extern void*     DefaultAnimCB;
@@ -203,6 +207,9 @@ namespace gta
     }
     int       ActiveTaskType(uintptr_t ped, uintptr_t* taskOut = nullptr);
     bool      ModelLoaded(int model);
+    bool      ModelOnDisk(int model);                // файл модели есть (у пустой «особой» ячейки — нет)
+    const char* ModelName(int model);                // имя модели ("" — нет)
+    bool      SpecialOnDisk(const char* name);       // особый персонаж с таким именем есть в файлах игры
     uintptr_t CurrentWeapon(uintptr_t ped);          // CWeapon* в руках
     int       CurrentWeaponType(uintptr_t ped);
     int       WeaponModel(int weaponType);           // модель оружия (0 — без модели)

@@ -82,6 +82,31 @@ namespace
     std::vector<Track> g_tracks;
     uint16_t g_nextId = 1;
     uint32_t g_seq = 0;
+
+    // ---------- особые модели педов миссий (ячейки 290..299: Биг Смоук, Свит, Райдер…) ----------
+    // Имя в ячейку ставит сценарий миссии — а он идёт только у хоста. У друга ячейка пустая: заказать такую модель
+    // обычным RequestModel нельзя (файла нет — вылет в потоке загрузки, 1.5.5: друг пропал через 0.1 с после педа 299).
+    // Хост шлёт имя (REL_SPECIAL), друг ставит его в ту же ячейку через CStreaming::RequestSpecialModel.
+    constexpr int kSpecFirst = 290, kSpecLast = 299;
+    bool IsSpecialModel(int m) { return m >= kSpecFirst && m <= kSpecLast; }
+    struct Spec { char name[24] = {}; uint64_t sentUs = 0; uint64_t requestUs = 0; bool warned = false; };
+    Spec g_spec[kSpecLast - kSpecFirst + 1];
+
+    void HostSpecial(int model)
+    {
+        Spec& sp = g_spec[model - kSpecFirst];
+        const char* nm = ModelName(model);
+        if(!nm[0] || strlen(nm) > 20) return;
+        bool changed = strcasecmp(sp.name, nm) != 0;
+        if(!changed && net::Since(g_now, sp.sentUs) < 5000000) return;     // повтор раз в 5 с (друг мог перезайти)
+        net::SpecialEvent e{}; e.type = net::REL_SPECIAL; e.model = (uint16_t)model;
+        strncpy(e.name, nm, sizeof(e.name) - 1);
+        g_session->SendReliable(&e, sizeof(e));
+        if(changed) Log(false, "[ЛЮДИ] Пед миссии: особая модель %d — «%s» (имя отправлено другу)", model, nm);
+        strncpy(sp.name, nm, sizeof(sp.name) - 1); sp.name[sizeof(sp.name) - 1] = 0;
+        sp.sentUs = g_now;
+    }
+
     uint64_t g_nextSendUs = 0, g_nextCopUs = 0, g_nextTimeUs = 0, g_lastBustedUs = 0;
 
     Track* FindTrack(uintptr_t ped) { for(auto& t : g_tracks) if(t.ped == ped) return &t; return nullptr; }
@@ -157,6 +182,7 @@ namespace
             memset(&e, 0, sizeof(e));
             e.id = t->id;
             e.model = (uint16_t)ModelOf(ped);
+            if(IsSpecialModel(e.model)) HostSpecial(e.model);
             e.pedType = (uint8_t)Field<int>(ped, off::PedType);
             bool dead = !PedIsAlive(ped);
             e.flags = dead ? net::PDF_DEAD : 0;
@@ -268,7 +294,7 @@ namespace
         net::PedEntry st{}; uint64_t stUs = 0;
         uint64_t requestUs = 0; uint64_t goUs = 0; CVector goTarget{}; int goMove = 0;
         bool dead = false; bool killed = false; int weapon = -1;
-        bool jackLogged = false;
+        bool jackLogged = false; bool noModel = false;
     };
     std::vector<Copy> g_copies;
     bool g_popOff = false;                // своё население выключено
@@ -308,6 +334,37 @@ namespace
         Log(false, "[ЛЮДИ] Твоё население выключено: убрано педов %d, машин %d — дальше люди и машины с телефона хоста", peds, vehs);
     }
 
+    // Друг: особая модель с именем от хоста загружена? (нет — заказать правильно и подождать)
+    bool SpecialReady(int model)
+    {
+        Spec& sp = g_spec[model - kSpecFirst];
+        if(!sp.name[0]) return false;                                      // имя от хоста ещё не пришло
+        if(!RequestSpecialModel || !SpecialOnDisk(sp.name))
+        {
+            if(!sp.warned) { sp.warned = true; Log(true, "[ЛЮДИ] Педа миссии «%s» (модель %d) нет в файлах игры — у тебя его не будет", sp.name, model); }
+            return false;
+        }
+        bool same = strcasecmp(ModelName(model), sp.name) == 0;
+        if(same && ModelLoaded(model)) return true;
+        if(!same)
+        {
+            // в ячейке был другой персонаж — сначала убрать свои копии с ним
+            for(auto& o : g_copies) if(o.st.model == model && CopyValid(o)) DeleteCopy(o, "в ячейке другой персонаж");
+            sp.requestUs = 0;
+        }
+        if(!sp.requestUs)
+        {
+            RequestSpecialModel(model, sp.name, 2); sp.requestUs = g_now;
+            Log(false, "[ЛЮДИ] Гружу педа миссии «%s» (особая модель %d)", sp.name, model);
+            return false;
+        }
+        if(net::Since(g_now, sp.requestUs) < 1000000) return false;
+        LoadAllRequestedModels(false);
+        if(ModelLoaded(model)) return true;
+        if(net::Since(g_now, sp.requestUs) > 5000000) sp.requestUs = 0;   // не загрузилась — заказать ещё раз
+        return false;
+    }
+
     void ApplyCopy(Copy& c)
     {
         const net::PedEntry& s = c.st;
@@ -317,8 +374,14 @@ namespace
         {
             if(c.killed) return;
             int model = s.model;
-            if(!ModelLoaded(model))
+            if(IsSpecialModel(model)) { if(!SpecialReady(model)) return; }
+            else if(!ModelLoaded(model))
             {
+                if(!ModelOnDisk(model))
+                {
+                    if(!c.noModel) { c.noModel = true; Log(true, "[ЛЮДИ] Модели педа %d нет в файлах игры — копии #%u не будет", model, c.id); }
+                    return;
+                }
                 if(!c.requestUs) { RequestModel(model, 2); c.requestUs = g_now; return; }
                 if(net::Since(g_now, c.requestUs) < 1000000) return;
                 LoadAllRequestedModels(false);
@@ -566,6 +629,24 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
             c->st = e; c->stUs = g_now ? g_now : net::NowUs();
         }
     }
+    else if(type == net::PKT_RELIABLE && len == sizeof(net::SpecialEvent) && data[0] == net::REL_SPECIAL)
+    {
+        net::SpecialEvent e; memcpy(&e, data, sizeof(e)); e.name[sizeof(e.name) - 1] = 0;
+        if(!IsSpecialModel(e.model)) return;
+        size_t n = strlen(e.name);
+        if(n < 1 || n > 20) return;
+        for(size_t i = 0; i < n; ++i)
+        {
+            unsigned char ch = (unsigned char)e.name[i];
+            if(!(ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))) return;
+        }
+        Spec& sp = g_spec[e.model - kSpecFirst];
+        if(strcasecmp(sp.name, e.name) != 0)
+        {
+            Log(false, "[ЛЮДИ] Хост: особая модель %d — «%s»", (int)e.model, e.name);
+            memcpy(sp.name, e.name, sizeof(sp.name)); sp.requestUs = 0; sp.warned = false;
+        }
+    }
     else if(type == net::PKT_WORLD_TIME && len == sizeof(net::WorldTimePacket))
     {
         const auto* t = (const net::WorldTimePacket*)data;
@@ -590,6 +671,7 @@ void Reset(const char* why)
     g_popOff = false;
     g_tracks.clear();
     g_active = false;
+    for(auto& sp : g_spec) sp = Spec{};
 }
 
 bool Active() { return g_active; }

@@ -175,6 +175,7 @@ namespace net
         REL_MISSION_TEXT = 7,  // хост загрузил тексты миссии (нужны для субтитров катсцены)
         REL_SEAT = 8,          // хост -> друг: садись в мою машину на это место (начало миссии)
         REL_RECRUIT = 9,       // друг -> хост: позвал педа банды к себе в группу
+        REL_SPECIAL = 10,      // хост -> друг: имя «особой» модели педа миссии (ячейки 290..299), с 1.5.6
     };
     struct DamageEvent
     {
@@ -270,6 +271,7 @@ namespace net
     struct MissionTextEvent { uint8_t type; uint8_t pad[3]; char stem[8]; };
     struct SeatEvent        { uint8_t type; uint8_t seat; uint16_t vehId; };   // seat: 1.. — пассажир (номер места + 1)
     struct RecruitEvent     { uint8_t type; uint8_t pad; uint16_t npc; };
+    struct SpecialEvent     { uint8_t type; uint8_t pad; uint16_t model; char name[24]; };   // REL_SPECIAL
 
     // Метки миссии хоста (у друга — такие же на карте)
     struct BlipEntry

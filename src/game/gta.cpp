@@ -69,6 +69,9 @@ namespace gta
     uintptr_t (*ClumpGetAssociation)(uintptr_t, unsigned)              = nullptr;
     void      (*AddAnimBlockRef)(int)                                  = nullptr;
     void      (*VehSetWindowOpen)(uintptr_t, uint8_t)                  = nullptr;
+    void      (*RequestSpecialModel)(int, const char*, int)            = nullptr;
+    bool      (*DirFindItem)(uintptr_t, const char*, unsigned*, unsigned*) = nullptr;
+    uintptr_t ModelInfoPtrs = 0, ExtraObjectsDir = 0;
     void      (*AnimSetDeleteCallback)(uintptr_t, void*, void*)        = nullptr;
     void      (*AnimSetCurrentTime)(uintptr_t, float)                  = nullptr;
     void*     DefaultAnimCB = nullptr;
@@ -166,6 +169,11 @@ namespace gta
         Resolve(h, (void**)&ClumpGetAssociation,    "_Z30RpAnimBlendClumpGetAssociationP7RpClumpj");
         Resolve(h, (void**)&AddAnimBlockRef,        "_ZN12CAnimManager15AddAnimBlockRefEi");
         Resolve(h, (void**)&VehSetWindowOpen,       "_ZN8CVehicle17SetWindowOpenFlagEh");
+        // особые модели педов миссий (ячейки 290..299) — необязательные
+        Resolve(h, (void**)&RequestSpecialModel,    "_ZN10CStreaming19RequestSpecialModelEiPKci");
+        Resolve(h, (void**)&DirFindItem,            "_ZN10CDirectory8FindItemEPKcRjS2_");
+        Resolve(h, (void**)&ModelInfoPtrs,          "_ZN10CModelInfo16ms_modelInfoPtrsE");
+        Resolve(h, (void**)&ExtraObjectsDir,        "_ZN10CStreaming19ms_pExtraObjectsDirE");
         Resolve(h, (void**)&AnimSetDeleteCallback,  "_ZN21CAnimBlendAssociation17SetDeleteCallbackEPFvPS_PvES1_");
         Resolve(h, (void**)&AnimSetCurrentTime,     "_ZN21CAnimBlendAssociation14SetCurrentTimeEf");
         Resolve(h, (void**)&DefaultAnimCB,          "_ZN20CDefaultAnimCallback13DefaultAnimCBEP21CAnimBlendAssociationPv");
@@ -193,6 +201,40 @@ namespace gta
     {
         if(!StreamingInfo || model < 0 || model >= 20000) return false;
         return Field<uint8_t>(StreamingInfo + (uintptr_t)model * off::StreamInfoSize, off::StreamStatus) == 1;
+    }
+
+    // Файл модели есть на диске (у «особой» ячейки без имени размер 0 — заказывать такую нельзя: вылет в потоке загрузки)
+    bool ModelOnDisk(int model)
+    {
+        if(!StreamingInfo || model < 0 || model >= 20000) return false;
+        uintptr_t si = StreamingInfo + (uintptr_t)model * off::StreamInfoSize;
+        return Field<uint8_t>(si, off::StreamStatus) == 1 || Field<uint32_t>(si, 0xC) != 0;
+    }
+
+    // Имя модели (CBaseModelInfo+0xC, до 20 букв) — "" если нет
+    const char* ModelName(int model)
+    {
+        if(!ModelInfoPtrs || model < 0 || model >= 20000) return "";
+        uintptr_t mi = Field<uintptr_t>(ModelInfoPtrs, (uintptr_t)model * 8);
+        if(!mi) return "";
+        const char* n = (const char*)(mi + 0xC);
+        for(int i = 0; i < 21; ++i)
+        {
+            unsigned char ch = (unsigned char)n[i];
+            if(!ch) return i ? n : "";
+            if(!(ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))) return "";
+        }
+        return "";
+    }
+
+    // Особый персонаж с таким именем есть в файлах игры
+    bool SpecialOnDisk(const char* name)
+    {
+        if(!DirFindItem || !ExtraObjectsDir || !name || !name[0]) return false;
+        uintptr_t dir = Field<uintptr_t>(ExtraObjectsDir, 0);
+        if(!dir) return false;
+        unsigned pos = 0, size = 0;
+        return DirFindItem(dir, name, &pos, &size) && size != 0;
     }
 
     uintptr_t CurrentWeapon(uintptr_t ped)

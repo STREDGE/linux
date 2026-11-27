@@ -310,6 +310,7 @@ namespace
         int model = v.st.model;
         if(!ModelLoaded(model))
         {
+            if(!ModelOnDisk(model)) { Log(true, "[МАШИНЫ] Модели %d нет в файлах игры — копии %04X не будет", model, v.id); v.dead = true; return false; }
             if(!v.requestUs) { RequestModel(model, 2); v.requestUs = g_ctx.now; return false; }
             if(net::Since(g_ctx.now, v.requestUs) < 1500000) return false;
             LoadAllRequestedModels(false);

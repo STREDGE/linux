@@ -1046,7 +1046,7 @@ static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
     if(type == net::PKT_LOG_CHUNK || type == net::PKT_LOG_ACK) { logshare::OnPacket(type, data, len); return; }
     if(type == net::PKT_MODS || type == net::PKT_MODFILE_REQ || type == net::PKT_MODFILE_CHUNK || type == net::PKT_MODFILE_ACK) { modsync::OnPacket(type, data, len); return; }
     if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK || type == net::PKT_LOBBY) world::OnPacket(type, data, len);
-    else if(type == net::PKT_PEDS || type == net::PKT_WORLD_TIME) crowd::OnPacket(type, data, len);
+    else if(type == net::PKT_PEDS || type == net::PKT_WORLD_TIME || (type == net::PKT_RELIABLE && len >= 1 && data[0] == net::REL_SPECIAL)) crowd::OnPacket(type, data, len);
     else if(type == net::PKT_BLIPS || (type == net::PKT_RELIABLE && len >= 1 && mission::HandlesReliable(data[0]))) mission::OnPacket(type, data, len);
     else sync::OnPacket(type, data, len);
 }
