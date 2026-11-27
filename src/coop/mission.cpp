@@ -208,6 +208,9 @@ namespace
     char     g_cutName[9] = "", g_cutStem[9] = "";
     uint64_t g_cutSinceUs = 0, g_teleportAtUs = 0;
     CVector  g_cutFreezePos{};
+    uint8_t  g_cutPrevArea = 0;           // друг: свой интерьер до катсцены хоста (вернуть, если хост ещё в катсцене)
+    bool     g_waitHostCutEnd = false;    // друг: своя копия кончилась раньше — к хосту переносим после его конца
+    uint64_t g_waitHostCutSinceUs = 0;
 
     void SendCutEnd(const char* why)
     {
@@ -609,6 +612,16 @@ namespace
     }
 
     // ========== катсцена у друга ==========
+    // Интерьер (CGame::currArea): катсцену хоста показываем в его интерьере (вступление PROLOG1 — интерьер 14:
+    // без этого у друга был чёрный экран, а после — «пустой мир» с растянутыми моделями, тест 1.4.1)
+    void SetLocalArea(uint8_t a, const char* why)
+    {
+        if(!CurrArea || !g_local || *CurrArea == a) return;
+        *CurrArea = a;
+        Field<uint8_t>(g_local, off::EntArea) = a;
+        Log(false, "[КАТСЦЕНА] Интерьер %u (%s)", a, why);
+    }
+
     void ClientCutFrame()
     {
         uintptr_t pi = Players;   // CWorld::Players[0]
@@ -619,6 +632,7 @@ namespace
             {
                 if(InVehicle(g_local)) sync::WarpPedOut(g_local);
                 g_cutFreezePos = GetPosition(g_local);
+                if(g_rs) SetLocalArea(g_rs->area, "как у хоста в катсцене");
                 if(MakePlayerSafe) MakePlayerSafe(pi, true, 10.0f);
                 if(g_cutStem[0] && LoadMissionText && g_theText) LoadMissionText(g_theText, g_cutStem);
                 CutLoad(g_cutName);
@@ -627,6 +641,7 @@ namespace
                 break;
             }
             case Cut::Loading:
+                if(g_rs) SetLocalArea(g_rs->area, "как у хоста в катсцене");
                 SetPosition(g_local, g_cutFreezePos);
                 Field<CVector>(g_local, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };
                 if(g_cutLoadStatus && *g_cutLoadStatus == 2)
@@ -643,6 +658,7 @@ namespace
                 }
                 break;
             case Cut::Playing:
+                if(g_rs) SetLocalArea(g_rs->area, "как у хоста в катсцене");
                 SetPosition(g_local, g_cutFreezePos);
                 Field<CVector>(g_local, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };
                 if(g_cutEndReceived && !CutFinished())
@@ -663,8 +679,21 @@ namespace
                 if(MakePlayerSafe) MakePlayerSafe(pi, false, 10.0f);
                 g_cut = Cut::None;
                 g_cutHaveEnded = true; g_cutEndedId = g_cutId;
-                g_teleportAtUs = g_now + 1500000;      // скрипт хоста ставит его на место — потом и друга рядом
+                if(g_cutEndReceived)
+                    g_teleportAtUs = g_now + 1500000;  // скрипт хоста ставит его на место — потом и друга рядом
+                else
+                {   // у хоста катсцена ещё идёт (его интерьер — катсценный): вернуть свой интерьер и ждать её конца
+                    SetLocalArea(g_cutPrevArea, "своя копия кончилась раньше — свой мир");
+                    SetPosition(g_local, g_cutFreezePos);
+                    g_waitHostCutEnd = true; g_waitHostCutSinceUs = g_now; g_teleportAtUs = 0;
+                    Log(false, "[КАТСЦЕНА] У тебя кончилась раньше — к хосту перенесу, когда кончится у него");
+                }
                 break;
+        }
+        if(g_waitHostCutEnd && g_cut == Cut::None && net::Since(g_now, g_waitHostCutSinceUs) > 120000000)
+        {   // конец катсцены от хоста так и не пришёл — переносим всё равно
+            g_waitHostCutEnd = false; g_teleportAtUs = g_now + 500000;
+            Log(true, "[КАТСЦЕНА] Конец катсцены хоста не пришёл за 2 мин — переношу к хосту");
         }
         if(g_teleportAtUs && g_now >= g_teleportAtUs && g_cut == Cut::None)
         {
@@ -887,6 +916,8 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
                 Log(false, "[КАТСЦЕНА] Новая катсцена хоста, а прошлая ещё идёт — убираю прошлую");
                 CutDelete(); g_cut = Cut::None;
             }
+            if(g_cut == Cut::None || g_cut == Cut::After) g_cutPrevArea = CurrArea ? *CurrArea : 0;   // свой интерьер до катсцен
+            g_waitHostCutEnd = false;
             g_cutId = e.counter; g_cutEndReceived = false;
             memcpy(g_cutName, e.name, 8); g_cutName[8] = 0;
             memcpy(g_cutStem, e.textStem, 8); g_cutStem[8] = 0;
@@ -894,6 +925,11 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
         }
         else if(e.op == net::CUT_END)
         {
+            if(e.counter == g_cutId && g_waitHostCutEnd)
+            {   // своя копия уже кончилась — теперь и у хоста: через 1,5 с (он встанет на место) — к нему
+                g_waitHostCutEnd = false; g_teleportAtUs = g_now + 1500000;
+                Log(false, "[КАТСЦЕНА] У хоста тоже кончилась — переношу к нему");
+            }
             if(e.counter == g_cutId && g_cut != Cut::None) g_cutEndReceived = true;
             else if(!g_cutHaveEnded || AfterNewer(e.counter, g_cutEndedId)) { g_cutHaveEnded = true; g_cutEndedId = e.counter; }
         }
@@ -921,7 +957,7 @@ void Reset(const char* why)
 {
     if(!g_ok) return;
     bool any = g_cut != Cut::None || !g_hiddenContacts.empty() || !g_mirrors.empty() || g_hidden.ped || g_forcedOnMission;
-    g_cut = Cut::None; g_cutEndReceived = false; g_teleportAtUs = 0;
+    g_cut = Cut::None; g_cutEndReceived = false; g_teleportAtUs = 0; g_waitHostCutEnd = false;
     RestoreContacts();
     if(g_forcedOnMission) { SetOnMissionFlag(0); g_forcedOnMission = false; }
     ClearMirrors();

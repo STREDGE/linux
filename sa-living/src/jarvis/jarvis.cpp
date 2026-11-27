@@ -314,6 +314,22 @@ namespace
             float x = 0, y = 0, z = 0; bool autoZ = true; std::string title;
             std::string place = in["place"].str();
             std::string low = jbrain::Lower(place);
+            bool moveFriend = in["who"].str() == "friend";
+            if(moveFriend)
+            {   // перенести ДРУГА (его CJ двигает его телефон): считаем место здесь, команду шлём другу
+                if(coopnet::GetRole() == coopnet::NONE || !coopnet::Connected()) return "друга нет на связи — переносить некого";
+                if(place.empty() || low == "me" || low.find("ко мне") != std::string::npos || low.find("мне") == 0)
+                {
+                    uintptr_t pl = game::Player(); if(!pl) return "ты ещё не в игре";
+                    game::Vec mp = game::Pos(pl);
+                    json::Value m = json::Value::Object(); m["t"] = "jv"; m["tool"] = "teleport";
+                    json::Value a = json::Value::Object(); a["x"] = mp.x + 1.5f; a["y"] = mp.y + 1.5f; a["z"] = mp.z; a["exact"] = true; a["title"] = "к " + std::string(coopnet::MyNick()); m["in"] = a;
+                    coopnet::Send(m);
+                    Done("Друг: перенос к тебе");
+                    return std::string("команда отправлена: друг «") + coopnet::PeerNick() + "» переносится к игроку (квадрат " + jbrain::GridOf(mp.x, mp.y) + ")";
+                }
+                if(low == "friend") return "друг и так у себя — скажи, куда его перенести (ко мне, квадрат, место)";
+            }
             if(in.has("x") && in.has("y") && place.empty()) { x = (float)in["x"].num(); y = (float)in["y"].num(); if(in.has("z")) { z = (float)in["z"].num(); autoZ = false; } title = Fmt("%.0f, %.0f", x, y); }
             else if(low == "waypoint" || low.find("метк") != std::string::npos)
             {
@@ -335,9 +351,17 @@ namespace
                 else return "не знаю места «" + place + "». Есть квадраты A1–L12, метка на карте, свои места и: " + jbrain::PlaceList();
             }
             if(x < -3000 || x > 3000 || y < -3000 || y > 3000) return "это за пределами карты";
+            if(moveFriend)
+            {
+                json::Value m = json::Value::Object(); m["t"] = "jv"; m["tool"] = "teleport";
+                json::Value a = json::Value::Object(); a["x"] = x; a["y"] = y; a["z"] = z; a["exact"] = !autoZ; a["title"] = title; m["in"] = a;
+                coopnet::Send(m);
+                Done("Друг: перенос — " + title);
+                return std::string("команда отправлена: друг «") + coopnet::PeerNick() + "» переносится: " + title + " (квадрат " + jbrain::GridOf(x, y) + ")";
+            }
             TeleportTo(x, y, z, autoZ);
             Done("Перенос: " + title);
-            return "перенёс: " + title + " (квадрат " + jbrain::GridOf(x, y) + ")";
+            return "перенёс игрока: " + title + " (квадрат " + jbrain::GridOf(x, y) + ")";
         }
         if(tool == "place")
         {
@@ -612,7 +636,7 @@ namespace
 {"name":"give_weapon","description":"Выдать оружие. weapon — ключ: brassknuckle, golfclub, nightstick, knife, bat, shovel, poolcue, katana, chainsaw, grenade, teargas, molotov, satchel, pistol, silenced, deagle, shotgun, sawnoff, spas, uzi, tec9, mp5, ak47, m4, rifle, sniper, rpg, heatseeker, flamethrower, minigun, spraycan, extinguisher, camera, parachute. ammo — патроны (0 — обычный запас). to — me или friend (другу в коопе).","input_schema":{"type":"object","required":["weapon"],"properties":{"weapon":{"type":"string"},"ammo":{"type":"integer"},"to":{"type":"string","enum":["me","friend"]}}}},
 {"name":"take_weapons","description":"Забрать у игрока всё оружие.","input_schema":{"type":"object","properties":{}}},
 {"name":"wanted","description":"Розыск. level 0–6 (0 — снять). delta — прибавить/убавить звёзды. immune=true — полиция не трогает и звёзды не растут (false — как обычно).","input_schema":{"type":"object","properties":{"level":{"type":"integer"},"delta":{"type":"integer"},"immune":{"type":"boolean"}}}},
-{"name":"teleport","description":"Перенести игрока (вместе с машиной, если он в ней). place: квадрат сетки («C7» или «C7.3»; столбцы A–L с запада на восток, строки 1–12 с севера на юг, квадрат 500 м, подквадрат .1–.9), «waypoint» (метка на карте), «back» (назад), «friend» (к другу), название известного места (Гроув-стрит, аэропорт Лос-Сантоса/Сан-Фиерро/Лас-Вентураса, гора Чилиад, Зона 69, казино Четыре дракона, …) или своё место игрока. Либо точные x, y (и z) в координатах игры.","input_schema":{"type":"object","properties":{"place":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},
+{"name":"teleport","description":"Перенести игрока (вместе с машиной, если он в ней). place: квадрат сетки («C7» или «C7.3»; столбцы A–L с запада на восток, строки 1–12 с севера на юг, квадрат 500 м, подквадрат .1–.9), «waypoint» (метка на карте), «back» (назад), «friend» (к другу), название известного места (Гроув-стрит, аэропорт Лос-Сантоса/Сан-Фиерро/Лас-Вентураса, гора Чилиад, Зона 69, казино Четыре дракона, …) или своё место игрока. Либо точные x, y (и z) в координатах игры. who — КОГО переносить: me (игрока, по умолчанию) или friend (друга в коопе). «Перенеси друга ко мне» = who=friend, place=me. «Перенеси меня к другу» = place=friend.","input_schema":{"type":"object","properties":{"place":{"type":"string"},"who":{"type":"string","enum":["me","friend"]},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},
 {"name":"place","description":"Свои места игрока: save — запомнить текущее место под именем, delete — забыть, list — перечислить.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["save","delete","list"]},"name":{"type":"string"}}}},
 {"name":"player","description":"Игрок: health (100 — полное), armour (100), money (прибавить, можно отрицательное), god (бессмертие), never_tired (бег без усталости), infinite_ammo (патроны пополняются сами). Указывай только то, что меняешь.","input_schema":{"type":"object","properties":{"health":{"type":"integer"},"armour":{"type":"integer"},"money":{"type":"integer"},"god":{"type":"boolean"},"never_tired":{"type":"boolean"},"infinite_ammo":{"type":"boolean"}}}},
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
@@ -653,8 +677,19 @@ namespace
         if(s.jarvisConfirm == 1) p += "- Перед ЛЮБЫМ действием коротко переспрашивай «Подтверждаете?» и действуй только после «да».\n";
         else if(s.jarvisConfirm == 0) p += "- Обычное делай сразу. Только перед необратимым или опасным для прохождения (провалить или пройти миссию, удалить сохранение, открыть или закрыть районы, убить всех вокруг, массовые разрушения) спроси «Подтверждаете?» и действуй после «да».\n";
         else p += "- Ничего не переспрашивай, действуй сразу.\n";
-        if(coopnet::GetRole() == coopnet::CLIENT) p += "- Идёт кооп, игрок — гость: общий мир (время, погода, движение, районы, миссии) меняет только хост. На такие просьбы отвечай, что это решает хост. Личное (оружие, здоровье, перенос) — можно.\n";
-        else if(coopnet::GetRole() == coopnet::HOST) p += "- Идёт кооп, игрок — хост. «Другу» — значит напарнику (give_weapon to=friend, teleport place=friend).\n";
+        if(coopnet::GetRole() != coopnet::NONE)
+        {   // кто есть кто в коопе: номера и ники, чтобы не путать двух CJ
+            bool host = coopnet::GetRole() == coopnet::HOST;
+            std::string me = coopnet::MyNick(), mate = coopnet::PeerNick();
+            p += Fmt("- ИДЁТ КООП, В ИГРЕ ДВА CJ. Ты служишь игроку «%s» — Игрок %d (%s). Второй — «%s», Игрок %d (%s): отдельный CJ, им управляет "
+                     "друг со своего телефона. Его называют «друг», «второй», «напарник», «игрок %d» или по нику. %s\n",
+                     me.c_str(), host ? 1 : 2, host ? "хост" : "гость", mate.empty() ? "друг" : mate.c_str(), host ? 2 : 1, host ? "гость" : "хост", host ? 2 : 1,
+                     coopnet::Connected() ? "Друг сейчас на связи." : "Друг сейчас НЕ на связи — для него ничего не сделать.");
+            p += "- Про друга: «перенеси друга ко мне» — teleport who=friend place=me; «перенеси друга в …» — teleport who=friend place=…; "
+                 "«перенеси меня к другу» — teleport place=friend; «дай другу …» — give_weapon to=friend.\n";
+            if(!host) p += "- Игрок — гость: общий мир (время, погода, движение, районы, миссии) меняет только хост. На такие просьбы отвечай, что это решает хост. Личное (оружие, здоровье, перенос) — можно.\n";
+        }
+        p += "- Говори ровно то, что вернул инструмент: кого и куда перенесли, что выдали. Не выдумывай результат.\n";
         return p;
     }
 
@@ -850,10 +885,21 @@ void OnCoopMessage(const json::Value& m)
 {
     // хост выдал что-то другу: выполняем у себя только личное
     std::string tool = m["tool"].str();
+    if(tool == "teleport")
+    {   // Джарвис второго игрока переносит нас (к себе или в место): координаты уже посчитаны у него
+        const json::Value& in = m["in"];
+        if(!game::Player() || !script::Ready()) return;
+        float x = (float)in["x"].num(), y = (float)in["y"].num(), z = (float)in["z"].num();
+        if(x < -3000 || x > 3000 || y < -3000 || y > 3000) return;
+        TeleportTo(x, y, z, !in["exact"].b(false));
+        talk::Notify(std::string("Джарвис друга перенёс тебя: ") + in["title"].str());
+        LOG_INFO("[ДЖАРВИС] друг перенёс меня: %s (%.0f, %.0f)", in["title"].str().c_str(), x, y);
+        return;
+    }
     if(tool != "give_weapon") return;
     json::Value in = m["in"]; in["to"] = "me";
     std::string r = Exec(tool, in);
-    talk::Notify("Джарвис хоста: " + r);
+    talk::Notify("Джарвис друга: " + r);
 }
 
 void Frame()
