@@ -1,8 +1,7 @@
 #pragma once
-// Подробный лог сессии коопа («супер-лог»): всегда включён, обычный текст, один файл на запуск игры.
-//   Documents/AMLModLogs/net.sacoop.mod/trace/trace_ГГГГ-ММ-ДД_ЧЧ-ММ-СС.txt  (хранятся последние 10)
-// Формат строки — как у SA Living (тот же разборщик tools/trace/trace_tool.py):
-//   ЧЧ:ММ:СС.ммм [ТЕГ] текст
+// Лог коопа: всегда включён, ОДИН общий файл с SA Living и Tailscale (с 1.4.8): Documents/SA_LOG.txt
+// (third_party/onelog). Формат строки (разборщик tools/trace/trace_tool.py):
+//   К ЧЧ:ММ:СС.ммм [ТЕГ] текст      (К — кооп, И — SA Living, Т — Tailscale)
 // Запись — фоновым потоком; из игрового и сетевых потоков строки только кладутся в очередь под мьютексом.
 // Пространство имён ctrace (не trace): у SA Living свой trace, имена не должны совпадать.
 
@@ -17,7 +16,7 @@ namespace ctrace
     void LineV(const char* tag, const char* fmt, va_list ap);
     // Строка из обычного лога мода: «[ТЕГ] текст» → тег из скобок, иначе ЛОГ; ошибки — с пометкой
     void FromLog(bool error, const char* text);
-    void Crash(int sig, unsigned long pc, unsigned long lr, const char* lib, unsigned long off, const char* where);
+    void Crash(int sig, unsigned long pc, unsigned long lr, const char* lib, unsigned long off, const char* where, unsigned long lrGame);
     const char* Path();
 }
 

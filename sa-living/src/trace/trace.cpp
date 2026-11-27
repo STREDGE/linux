@@ -1,9 +1,11 @@
 #include "trace.h"
+#include <onelog/onelog.h>
 
 #include <mod/amlmod.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -38,7 +40,7 @@ namespace
     std::mutex g_mx;
     std::condition_variable g_cv;
     std::string g_pending;               // ещё не записано в файл
-    FILE* g_file = nullptr;
+    int g_fd = -1;
     std::string g_path;
     std::atomic<bool> g_started{ false };
 
@@ -53,7 +55,7 @@ namespace
                 g_cv.wait_for(l, std::chrono::milliseconds(250));
                 chunk.swap(g_pending);
             }
-            if(!chunk.empty() && g_file) { fwrite(chunk.data(), 1, chunk.size(), g_file); fflush(g_file); }
+            if(!chunk.empty()) onelog::Write(g_fd, chunk.data(), chunk.size());
             chunk.clear();
         }
     }
@@ -73,27 +75,8 @@ namespace
         if(g_pending.size() > (8u << 20)) g_pending.erase(0, g_pending.size() - (4u << 20));   // запись отстала — не растём бесконечно
     }
 
-    bool MkDirs(const std::string& p)
-    {
-        std::string cur;
-        for(size_t i = 0; i < p.size(); ++i)
-        {
-            cur += p[i];
-            if(p[i] == '/' && cur.size() > 1) mkdir(cur.c_str(), 0777);
-        }
-        return mkdir(p.c_str(), 0777) == 0 || errno == EEXIST;
-    }
 
     // оставить последние 10 файлов сессий (без сжатия — место занимают)
-    void Prune(const std::string& dir)
-    {
-        DIR* d = opendir(dir.c_str()); if(!d) return;
-        std::vector<std::string> names;
-        while(dirent* e = readdir(d)) { std::string n = e->d_name; if(n.rfind("trace_", 0) == 0) names.push_back(n); }
-        closedir(d);
-        std::sort(names.begin(), names.end());
-        while(names.size() > 10) { remove((dir + "/" + names.front()).c_str()); names.erase(names.begin()); }
-    }
 
     std::string Prop(const char* k) { char v[PROP_VALUE_MAX] = ""; __system_property_get(k, v); return v; }
 
@@ -273,7 +256,7 @@ void LineV(const char* tag, const char* fmt, va_list ap)
     char buf[4096];
     vsnprintf(buf, sizeof(buf), fmt, ap);
     std::string s; s.reserve(strlen(buf) + 40);
-    s += ts; s += " ["; s += tag; s += "] "; s += buf; s += '\n';
+    s += "И "; s += ts; s += " ["; s += tag; s += "] "; s += buf; s += '\n';
     Push(s);
 }
 
@@ -286,25 +269,19 @@ void Init()
 {
     if(g_started) return;
     const char* root = aml->GetInternalPath();
-    std::string dir = std::string(root && root[0] ? root : "/sdcard") + "/Documents/AMLModLogs/" + modinfo->GUID() + "/trace";
-    MkDirs(dir);
-    time_t t = time(nullptr); struct tm tm; localtime_r(&t, &tm);
-    char name[64]; strftime(name, sizeof(name), "trace_%Y-%m-%d_%H-%M-%S.txt", &tm);
-    g_path = dir + "/" + name;
-    g_file = fopen(g_path.c_str(), "wb");
-    if(!g_file)
+    onelog::RemoveOld(root, modinfo->GUID(), "saliving");    // старые saliving.txt, saliving_prev.txt, trace/
+    g_fd = onelog::Open(root, &g_path);                       // общий с SA Coop: Documents/SA_LOG.txt
+    if(g_fd < 0)
     {   // папка Documents недоступна — личная папка игры
         const char* data = aml->GetDataPath();
-        dir = std::string(data ? data : ".") + "/SALiving/trace";
-        MkDirs(dir);
-        g_path = dir + "/" + name;
-        g_file = fopen(g_path.c_str(), "wb");
+        g_path = std::string(data ? data : ".") + "/SA_LOG.txt";
+        g_fd = open(g_path.c_str(), O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
     }
-    if(!g_file) { LogError("Подробный лог: не удалось создать файл (%s)", strerror(errno)); return; }
-    Prune(dir);
+    if(g_fd < 0) { LogError("Лог: не удалось открыть файл (%s)", strerror(errno)); return; }
     g_started = true;
     std::thread(Writer).detach();
-    LogInfo("Подробный лог: %s", g_path.c_str());
+    time_t t = time(nullptr); struct tm tm; localtime_r(&t, &tm);
+    LogInfo("Лог: %s (строки «И» — SA Living)", g_path.c_str());
 
     // ---- шапка ----
     Line("СЕССИЯ", "SA Living %s, начало %04d-%02d-%02d %02d:%02d:%02d", modinfo->VersionString(), tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
@@ -383,12 +360,11 @@ void Mark(const std::string& text)
 
 void Crash(int sig, unsigned long pc, unsigned long lr, const char* lib, unsigned long off, const char* where)
 {
-    if(!g_started || !g_file) return;
+    if(!g_started || g_fd < 0) return;
     char buf[512];
-    snprintf(buf, sizeof(buf), "XX:XX:XX.XXX [ВЫЛЕТ] сигнал %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX, мод: %s\n", sig, lib ? lib : "?", off, pc, lr, where ? where : "?");
+    int n = snprintf(buf, sizeof(buf), "И XX:XX:XX.XXX [ВЫЛЕТ] сигнал %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX, мод: %s\n", sig, lib ? lib : "?", off, pc, lr, where ? where : "?");
     // в обработчике вылета: дописать хвост очереди без ожидания потока записи
-    if(g_mx.try_lock()) { std::string rest; rest.swap(g_pending); g_mx.unlock(); fwrite(rest.data(), 1, rest.size(), g_file); }
-    fwrite(buf, 1, strlen(buf), g_file);
-    fflush(g_file);
+    if(g_mx.try_lock()) { std::string rest; rest.swap(g_pending); g_mx.unlock(); onelog::Write(g_fd, rest.data(), rest.size()); }
+    onelog::Write(g_fd, buf, n > 0 ? (size_t)n : 0);
 }
 }

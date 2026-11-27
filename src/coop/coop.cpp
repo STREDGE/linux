@@ -115,8 +115,8 @@ namespace
         vsnprintf(buf, sizeof(buf), fmt, args);
         va_end(args);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
-        if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }
-        ctrace::FromLog(error, buf);
+        if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }   // → SA_LOG.txt (FLogger::Sink)
+        else ctrace::FromLog(error, buf);
     }
 
     float WrapAngle(float a)

@@ -186,8 +186,17 @@ bool FLogger::Open()
     return OpenViaMediaStore();
 }
 
+void (*FLogger::Sink)(bool error, const char* text) = nullptr;
+
 void FLogger::WriteLine(const char* szPrefix, const char* szMessage, va_list args)
 {
+    if(Sink)
+    {
+        char line[2048];
+        vsnprintf(line, sizeof(line), szMessage, args);
+        Sink(szPrefix && strcmp(szPrefix, "ERROR") == 0, line);
+        return;
+    }
     if(!Open()) return;
 
     char buffer[2048];

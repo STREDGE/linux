@@ -74,8 +74,8 @@ namespace net
         vsnprintf(buf, sizeof(buf), fmt, args);
         va_end(args);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
-        if(m_log) { if(error) m_log->Error("%s", buf); else m_log->Info("%s", buf); }
-        ctrace::FromLog(error, buf);
+        if(m_log) { if(error) m_log->Error("%s", buf); else m_log->Info("%s", buf); }   // → SA_LOG.txt (FLogger::Sink)
+        else ctrace::FromLog(error, buf);
     }
 
     void Session::PushEvent(EventType t, const char* nick)

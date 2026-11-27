@@ -14,6 +14,9 @@ public:
     void Error(const char* szMessage, ...);
     void Write(const char* szMessage, ...);
 
+    // Задан — строки идут сюда, а не в свой файл (SA Coop: всё в один общий SA_LOG.txt)
+    static void (*Sink)(bool error, const char* text);
+
 private:
     bool Open();
     bool OpenViaMediaStore();

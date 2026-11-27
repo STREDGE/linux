@@ -21,9 +21,9 @@
 #include "trace/ctrace.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 1.4.7, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 1.4.8, SA Coop Team)
 
-// Файл: /sdcard/Documents/AMLModLogs/net.sacoop.mod/sacoop.txt
+// Строки этого логгера идут в общий Documents/SA_LOG.txt (FLogger::Sink → ctrace)
 static FLogger   g_fileLog("sacoop.txt");
 static uintptr_t pGTASA = 0;
 static void*     hGTASA = nullptr;
@@ -47,33 +47,18 @@ ON_GAME_CRASH()
 {
     uintptr_t pc = mcontext ? (uintptr_t)mcontext->pc : 0;
     uintptr_t lr = mcontext ? (uintptr_t)mcontext->regs[30] : 0;
-    g_fileLog.Error("ВЫЛЕТ: сигнал %d, код %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX (lr-libGTASA=+0x%lX)",
-                    sig, code, library ? library : "?", (unsigned long)(pc - libaddr),
-                    (unsigned long)pc, (unsigned long)lr, (unsigned long)(pGTASA ? lr - pGTASA : 0));
-    g_fileLog.Error("Мод в момент вылета: %s", coop::Where());
-    ctrace::Crash(sig, (unsigned long)pc, (unsigned long)lr, library, (unsigned long)(pc - libaddr), coop::Where());
+    (void)code;
+    ctrace::Crash(sig, (unsigned long)pc, (unsigned long)lr, library, (unsigned long)(pc - libaddr), coop::Where(),
+                  (unsigned long)(pGTASA ? lr - pGTASA : 0));
 }
 
 static bool g_installed = false;
 static bool g_overlayOk = false;
 
-// Прошлый лог не стираем: переименовываем в sacoop_prev.txt (там будет запись о вылете,
-// если игра упала в прошлый раз).
-static void KeepPreviousLog()
-{
-    const char* root = aml->GetInternalPath();
-    if(!root || !root[0]) return;
-    char dir[512], cur[600], prev[600];
-    snprintf(dir, sizeof(dir), "%s/Documents/AMLModLogs/%s", root, modinfo->GUID());
-    snprintf(cur, sizeof(cur), "%s/sacoop.txt", dir);
-    snprintf(prev, sizeof(prev), "%s/sacoop_prev.txt", dir);
-    if(access(cur, F_OK) == 0) { remove(prev); rename(cur, prev); }
-}
-
 ON_MOD_LOAD()
 {
-    KeepPreviousLog();
-    ctrace::Init();          // подробный лог коопа (всегда включён)
+    FLogger::Sink = [](bool error, const char* text) { ctrace::FromLog(error, text); };   // всё — в один файл SA_LOG.txt
+    ctrace::Init();          // лог (всегда включён): Documents/SA_LOG.txt, общий с SA Living
     logger->SetTag("SACoop");
     logger->Info("SA Coop %s загружается", modinfo->VersionString());
 

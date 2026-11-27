@@ -54,8 +54,8 @@ namespace
         char buf[512];
         va_list a; va_start(a, fmt); vsnprintf(buf, sizeof(buf), fmt, a); va_end(a);
         if(error) logger->Error("%s", buf); else logger->Info("%s", buf);
-        if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }
-        ctrace::FromLog(error, buf);
+        if(g_log) { if(error) g_log->Error("%s", buf); else g_log->Info("%s", buf); }   // → SA_LOG.txt (FLogger::Sink)
+        else ctrace::FromLog(error, buf);
     }
 
     float Dist(const CVector& a, const CVector& b) { float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; return sqrtf(dx * dx + dy * dy + dz * dz); }

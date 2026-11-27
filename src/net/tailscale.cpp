@@ -70,15 +70,12 @@ namespace
         Note(true, "%s", msg);
     }
 
-    // Папка подробного лога коопа (Documents/AMLModLogs/net.sacoop.mod/trace) — туда же журнал и вылеты Tailscale
+    // Общий лог (Documents/SA_LOG.txt) — туда же журнал и вылеты Tailscale (строки «Т …»)
     void LogDir(char* out, size_t len)
     {
         out[0] = 0;
         const char* p = ctrace::Path();
-        if(!p || !p[0]) return;
-        snprintf(out, len, "%s", p);
-        char* slash = strrchr(out, '/');
-        if(slash) *slash = 0; else out[0] = 0;
+        if(p && p[0]) snprintf(out, len, "%s", p);
     }
 
     // Распаковать вшитую библиотеку в личную папку игры (там можно загружать .so)
@@ -161,7 +158,7 @@ namespace
         char dir[600]; snprintf(dir, sizeof(dir), "%s/sacoop_tailscale", aml->GetDataPath());
         char name[64]; NodeName(id.c_str(), name, sizeof(name));
         char logDir[600]; LogDir(logDir, sizeof(logDir));
-        Note(false, "шаг 3: запускаю «%s» (журнал и вылеты: %s/tailscale_log.txt, tailscale_crash.txt)", name, logDir[0] ? logDir : dir);
+        Note(false, "шаг 3: запускаю «%s» (журнал и вылеты Tailscale — в %s, строки «Т»)", name, logDir[0] ? logDir : dir);
         std::vector<char> k(key.begin(), key.end()); k.push_back(0);
         if(f_start(dir, name, logDir, k.data()) != 0) { Fail("не запустился (папка %s)", dir); return; }
         Note(false, "шаг 3: запущен, подключаюсь к серверам Tailscale%s", key.empty() ? "" : " (вход по коду приглашения)");

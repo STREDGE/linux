@@ -13,7 +13,8 @@ import re
 import sys
 from collections import Counter
 
-LINE = re.compile(r'^(\d\d:\d\d:\d\d\.\d\d\d|XX:XX:XX\.XXX) \[([^\]]+)\] (.*)$')
+# с 1.4.8 / 0.5.7 — общий файл SA_LOG.txt: строка начинается с метки мода «К »/«И »/«Т » (кооп, SA Living, Tailscale)
+LINE = re.compile(r'^(?:[КИТ] )?(\d\d:\d\d:\d\d\.\d\d\d|XX:XX:XX\.XXX) \[([^\]]+)\] (.*)$')
 POS = re.compile(r'\((-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)\)')
 
 

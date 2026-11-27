@@ -41,8 +41,8 @@ var (
 	srv      *tsnet.Server
 	lc       *local.Client
 	started  bool
-	failed   bool // tsnet не запустился — в меню «ошибка», а не вечное «подключается»
-	useKey   bool // вход по ключу из кода приглашения: браузер не нужен, интерактивный вход не просим
+	failed   bool   // tsnet не запустился — в меню «ошибка», а не вечное «подключается»
+	useKey   bool   // вход по ключу из кода приглашения: браузер не нужен, интерактивный вход не просим
 	loginErr string // последняя ошибка входа от Tailscale (для меню)
 	pendKey  string // ключ пришёл, пока tsnet ещё стартует — применить, когда будет LocalClient
 	lastErr  string
@@ -59,8 +59,8 @@ var (
 
 	// статус (обновляется раз в секунду)
 	stState, stURL, stIP, stName string
-	stPeers                     []peerInfo
-	loginAsked                  time.Time
+	stPeers                      []peerInfo
+	loginAsked                   time.Time
 )
 
 type peerInfo struct {
@@ -75,16 +75,16 @@ func logf(format string, args ...any) {
 	if logFile == nil {
 		return
 	}
-	line := time.Now().Format("15:04:05.000 ") + fmt.Sprintf(format, args...)
-	if !strings.HasSuffix(line, "\n") {
-		line += "\n"
+	msg := strings.TrimRight(fmt.Sprintf(format, args...), "\n")
+	ts := time.Now().Format("15:04:05.000")
+	var b strings.Builder
+	for _, l := range strings.Split(msg, "\n") { // каждая строка — с меткой «Т», время и тег (общий лог SA_LOG.txt)
+		b.WriteString("Т " + ts + " [TAILSCALE] " + l + "\n")
 	}
-	if logBytes > 4<<20 { // не больше ~4 МБ: начать файл заново
-		logFile.Truncate(0)
-		logFile.Seek(0, 0)
-		logBytes = 0
+	if logBytes > 4<<20 { // не больше ~4 МБ за запуск: дальше молчим, чтобы не забить общий лог
+		return
 	}
-	n, _ := logFile.WriteString(line)
+	n, _ := logFile.WriteString(b.String())
 	logBytes += int64(n)
 }
 
@@ -102,7 +102,7 @@ func setDirEnv(key, path string, force bool) {
 }
 
 // Паника в нашем коде не должна ронять игру: записать в журнал и жить дальше.
-// (Падения внутри tsnet ловит SetCrashOutput — текст в tailscale_crash.txt.)
+// (Падения внутри tsnet ловит SetCrashOutput — текст в общий лог SA_LOG.txt.)
 func guard(where string, rc *C.int) {
 	if r := recover(); r != nil {
 		logf("ПАНИКА в %s: %v\n%s", where, r, debug.Stack())
@@ -112,28 +112,23 @@ func guard(where string, rc *C.int) {
 	}
 }
 
-// Журналы — рядом с подробным логом коопа (игрок может их прислать); прошлый — в *_prev.txt
-func openLogs(dir string) {
-	if dir == "" {
+// Журнал и вылеты — в общий лог игрока (Documents/SA_LOG.txt, дозапись; строки «Т …»).
+// Путь передаёт мод; если передана папка (старые версии) — файл SA_LOG.txt в ней.
+func openLogs(path string) {
+	if path == "" {
 		return
 	}
-	os.MkdirAll(dir, 0o777)
-	p := filepath.Join(dir, "tailscale_log.txt")
-	if st, err := os.Stat(p); err == nil && st.Size() > 0 {
-		os.Rename(p, filepath.Join(dir, "tailscale_log_prev.txt"))
+	if !strings.HasSuffix(strings.ToLower(path), ".txt") {
+		os.MkdirAll(path, 0o777)
+		path = filepath.Join(path, "SA_LOG.txt")
 	}
 	logMu.Lock()
-	logFile, _ = os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+	logFile, _ = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
 	logBytes = 0
 	logMu.Unlock()
-	cp := filepath.Join(dir, "tailscale_crash.txt")
-	if st, err := os.Stat(cp); err == nil && st.Size() > 1<<20 {
-		os.Remove(cp)
-	}
-	if cf, err := os.OpenFile(cp, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666); err == nil {
-		cf.WriteString("\n===== запуск Tailscale " + time.Now().Format("2006-01-02 15:04:05") + " =====\n")
+	if cf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666); err == nil {
 		debug.SetTraceback("all")
-		if err := debug.SetCrashOutput(cf, debug.CrashOptions{}); err != nil {
+		if err := debug.SetCrashOutput(cf, debug.CrashOptions{}); err != nil { // падение Go — текстом в тот же файл
 			logf("SetCrashOutput: %v", err)
 		}
 		cf.Close() // SetCrashOutput держит свою копию

@@ -31,9 +31,8 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.5.6, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.5.7, SA Coop Team)
 
-static FLogger g_fileLog("saliving.txt");
 const char* volatile g_where = "загрузка";
 
 // Если игра упадёт — записать, где именно (библиотека, адрес, что делал мод)
@@ -41,34 +40,20 @@ ON_GAME_CRASH()
 {
     uintptr_t pc = mcontext ? (uintptr_t)mcontext->pc : 0;
     uintptr_t lr = mcontext ? (uintptr_t)mcontext->regs[30] : 0;
-    g_fileLog.Error("ВЫЛЕТ: сигнал %d, код %d, библиотека %s, адрес +0x%lX, pc=0x%lX, lr=0x%lX",
-                    sig, code, library ? library : "?", (unsigned long)(pc - libaddr), (unsigned long)pc, (unsigned long)lr);
-    g_fileLog.Error("Мод в момент вылета: %s", g_where ? g_where : "?");
+    (void)code;
     trace::Crash(sig, (unsigned long)pc, (unsigned long)lr, library, (unsigned long)(pc - libaddr), g_where);
-}
-
-// Прошлый лог не стираем: saliving.txt → saliving_prev.txt (там запись о вылете, если игра упала)
-static void KeepPreviousLog()
-{
-    const char* root = aml->GetInternalPath();
-    if(!root || !root[0]) return;
-    char dir[512], cur[600], prev[600];
-    snprintf(dir, sizeof(dir), "%s/Documents/AMLModLogs/%s", root, modinfo->GUID());
-    snprintf(cur, sizeof(cur), "%s/saliving.txt", dir);
-    snprintf(prev, sizeof(prev), "%s/saliving_prev.txt", dir);
-    if(access(cur, F_OK) == 0) { remove(prev); rename(cur, prev); }
 }
 
 void LogInfo(const char* fmt, ...)
 {
     char buf[1024]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
-    g_fileLog.Info("%s", buf); logger->Info("%s", buf);
+    logger->Info("%s", buf);
     trace::Line("ЛОГ", "%s", buf);
 }
 void LogError(const char* fmt, ...)
 {
     char buf[1024]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
-    g_fileLog.Error("%s", buf); logger->Error("%s", buf);
+    logger->Error("%s", buf);
     trace::Line("ОШИБКА", "%s", buf);
 }
 
@@ -308,7 +293,6 @@ SDECL_HOOKv(SetHelpMessageH, const char* label, uint16_t* text, bool quick, bool
 
 ON_MOD_LOAD()
 {
-    KeepPreviousLog();
     logger->SetTag("SALiving");
     LogInfo("SA Living %s загружается", modinfo->VersionString());
     void* h = aml->GetLibHandle("libGTASA.so");
