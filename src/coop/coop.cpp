@@ -449,13 +449,15 @@ namespace
     std::string TsKey() { std::lock_guard<std::mutex> l(g_cfgMutex); return g_hasPending ? g_pendingCfg.tsKey : g_cfg.tsKey; }
 
     // Ошибка входа Tailscale (по-английски) → понятная подсказка
-    void LoginErrText(const char* e, bool haveKey, char* out, size_t len)
+    void LoginErrText(const char* e, bool haveKey, bool host, char* out, size_t len)
     {
         auto has = [&](const char* s) { return strstr(e, s) != nullptr; };
         if(has("invalid key") || has("key expired") || has("expired") || has("not valid") || has("revoked") || has("unknown key") || has("authkey"))
-            snprintf(out, len, "Код приглашения не подошёл (ключ удалён или устарел). Попроси у хоста новый код");
+            snprintf(out, len, host ? "Ключ Tailscale в моде удалён или устарел. Нажми «Ключ для друга» и вставь новый"   // хост: свой сохранённый ключ
+                                    : "Код приглашения не подошёл (ключ удалён или устарел). Попроси у хоста новый код");
         else if(has("attempt to create tailnet") || has("does not exist"))
-            snprintf(out, len, "Вошёл не тем аккаунтом. Проще: вставь код приглашения от хоста (кнопка «Вставить»)");
+            snprintf(out, len, host ? "Вошёл не тем аккаунтом Tailscale. Нажми «Сменить аккаунт»"
+                                    : "Вошёл не тем аккаунтом. Проще: вставь код приглашения от хоста (кнопка «Вставить код»)");
         else if(has("deadline") || has("timeout") || has("connection") || has("abort") || has("no route") || has("refused"))
             snprintf(out, len, "Нет связи с серверами Tailscale. Если включён VPN — выключи его или исключи GTA");
         else
@@ -500,7 +502,7 @@ namespace
                 g_tsKeyTryUs = now + 30000000;
                 ts::UseKey(key.c_str());
             }
-            if(st.state == ts::State::NeedsLogin && st.error[0]) { char m[192]; LoginErrText(st.error, !key.empty(), m, sizeof(m)); TsInfo("%s", m); }
+            if(st.state == ts::State::NeedsLogin && st.error[0]) { char m[192]; LoginErrText(st.error, !key.empty(), g_tsHost, m, sizeof(m)); TsInfo("%s", m); }
             else if(st.state == ts::State::NeedsLogin && !key.empty()) TsInfo("Вхожу в сеть по коду приглашения…");
             else if(st.state == ts::State::NeedsLogin) TsInfo("Войди в Tailscale (один раз) — кнопка «Войти». Или вставь код приглашения от хоста");
             else if(st.state == ts::State::NeedsApproval) TsInfo("Телефон ждёт одобрения в аккаунте Tailscale (сайт, раздел Machines)");
