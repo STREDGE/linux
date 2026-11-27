@@ -494,6 +494,7 @@ namespace
     // 1.5.9: хост в миссии сел на велик/мотоцикл, где места для друга нет («Биг Смоук»: 4 велика на четверых) —
     // другу такой же рядом. Хост: окно 30 с после начала миссии/катсцены, один раз за окно. Друг: создать и сесть.
     uint64_t g_bikeWindowUntil = 0; bool g_bikeSent = false;
+    bool     g_hostWasIn = false, g_seatNearOnly = false;   // окно по посадке хоста посреди миссии: только если друг рядом
     int      g_giftModel = 0; uint64_t g_giftUntil = 0; int g_giftRef = -1; uint64_t g_giftEnterUs = 0;
 
     uintptr_t& Passenger(uintptr_t veh, int i) { return Field<uintptr_t>(veh, off::VehPassengers + (uintptr_t)i * 8); }
@@ -534,9 +535,17 @@ namespace
     {
         // начало миссии / конец катсцены: окно, когда друга сажаем к хосту
         bool mission = OnMission(), cut = CutsceneRunning();
-        if(mission && !g_wasMission) { g_seatWindowUntil = g_now + 12000000; g_bikeWindowUntil = g_now + 30000000; g_bikeSent = false; Log(false, "[МИССИЯ] У хоста началась миссия"); }
+        if(mission && !g_wasMission) { g_seatWindowUntil = g_now + 12000000; g_bikeWindowUntil = g_now + 30000000; g_bikeSent = false; g_seatNearOnly = false; Log(false, "[МИССИЯ] У хоста началась миссия"); }
         if(!mission && g_wasMission) Log(false, "[МИССИЯ] У хоста миссия закончилась");
-        if(g_wasCut && !cut && mission) { g_seatWindowUntil = g_now + 12000000; g_bikeWindowUntil = g_now + 30000000; g_bikeSent = false; }
+        if(g_wasCut && !cut && mission) { g_seatWindowUntil = g_now + 12000000; g_bikeWindowUntil = g_now + 30000000; g_bikeSent = false; g_seatNearOnly = false; }
+        // 1.6.0: в миссии хост сел в транспорт (не только в начале) — друга, если он рядом и пешком, тоже к себе
+        bool hostIn = g_local && InVehicle(g_local);
+        if(mission && !cut && hostIn && !g_hostWasIn && (!g_seatWindowUntil || g_now > g_seatWindowUntil))
+        {
+            g_seatWindowUntil = g_now + 5000000; g_seatNearOnly = true;
+            if(!g_bikeWindowUntil || g_now > g_bikeWindowUntil) { g_bikeWindowUntil = g_now + 5000000; g_bikeSent = false; }
+        }
+        g_hostWasIn = hostIn;
         g_wasMission = mission; g_wasCut = cut;
 
         // спрятанный пед: вернуть, когда друг вышел, все вышли или катсцена
@@ -573,6 +582,11 @@ namespace
             return;
         }
         if(!g_seatWindowUntil || g_now > g_seatWindowUntil) return;
+        if(g_seatNearOnly)
+        {
+            CVector rp{ g_rs->pos[0], g_rs->pos[1], g_rs->pos[2] };
+            if(Dist(rp, GetPosition(g_local)) > 60.0f || g_rs->area != (CurrArea ? *CurrArea : 0)) { g_seatWindowUntil = 0; return; }
+        }
         uint16_t vid = sync::CrowdVehicleId(veh);
         if(!vid) return;
         int seat = -1;

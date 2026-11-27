@@ -15,6 +15,7 @@
 
 #include "game/gta.h"
 #include "coop/crowd.h"
+#include "coop/mission.h"
 
 using namespace gta;
 
@@ -1435,6 +1436,19 @@ DECL_HOOKv(DoBulletImpact, uintptr_t weapon, uintptr_t owner, uintptr_t hit, CVe
 // Выстрел своего CJ → другу (повторит у себя)
 DECL_HOOK(bool, WeaponFireHook, uintptr_t weapon, uintptr_t owner, CVector* start, CVector* barrel, uintptr_t targetEnt, CVector* target, CVector* alt)
 {
+    // 1.6.0: кто не должен стрелять сам
+    //  * пед миссии, спрятанный ради места другу в машине хоста, — невидимка не стреляет;
+    //  * у друга копия педа хоста стреляет только повтором выстрела хоста (свой ИИ копии — нет, иначе двойная стрельба).
+    if(g_active && owner && !g_replaying && owner != g_ctx.local && owner != g_ctx.remote)
+    {
+        if(mission::IsHiddenPed(owner)) return false;
+        if(g_ctx.role == net::Role::Client && crowd::IsCopy(owner))
+        {
+            static uint64_t lastLogUs = 0;
+            if(!lastLogUs || net::Since(g_ctx.now, lastLogUs) > 5000000) { lastLogUs = g_ctx.now; Log(false, "[ВЫСТРЕЛ] копия педа хоста стреляла сама — не даю (стреляет только как у хоста)"); }
+            return false;
+        }
+    }
     bool local = g_active && owner && owner == g_ctx.local && !g_replaying;
     uint16_t npc = (!local && g_active && owner && !g_replaying) ? crowd::TrackedId(owner) : 0;
     if(npc)
