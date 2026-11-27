@@ -73,7 +73,9 @@ namespace
         std::vector<Entry> files; size_t fi = 0; int64_t off = 0; int fd = -1;
         uint32_t nextSeq = 0; std::deque<Pending> inflight;
         int64_t total = 0, sent = 0; uint64_t nextTickUs = 0;
-        int window = 64;                      // сколько кусков в полёте: растёт, пока доходит; потеря — вдвое меньше
+        int window = 64;                      // сколько кусков в полёте: растёт, пока доходит; потеря — меньше
+        uint32_t lastAck = 0xFFFFFFFF; int dupAcks = 0; uint64_t fastResendUs = 0;
+        bool recovering = false; uint32_t recoverSeq = 0, resentTo = 0; uint64_t now = 0;   // now — время последнего кадра   // после потери: повторять дальше по подтверждениям
     } g_hs;
     // передача файлов: друг
     struct ClientRecv
@@ -81,6 +83,7 @@ namespace
         bool active = false, started = false; uint32_t req = 0, expect = 0;
         std::vector<Entry> files; int fd = -1; std::string tmp; int cur = -1;
         int64_t total = 0, done = 0; uint64_t lastReqUs = 0; int ok = 0, fail = 0;
+        std::map<uint32_t, std::string> ahead;   // 1.6.3: куски, пришедшие раньше потерянного, — не выбрасывать
     } g_cr;
 
     void Log(bool error, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -547,12 +550,17 @@ namespace
 
     void HostTick(uint64_t now)
     {
+        if(g_hs.active) g_hs.now = now;
         if(!g_hs.active || !g_session || now < g_hs.nextTickUs) return;
         g_hs.nextTickUs = now + 50000;
-        if(!g_hs.inflight.empty() && net::Since(now, g_hs.inflight.front().sentUs) > 1500000)
-        {   // не дошло — повторить и сбавить (тест 1.5.1: ~285 КБ/с при пинге 190 мс — было ограничено 16 кусками за 50 мс)
-            g_hs.window = std::max(16, g_hs.window / 2);
-            for(auto& p : g_hs.inflight) { g_session->SendGame(p.pkt.data(), (int)p.pkt.size()); p.sentUs = now; }
+        if(!g_hs.inflight.empty() && net::Since(now, g_hs.inflight.front().sentUs) > 1200000)
+        {   // 1.6.3: долго нет ответа — повторить только начало (друг хранит пришедшее позже, всё окно слать не нужно:
+            // раньше повтор всего окна, до 768 КБ разом, забивал канал через сервер Tailscale — передача ползла)
+            g_hs.window = std::max(32, g_hs.window / 2);
+            int n = 0;
+            for(auto& p : g_hs.inflight) { if(n++ >= 48) break; g_session->SendGame(p.pkt.data(), (int)p.pkt.size()); g_hs.resentTo = p.seq; }
+            for(auto& p : g_hs.inflight) p.sentUs = now;
+            g_hs.recovering = true; g_hs.recoverSeq = g_hs.nextSeq;
         }
         for(int k = 0; k < 96 && (int)g_hs.inflight.size() < g_hs.window && g_hs.fi < g_hs.files.size(); ++k)
         {
@@ -633,15 +641,37 @@ namespace
         g_cr.tmp.clear(); g_cr.cur = -1;
     }
 
-    void OnChunk(const net::ModFileChunkPacket* p)
+    bool ApplyChunk(const net::ModFileChunkPacket* p);
+    void OnChunk(const net::ModFileChunkPacket* p, int len)
     {
         if(!g_cr.active || p->req != g_cr.req || !g_session) return;
         net::ModFileAckPacket a{ net::MakeHeader(net::PKT_MODFILE_ACK), g_cr.req, 0 };
         if(p->seq != g_cr.expect)
         {
+            // пришёл раньше потерянного — сохранить (до ~2 МБ), подтвердить то, что есть подряд
+            if((int32_t)(p->seq - g_cr.expect) > 0 && (int32_t)(p->seq - g_cr.expect) < 4096 && g_cr.ahead.size() < 2048)
+                g_cr.ahead.emplace(p->seq, std::string((const char*)p, (size_t)len));
             if(g_cr.expect) { a.seq = g_cr.expect - 1; g_session->SendGame(&a, sizeof(a)); }
             return;
         }
+        if(!ApplyChunk(p)) return;
+        while(g_cr.active)
+        {
+            auto it = g_cr.ahead.find(g_cr.expect);
+            if(it == g_cr.ahead.end()) break;
+            std::string pk = std::move(it->second); g_cr.ahead.erase(it);
+            if(!ApplyChunk((const net::ModFileChunkPacket*)pk.data())) return;
+        }
+        // старые (уже записанные) — выбросить
+        while(!g_cr.ahead.empty() && (int32_t)(g_cr.ahead.begin()->first - g_cr.expect) < 0) g_cr.ahead.erase(g_cr.ahead.begin());
+        a.seq = g_cr.expect - 1;
+        g_session->SendGame(&a, sizeof(a));
+    }
+
+    // Записать кусок по порядку. false — передача закончилась (подтверждение уже ушло)
+    bool ApplyChunk(const net::ModFileChunkPacket* p)
+    {
+        net::ModFileAckPacket a{ net::MakeHeader(net::PKT_MODFILE_ACK), g_cr.req, 0 };
         g_cr.started = true; ++g_cr.expect;
         if(p->fileNo < g_cr.files.size())
         {
@@ -665,11 +695,10 @@ namespace
                 a.seq = g_cr.expect - 1; g_session->SendGame(&a, sizeof(a));
                 ClientStop(false);
                 g_mineDirty = true;
-                return;
+                return false;
             }
         }
-        a.seq = g_cr.expect - 1;
-        g_session->SendGame(&a, sizeof(a));
+        return true;
     }
 }
 
@@ -798,14 +827,46 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
         if(!g_hs.active || a->req != g_hs.req) return;
         int acked = 0;
         while(!g_hs.inflight.empty() && (int32_t)(a->seq - g_hs.inflight.front().seq) >= 0) { g_hs.inflight.pop_front(); ++acked; }
-        if(acked) g_hs.window = std::min(768, g_hs.window + 1);      // всё доходит — понемногу быстрее
+        if(acked)
+        {   // доходит — быстрее (вначале — сразу на столько, сколько дошло, потом по одному)
+            g_hs.window = std::min(1024, g_hs.window + (g_hs.window < 256 ? acked : 1));
+            g_hs.lastAck = a->seq; g_hs.dupAcks = 0;
+            // после потери подтверждение сдвинулось, но не до конца — следующие куски тоже могли пропасть
+            // (старый друг ≤1.6.2 выбрасывает всё, что пришло после потерянного): повторить следующие сразу
+            if(g_hs.recovering)
+            {
+                if(g_hs.inflight.empty() || (int32_t)(g_hs.inflight.front().seq - g_hs.recoverSeq) >= 0) g_hs.recovering = false;
+                else
+                {
+                    uint64_t now = g_hs.now; int n = 0;
+                    for(auto& p : g_hs.inflight)
+                    {
+                        if((int32_t)(p.seq - g_hs.recoverSeq) >= 0 || n >= 48) break;
+                        if((int32_t)(p.seq - g_hs.resentTo) <= 0) continue;
+                        g_session->SendGame(p.pkt.data(), (int)p.pkt.size()); p.sentUs = now; g_hs.resentTo = p.seq; ++n;
+                    }
+                }
+            }
+        }
+        else if(a->seq == g_hs.lastAck && !g_hs.inflight.empty() && ++g_hs.dupAcks >= 3)
+        {   // друг получает куски, а один потерян — сразу повторить его (не ждать 1,2 с)
+            uint64_t now = g_hs.now;
+            if(!g_hs.fastResendUs || net::Since(now, g_hs.fastResendUs) > 300000)
+            {
+                g_hs.fastResendUs = now; g_hs.dupAcks = 0;
+                g_hs.window = std::max(32, g_hs.window * 3 / 4);
+                int n = 0;
+                for(auto& p : g_hs.inflight) { if(n++ >= 4) break; g_session->SendGame(p.pkt.data(), (int)p.pkt.size()); p.sentUs = now; g_hs.resentTo = p.seq; }
+                if(!g_hs.recovering) { g_hs.recovering = true; g_hs.recoverSeq = g_hs.nextSeq; }
+            }
+        }
         return;
     }
     if(type == net::PKT_MODFILE_CHUNK && len >= net::kModFileChunkHeaderSize)
     {
         const auto* p = (const net::ModFileChunkPacket*)data;
         if(p->len > net::kModFileChunkMax || net::kModFileChunkHeaderSize + (int)p->len != len) return;
-        OnChunk(p);
+        OnChunk(p, len);
     }
 }
 
