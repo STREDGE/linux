@@ -64,6 +64,7 @@ namespace coop { namespace sync {
     void      WarpPedInto(uintptr_t ped, uintptr_t veh, int seat);
     bool      LocalTakesSeat(uintptr_t local, uintptr_t veh, int seat);   // ты сидишь на этом месте или садишься на него (угон)
     void      WarpPedOut(uintptr_t ped);
+    bool      EnterPedInto(uintptr_t ped, uintptr_t veh, int seat);   // задача «сесть» (с анимацией)
     void      EnsurePedWeapon(uintptr_t ped, int weapon);
     int       ClearRandomVehicles();                  // друг: убрать свои случайные машины
 

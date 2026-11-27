@@ -46,6 +46,7 @@ namespace
     void      (*MakePlayerSafe)(uintptr_t playerInfo, bool on, float radius) = nullptr;
     void      (*CameraRestore)(uintptr_t cam) = nullptr;
     void      (*WideScreenOff)(uintptr_t cam) = nullptr;
+    uintptr_t (*VehicleCheat)(int model) = nullptr;     // CCheat::VehicleCheat: машина перед своим CJ (как чит)
     int32_t*  g_scriptParams = nullptr;
 
     void Log(bool error, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -490,6 +491,10 @@ namespace
     HiddenPed g_hidden;
     // друг: просьба сесть
     uint16_t g_seatVeh = 0; int g_seatNo = 0; uint64_t g_seatUntil = 0; bool g_seatTeleported = false;
+    // 1.5.9: хост в миссии сел на велик/мотоцикл, где места для друга нет («Биг Смоук»: 4 велика на четверых) —
+    // другу такой же рядом. Хост: окно 30 с после начала миссии/катсцены, один раз за окно. Друг: создать и сесть.
+    uint64_t g_bikeWindowUntil = 0; bool g_bikeSent = false;
+    int      g_giftModel = 0; uint64_t g_giftUntil = 0; int g_giftRef = -1; uint64_t g_giftEnterUs = 0;
 
     uintptr_t& Passenger(uintptr_t veh, int i) { return Field<uintptr_t>(veh, off::VehPassengers + (uintptr_t)i * 8); }
 
@@ -529,9 +534,9 @@ namespace
     {
         // начало миссии / конец катсцены: окно, когда друга сажаем к хосту
         bool mission = OnMission(), cut = CutsceneRunning();
-        if(mission && !g_wasMission) { g_seatWindowUntil = g_now + 12000000; Log(false, "[МИССИЯ] У хоста началась миссия"); }
+        if(mission && !g_wasMission) { g_seatWindowUntil = g_now + 12000000; g_bikeWindowUntil = g_now + 30000000; g_bikeSent = false; Log(false, "[МИССИЯ] У хоста началась миссия"); }
         if(!mission && g_wasMission) Log(false, "[МИССИЯ] У хоста миссия закончилась");
-        if(g_wasCut && !cut && mission) g_seatWindowUntil = g_now + 12000000;
+        if(g_wasCut && !cut && mission) { g_seatWindowUntil = g_now + 12000000; g_bikeWindowUntil = g_now + 30000000; g_bikeSent = false; }
         g_wasMission = mission; g_wasCut = cut;
 
         // спрятанный пед: вернуть, когда друг вышел, все вышли или катсцена
@@ -545,15 +550,31 @@ namespace
             else if(!mission) RestoreHidden("миссия закончилась");
         }
 
-        if(!g_seatWindowUntil || g_now > g_seatWindowUntil || cut) return;
-        if(!g_remote || !g_rs || g_rs->seat != net::kNoSeat || (g_rs->flags & net::PSF_DEAD) || !InVehicle(g_local)) return;
+        if(cut) return;
+        if(!g_remote || !g_rs || g_rs->seat != net::kNoSeat || g_rs->enterSeat != net::kNoSeat || (g_rs->flags & net::PSF_DEAD) || !InVehicle(g_local)) return;
         uintptr_t veh = Field<uintptr_t>(g_local, off::PedVehicle);
         if(!veh || Field<int>(veh, off::VehBaseType) == 6) return;
-        uint16_t vid = sync::CrowdVehicleId(veh);
-        if(!vid) return;
         int max = Field<uint8_t>(veh, off::VehMaxPassengers);
         if(max > 8) max = 8;
-        if(max <= 0) { g_seatWindowUntil = 0; Log(false, "[МИССИЯ] В машине хоста нет мест для пассажира"); return; }
+        if(max <= 0)
+        {
+            // велик (и всё, где сидит один): другу — такой же, если он рядом и на улице
+            if(!g_bikeSent && g_bikeWindowUntil && g_now <= g_bikeWindowUntil)
+            {
+                g_bikeSent = true; g_seatWindowUntil = 0;
+                CVector rp{ g_rs->pos[0], g_rs->pos[1], g_rs->pos[2] };
+                float d = Dist(rp, GetPosition(g_local));
+                uint8_t area = CurrArea ? *CurrArea : 0;
+                if(d > 80.0f || area != 0 || g_rs->area != 0) { Log(false, "[МИССИЯ] Хост сел на транспорт без места для друга, но друг далеко (%.0f м) — не даю", d); return; }
+                net::SameVehicleEvent e{ net::REL_SAME_VEHICLE, 0, (uint16_t)ModelOf(veh) };
+                g_session->SendReliable(&e, sizeof(e));
+                Log(false, "[МИССИЯ] Хост на транспорте без места для друга (модель %d) — другу такой же рядом", ModelOf(veh));
+            }
+            return;
+        }
+        if(!g_seatWindowUntil || g_now > g_seatWindowUntil) return;
+        uint16_t vid = sync::CrowdVehicleId(veh);
+        if(!vid) return;
         int seat = -1;
         for(int i = 0; i < max; ++i) if(!Passenger(veh, i)) { seat = i; break; }
         if(seat < 0 && !g_hidden.ped)
@@ -597,6 +618,32 @@ namespace
         CVector to{ h.pos[0] + cosf(hh) * side, h.pos[1] + sinf(hh) * side, h.pos[2] + 0.5f };
         PedTeleport(g_local, to, false);
         Log(false, "[МИССИЯ] Друг перенесён к хосту (%s): %.1f, %.1f, %.1f", why, to.x, to.y, to.z);
+    }
+
+    // Друг: хост дал «такой же транспорт» — создать перед собой (как чит игры) и сесть с анимацией
+    void ClientGift()
+    {
+        if(!g_giftModel) return;
+        if(g_now > g_giftUntil) { Log(false, "[МИССИЯ] Транспорт от хоста так и не взял"); g_giftModel = 0; g_giftRef = -1; return; }
+        if(g_cut != Cut::None) return;
+        if(InVehicle(g_local)) { if(g_giftRef >= 0) Log(false, "[МИССИЯ] Ты сел на транспорт от хоста"); g_giftModel = 0; g_giftRef = -1; return; }
+        uintptr_t veh = g_giftRef >= 0 && GetVehicleFromRef ? GetVehicleFromRef(g_giftRef) : 0;
+        if(g_giftRef >= 0 && !veh) { Log(true, "[МИССИЯ] Транспорт от хоста пропал"); g_giftModel = 0; g_giftRef = -1; return; }
+        if(!veh)
+        {
+            if(!VehicleCheat || (CurrArea && *CurrArea != 0)) { g_giftModel = 0; return; }
+            veh = VehicleCheat(g_giftModel);
+            if(!veh) { Log(true, "[МИССИЯ] Не вышло создать транспорт %d (много машин вокруг?)", g_giftModel); g_giftModel = 0; return; }
+            g_giftRef = GetVehicleRef(veh);
+            g_giftEnterUs = 0;
+            Log(false, "[МИССИЯ] Хост едет на модели %d — тебе такой же рядом", g_giftModel);
+            return;                                                   // сесть — со следующего кадра (машина уже в мире)
+        }
+        if(!g_giftEnterUs || net::Since(g_now, g_giftEnterUs) > 4000000)
+        {
+            if(ActiveTaskType(g_local) == 701) return;                 // уже садится
+            if(sync::EnterPedInto(g_local, veh, 0)) g_giftEnterUs = g_now;
+        }
     }
 
     void ClientSeat()
@@ -795,6 +842,7 @@ bool Install(void* h, FLogger* log)
     Fade = (void(*)(uintptr_t, float, int16_t))sym("_ZN7CCamera4FadeEfs");
     MakePlayerSafe = (void(*)(uintptr_t, bool, float))sym("_ZN11CPlayerInfo14MakePlayerSafeEbf");
     CameraRestore = (void(*)(uintptr_t))sym("_ZN7CCamera7RestoreEv");
+    VehicleCheat = (uintptr_t(*)(int))sym("_ZN6CCheat12VehicleCheatEi");
     WideScreenOff = (void(*)(uintptr_t))sym("_ZN7CCamera16SetWideScreenOffEv");
     g_scriptParams = (int32_t*)sym("ScriptParams");
 
@@ -829,7 +877,7 @@ bool Install(void* h, FLogger* log)
 
 void SetSession(net::Session* s) { g_session = s; }
 
-bool HandlesReliable(uint8_t t) { return t >= net::REL_TEXT && t <= net::REL_RECRUIT; }
+bool HandlesReliable(uint8_t t) { return (t >= net::REL_TEXT && t <= net::REL_RECRUIT) || t == net::REL_SAME_VEHICLE; }
 
 void OnPacket(uint8_t type, const uint8_t* data, int len)
 {
@@ -872,6 +920,15 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
                 g_seatVeh = e->vehId; g_seatNo = e->seat; g_seatTeleported = false;
                 g_seatUntil = (g_now ? g_now : net::NowUs()) + 6000000;
                 Log(false, "[МИССИЯ] Хост зовёт в машину #%04X, место %u", e->vehId, e->seat);
+            }
+            break;
+        case net::REL_SAME_VEHICLE:
+            if(g_role == net::Role::Client && len == sizeof(net::SameVehicleEvent))
+            {
+                const auto* e = (const net::SameVehicleEvent*)data;
+                if(e->model < 400 || e->model > 611) break;
+                g_giftModel = e->model; g_giftUntil = (g_now ? g_now : net::NowUs()) + 20000000; g_giftRef = -1; g_giftEnterUs = 0;
+                Log(false, "[МИССИЯ] Хост сел на модель %d без места для тебя — даю такую же", (int)e->model);
             }
             break;
         case net::REL_RECRUIT:
@@ -978,6 +1035,7 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
     GuardContacts();
     ApplyBlips();
     ClientSeat();
+    ClientGift();
 }
 
 void ForceClientBlock(bool on)
@@ -998,7 +1056,7 @@ void Reset(const char* why)
     if(g_hidden.ped) RestoreHidden(why);
     g_remoteHidden = false; g_remoteHiddenPed = 0;
     g_textQueue.clear(); g_cutEvents.clear(); g_recruits.clear();
-    g_seatVeh = 0; g_seatWindowUntil = 0; g_cutOpen = false;
+    g_seatVeh = 0; g_seatWindowUntil = 0; g_cutOpen = false; g_bikeWindowUntil = 0; g_giftModel = 0; g_giftRef = -1;
     g_wasMission = g_wasCut = false;
     if(any) Log(false, "[МИССИЯ] Миссии вместе выключены (%s) — всё как в одиночной игре", why);
 }

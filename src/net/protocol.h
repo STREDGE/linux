@@ -176,6 +176,7 @@ namespace net
         REL_SEAT = 8,          // хост -> друг: садись в мою машину на это место (начало миссии)
         REL_RECRUIT = 9,       // друг -> хост: позвал педа банды к себе в группу
         REL_SPECIAL = 10,      // хост -> друг: имя «особой» модели педа миссии (ячейки 290..299), с 1.5.6
+        REL_SAME_VEHICLE = 11, // хост -> друг: хост в миссии сел на велик/мотоцикл без места для друга — возьми такой же, с 1.5.9
     };
     struct DamageEvent
     {
@@ -272,6 +273,7 @@ namespace net
     struct SeatEvent        { uint8_t type; uint8_t seat; uint16_t vehId; };   // seat: 1.. — пассажир (номер места + 1)
     struct RecruitEvent     { uint8_t type; uint8_t pad; uint16_t npc; };
     struct SpecialEvent     { uint8_t type; uint8_t pad; uint16_t model; char name[24]; };   // REL_SPECIAL
+    struct SameVehicleEvent { uint8_t type; uint8_t pad; uint16_t model; };                  // REL_SAME_VEHICLE
 
     // Метки миссии хоста (у друга — такие же на карте)
     struct BlipEntry

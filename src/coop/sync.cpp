@@ -1881,6 +1881,12 @@ bool LocalTakesSeat(uintptr_t local, uintptr_t veh, int seat)
     return ls.enterVeh == veh && ls.enterSeat == seat;
 }
 
+bool EnterPedInto(uintptr_t ped, uintptr_t veh, int seat)
+{
+    if(!ped || !veh) return false;
+    return GiveEnterTask(ped, veh, seat);
+}
+
 void WarpPedInto(uintptr_t ped, uintptr_t veh, int seat)
 {
     if(!ped || !veh) return;
