@@ -31,6 +31,7 @@ namespace coop { namespace crowd {
     // Для sync (урон, выстрелы)
     uint16_t TrackedId(uintptr_t ped);      // хост: номер педа, если его видит друг (0 — нет)
     bool     IsCopy(uintptr_t ped);         // клиент: копия педа хоста
+    bool     CopyDying(uintptr_t ped);      // клиент: копия, которую хост «положил»
     uint16_t CopyId(uintptr_t ped);
     uintptr_t CopyById(uint16_t id);
     bool     AllowCopyDamage();             // сейчас можно ранить копию (её убивает сам мод)

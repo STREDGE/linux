@@ -1403,8 +1403,51 @@ DECL_HOOK(bool, MeleeJustDown, uintptr_t pad)
     return r;
 }
 
+// 1.6.5: попадание друга в копию педа хоста. Обычно урон уходит хосту из ComputeDamage (REL_NPC_DAMAGE), но игра
+// считает урон не всегда (событие урона «не касается» педа — например, копии в машине/на мотоцикле). Тогда шлём сами.
+namespace { uint16_t g_bulletCopy = 0; bool g_bulletCopySent = false; int g_copyHitsLogged = 0; }
+static void DoBulletImpactBody(uintptr_t weapon, uintptr_t owner, uintptr_t hit, CVector* start, CVector* end, void* colPoint, int inc);
+static float BulletDamage(int w)
+{
+    switch(w)
+    {
+        case 22: return 25; case 23: return 40; case 24: return 70; case 25: return 30; case 26: return 30; case 27: return 30;
+        case 28: return 20; case 29: return 25; case 30: return 30; case 31: return 30; case 32: return 20; case 33: return 75;
+        case 34: return 125; case 38: return 140; default: return 20;
+    }
+}
+
 // Попадание пули: запоминаем линию выстрела своего CJ
 DECL_HOOKv(DoBulletImpact, uintptr_t weapon, uintptr_t owner, uintptr_t hit, CVector* start, CVector* end, void* colPoint, int inc)
+{
+    uint16_t copyHit = 0; bool viaVeh = false;
+    if(g_active && owner && owner == g_ctx.local && hit && g_ctx.role == net::Role::Client && crowd::ClientMode())
+    {
+        int t = EntType(hit);
+        if(t == 3) copyHit = crowd::CopyId(hit);
+        else if(t == 2)
+        {   // мотоцикл/велосипед: пуля в седока
+            int bt = Field<int>(hit, off::VehBaseType);
+            uintptr_t drv = Field<uintptr_t>(hit, off::VehDriver);
+            if((bt == 9 || bt == 10) && drv) { copyHit = crowd::CopyId(drv); viaVeh = true; }
+        }
+    }
+    g_bulletCopy = copyHit; g_bulletCopySent = false;
+    DoBulletImpactBody(weapon, owner, hit, start, end, colPoint, inc);
+    if(copyHit && !g_bulletCopySent && g_active)
+    {
+        net::NpcDamageEvent e{};
+        e.type = net::REL_NPC_DAMAGE; e.npc = copyHit;
+        e.weapon = (uint8_t)Field<int>(weapon, off::WeapType);
+        e.piece = 3; e.viaVehicle = 0;
+        e.amount = BulletDamage(e.weapon);
+        SendReliable(&e, sizeof(e));
+        if(g_copyHitsLogged++ < 20) Log(false, "[УРОН] Ты попал в педа хоста #%u%s (оружие %d) — урон %.0f отправлен хосту сам", copyHit, viaVeh ? " на мотоцикле" : "", e.weapon, e.amount);
+    }
+    g_bulletCopy = 0;
+}
+
+static void DoBulletImpactBody(uintptr_t weapon, uintptr_t owner, uintptr_t hit, CVector* start, CVector* end, void* colPoint, int inc)
 {
     if(g_active && g_npcFire && owner == g_npcFireOwner && start && end && !g_shotCaptured)
     {   // выстрел педа хоста: линия пули и попадание во второго CJ
@@ -1531,6 +1574,8 @@ DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool
         {
             if(IsLocalSide(inf))
             {
+                if(cid == g_bulletCopy) g_bulletCopySent = true;
+                if(g_copyHitsLogged++ < 20) Log(false, "[УРОН] Ты ранил педа хоста #%u: %.0f (оружие %d) — урон отправлен хосту", cid, Field<float>(calc, off::CalcDamage), Field<int>(calc, off::CalcWeapon));
                 net::NpcDamageEvent e{};
                 e.type = net::REL_NPC_DAMAGE; e.npc = cid;
                 e.weapon = (uint8_t)Field<int>(calc, off::CalcWeapon);
@@ -1703,7 +1748,7 @@ void Capture(const Ctx& c, net::PlayerStatePacket& s)
     CVector lp = GetPosition(l);
     CVector aim;
     if(lock && (EntType(lock) == 2 || EntType(lock) == 3)) { aim = GetPosition(lock); aim.z += 0.5f; s.flags |= net::PSF_AIMING; }
-    else if(g_lastAimUs && net::Since(c.now, g_lastAimUs) < 600000) aim = g_lastAim;
+    else if(g_lastAimUs && net::Since(c.now, g_lastAimUs) < 600000) { aim = g_lastAim; s.flags |= net::PSF_AIMING; }   // 1.6.5: стрелял только что — у другого CJ ствол поднят
     else { float h = Field<float>(l, off::PedRotCurrent); aim = CVector{ lp.x - sinf(h) * 10.0f, lp.y + cosf(h) * 10.0f, lp.z + 0.5f }; }
     Put(s.aim, aim);
 
@@ -1837,9 +1882,17 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
                 uintptr_t ped = crowd::TrackedPed(e->npc);
                 if(ped && PedIsAlive(ped))
                 {
+                    float before = Field<float>(ped, off::PedHealth);
                     g_applyingNpcDamage = true;
                     GenerateDamageEvent(ped, g_ctx.remote, e->weapon, (int)(e->amount + 0.5f), e->piece, 0);
                     g_applyingNpcDamage = false;
+                    // 1.6.5: игра не всегда считает такой урон (пед на мотоцикле, «событие его не касается») — тогда сами
+                    if(PedIsAlive(ped) && Field<float>(ped, off::PedHealth) >= before && e->amount > 0)
+                    {
+                        float hp = before - e->amount;
+                        Field<float>(ped, off::PedHealth) = hp < 0 ? 0 : hp;
+                        Log(false, "[УРОН] игра урон от друга не посчитала — снял сам: %.0f → %.0f", before, hp < 0 ? 0.0f : hp);
+                    }
                     Log(false, "[УРОН] Друг ранил педа %u: %.0f (оружие %d)%s", e->npc, e->amount, e->weapon, PedIsAlive(ped) ? "" : " — убит");
                 }
                 return;

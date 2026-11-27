@@ -295,6 +295,7 @@ namespace
         uint64_t requestUs = 0; uint64_t goUs = 0; CVector goTarget{}; int goMove = 0;
         bool dead = false; bool killed = false; int weapon = -1;
         bool jackLogged = false; bool noModel = false;
+        uint64_t killUs = 0; int killTries = 0;    // 1.6.5: «положить» копию — не каждый кадр
     };
     std::vector<Copy> g_copies;
     bool g_popOff = false;                // своё население выключено
@@ -404,13 +405,25 @@ namespace
         // смерть — как у хоста
         if(s.flags & net::PDF_DEAD)
         {
-            if(PedIsAlive(ped))
+            // 1.6.5: раньше — каждый кадр и с записью в лог (тысячи строк, игра тормозила), а копия не умирала:
+            // её события игра не обрабатывала (HandleEvents копий выключен), смерть — тоже событие. Теперь копии,
+            // которую хост «положил», события разрешены (CopyDying), а попытка — раз в секунду, не больше 5 раз.
+            if(PedIsAlive(ped) && (!c.killUs || net::Since(g_now, c.killUs) > 1000000))
             {
-                CTRACE("КОПИЯ", "#%u погиб у хоста — кладу копию", c.id);
-                g_allowCopyDamage = true;
-                GenerateDamageEvent(ped, 0, s.weapon, 1000, 3, 0);
-                g_allowCopyDamage = false;
-                if(PedIsAlive(ped)) Field<float>(ped, off::PedHealth) = 0;
+                c.killUs = g_now; ++c.killTries;
+                if(c.killTries <= 5)
+                {
+                    if(c.killTries == 1) CTRACE("КОПИЯ", "#%u погиб у хоста — кладу копию", c.id);
+                    g_allowCopyDamage = true;
+                    GenerateDamageEvent(ped, 0, s.weapon, 1000, 3, 0);
+                    g_allowCopyDamage = false;
+                    if(PedIsAlive(ped)) Field<float>(ped, off::PedHealth) = 0;
+                }
+                else if(c.killTries == 6)
+                {   // не легла — убрать совсем (хост её уже не покажет живой)
+                    Log(false, "[ЛЮДИ] Копия #%u не легла за 5 с — убираю", c.id);
+                    DeleteCopy(c, "погиб у хоста"); c.killed = true;
+                }
             }
             return;
         }
@@ -537,7 +550,8 @@ DECL_HOOKv(GenerateRoadBlocks)                 { if(g_popOff) return; GenerateRo
 // Копии педов хоста не думают сами (не убегают, не дерутся): их поведение приходит с телефона хоста
 DECL_HOOKv(HandleEvents, uintptr_t handler)
 {
-    if(g_popOff && handler && IsCopy(Field<uintptr_t>(handler, 0))) return;
+    uintptr_t ped = handler ? Field<uintptr_t>(handler, 0) : 0;
+    if(g_popOff && ped && IsCopy(ped) && !CopyDying(ped)) return;   // умирающей копии — можно (смерть тоже событие)
     HandleEvents(handler);
 }
 
@@ -684,6 +698,12 @@ uint16_t TrackedId(uintptr_t ped)
     return t ? t->id : 0;
 }
 bool IsCopy(uintptr_t ped) { return CopyId(ped) != 0; }
+bool CopyDying(uintptr_t ped)
+{
+    if(!ped) return false;
+    for(auto& c : g_copies) if(c.ped == ped) return (c.st.flags & net::PDF_DEAD) != 0;
+    return false;
+}
 uint16_t CopyId(uintptr_t ped)
 {
     if(!ped) return 0;
