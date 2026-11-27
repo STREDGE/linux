@@ -4,11 +4,13 @@
 #include <dlfcn.h>
 #include <math.h>
 #include <algorithm>
+#include <vector>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <sched.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <time.h>
@@ -224,10 +226,31 @@ namespace
     std::map<std::string, std::pair<int, std::string>> g_playing;   // id моста → (gen, id вызывающего); под g_mx
 
     // Потоки речи — ниже игры по приоритету (их потоки-помощники ONNX наследуют это при создании)
+    // Самое быстрое ядро (у телефонов их 1–2 «главных») — игре: потоки речи и их помощники ONNX живут на остальных.
+    int CpuMaxKHz(int cpu)
+    {
+        char p[96]; snprintf(p, sizeof(p), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpu);
+        FILE* f = fopen(p, "r"); if(!f) return -1;
+        int v = -1; if(fscanf(f, "%d", &v) != 1) v = -1; fclose(f);
+        return v;
+    }
+    void AvoidPrimeCore(int tid, const char* who)
+    {
+        int n = (int)sysconf(_SC_NPROCESSORS_CONF);
+        if(n < 4 || n > 32) return;
+        int top = -1; std::vector<int> f(n);
+        for(int i = 0; i < n; ++i) { f[i] = CpuMaxKHz(i); if(f[i] > top) top = f[i]; }
+        if(top <= 0) return;
+        cpu_set_t set; CPU_ZERO(&set); int cnt = 0;
+        for(int i = 0; i < n; ++i) if(f[i] > 0 && f[i] < top) { CPU_SET(i, &set); ++cnt; }
+        if(cnt < 2) return;                                     // все ядра одинаковые — не трогаем
+        if(sched_setaffinity(tid, sizeof(set), &set) == 0) LOG_INFO("Речь: поток %s — на %d ядрах из %d (самое быстрое оставлено игре)", who, cnt, n);
+    }
     void LowerPriority(const char* who)
     {
         int tid = (int)syscall(SYS_gettid);
         if(setpriority(PRIO_PROCESS, tid, 10) == 0) LOG_INFO("Речь: поток %s — пониженный приоритет (игре быстрее)", who);
+        AvoidPrimeCore(tid, who);
     }
 
     void AsrThread()

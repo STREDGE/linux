@@ -87,6 +87,7 @@ namespace
     std::map<int, CarSeen> g_cars;
     double g_nextPlayer = 0, g_nextWorld = 0, g_nextFull = 0, g_nextPerf = 0;
     double g_lastFrame = 0, g_maxDt = 0; int g_frames = 0;
+    double g_modSum = 0, g_modMax = 0;
     // прошлое состояние игрока (события)
     int  g_wanted = -1, g_state = -1, g_area = -1, g_money = INT32_MIN, g_wType = -1, g_task = -2;
     int  g_carRef = -1; float g_hp = -1, g_arm = -1;
@@ -331,16 +332,16 @@ void Frame()
         {
             int pu, pm, cu, cm; game::PoolUse(pu, pm, cu, cm);
             speech::Status ss = speech::Get();
-            Line("FPS", "%.0f кадр/с (худший кадр %.0f мс), педов %d/%d, машин %d/%d, ИИ ждём %d, речь: %s%s",
-                 g_frames / (now - (g_nextPerf - 5.0)), g_maxDt * 1000, pu, pm, cu, cm, claude::InFlight(),
-                 ss.busy ? "загрузка " : "", speech::Speaking() ? "говорит" : "тихо");
+            Line("FPS", "%.0f кадр/с (худший кадр %.0f мс), SA Living в кадре: в среднем %.2f мс, худший %.1f мс, педов %d/%d, машин %d/%d, ИИ ждём %d, речь: %s%s",
+                 g_frames / (now - (g_nextPerf - 5.0)), g_maxDt * 1000, g_frames ? g_modSum * 1000 / g_frames : 0.0, g_modMax * 1000,
+                 pu, pm, cu, cm, claude::InFlight(), ss.busy ? "загрузка " : "", speech::Speaking() ? "говорит" : "тихо");
         }
-        g_nextPerf = now + 5.0; g_frames = 0; g_maxDt = 0;
+        g_nextPerf = now + 5.0; g_frames = 0; g_maxDt = 0; g_modSum = 0; g_modMax = 0;
     }
     if(!game::Player()) return;
     PlayerEvents();
     Combat(now);
-    if(now >= g_nextPlayer) { g_nextPlayer = now + 0.25; PlayerLine(); }
+    if(now >= g_nextPlayer) { g_nextPlayer = now + 1.0; PlayerLine(); }   // 0.5.11: раз в секунду (было 4 раза)
     if(now >= g_nextWorld)
     {
         bool full = now >= g_nextFull;
@@ -357,6 +358,8 @@ void Mark(const std::string& text)
     Snapshot(true, "отметка");
     Line("ОТМЕТКА", "================ конец снимка ================");
 }
+
+void AddModTime(double sec) { g_modSum += sec; if(sec > g_modMax) g_modMax = sec; }
 
 void Crash(int sig, unsigned long pc, unsigned long lr, const char* lib, unsigned long off, const char* where)
 {

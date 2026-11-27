@@ -31,7 +31,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.5.10, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.5.11, SA Coop Team)
 
 const char* volatile g_where = "загрузка";
 
@@ -241,7 +241,12 @@ SDECL_HOOKv(GameProcess)
 {
     WHERE("игра (не мод)");
     GameProcess();
-    Frame();
+    {
+        timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+        Frame();
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        trace::AddModTime((b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) * 1e-9);
+    }
     WHERE("игра (не мод)");
 }
 

@@ -670,6 +670,7 @@ namespace
     {
         int       link = -1, connected = -1, role = -1, running = -1, tsState = -1;
         uint64_t  nextPlayerUs = 0, nextNetUs = 0, nextPerfUs = 0, lastFrameUs = 0, worstUs = 0, prevStatsUs = 0;
+        uint64_t  modSumUs = 0, modMaxUs = 0;   // 1.6.9: сколько кадра занимает сам мод
         int       frames = 0;
         net::Session::Stats prev;
         int       remoteSpawned = -1, inWorld = -1;
@@ -746,10 +747,11 @@ namespace
         if(now >= g_tr.nextPerfUs)
         {
             if(g_tr.nextPerfUs)
-                CTRACE("FPS", "%.0f кадр/с (худший кадр %.0f мс), общих машин %d, общий мир людей %s, второй CJ %s",
-                       g_tr.frames / 5.0, g_tr.worstUs / 1000.0, sync::TrackedVehicles(), crowd::Active() ? "включён" : "нет",
+                CTRACE("FPS", "%.0f кадр/с (худший кадр %.0f мс), SA Coop в кадре: в среднем %.2f мс, худший %.1f мс, общих машин %d, общий мир людей %s, второй CJ %s",
+                       g_tr.frames / 5.0, g_tr.worstUs / 1000.0, g_tr.frames ? g_tr.modSumUs / 1000.0 / g_tr.frames : 0.0, g_tr.modMaxUs / 1000.0,
+                       sync::TrackedVehicles(), crowd::Active() ? "включён" : "нет",
                        g_remotePed ? (g_inWorld ? "в мире" : "далеко (метка)") : "нет");
-            g_tr.nextPerfUs = now + 5000000; g_tr.frames = 0; g_tr.worstUs = 0;
+            g_tr.nextPerfUs = now + 5000000; g_tr.frames = 0; g_tr.worstUs = 0; g_tr.modSumUs = 0; g_tr.modMaxUs = 0;
         }
     }
 
@@ -812,7 +814,10 @@ namespace
     void OnFrameImpl();
     void OnFrame()
     {
+        uint64_t t0 = net::NowUs();
         OnFrameImpl();
+        uint64_t d = net::Since(net::NowUs(), t0);
+        g_tr.modSumUs += d; if(d > g_tr.modMaxUs) g_tr.modMaxUs = d;
         g_where = "игра (не код мода)";
     }
 

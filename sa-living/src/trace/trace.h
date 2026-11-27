@@ -20,6 +20,7 @@ namespace trace
     void Line(const char* tag, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
     void LineV(const char* tag, const char* fmt, va_list ap);
     void Frame();                                  // раз в кадр игры (игровой поток)
+    void AddModTime(double sec);                   // 0.5.11: сколько кадра занял мод (для строки FPS)
     void Mark(const std::string& text);            // отметка игрока + полный снимок мира
     void Crash(int sig, unsigned long pc, unsigned long lr, const char* lib, unsigned long off, const char* where);
     std::string Path();
