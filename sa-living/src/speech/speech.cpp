@@ -8,6 +8,9 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -173,7 +176,7 @@ namespace
         cfg.feat_config.sample_rate = 16000; cfg.feat_config.feature_dim = 80;
         cfg.model_config.nemo_ctc.model = model.c_str();
         cfg.model_config.tokens = tokens.c_str();
-        cfg.model_config.num_threads = 4;
+        cfg.model_config.num_threads = 2;      // 0.5.10: меньше ядер — меньше рывков игры (распознавание и так 0,05–0,1 с)
         cfg.model_config.provider = "cpu";
         cfg.decoding_method = "greedy_search";
         g_sh.rec = g_sh.Create(&cfg);
@@ -220,8 +223,16 @@ namespace
     std::atomic<bool> g_asrBusy{ false };
     std::map<std::string, std::pair<int, std::string>> g_playing;   // id моста → (gen, id вызывающего); под g_mx
 
+    // Потоки речи — ниже игры по приоритету (их потоки-помощники ONNX наследуют это при создании)
+    void LowerPriority(const char* who)
+    {
+        int tid = (int)syscall(SYS_gettid);
+        if(setpriority(PRIO_PROCESS, tid, 10) == 0) LOG_INFO("Речь: поток %s — пониженный приоритет (игре быстрее)", who);
+    }
+
     void AsrThread()
     {
+        LowerPriority("распознавания");
         for(;;)
         {
             AsrJob j;
@@ -262,7 +273,9 @@ namespace
     {
         if(xvibe::Loaded()) return true;
         if(!LoadOrtLib(err)) return false;
-        xvibe::Options o; o.threads = 4; o.voiceCache = 4; o.decodeChunk = 12;
+        // 0.5.10: игрок «когда Джарвис говорит — сильно лагает»: синтез голоса на 4 потоках забирал быстрые ядра у игры.
+        // 2 потока: синтез медленнее (по логу x0,35 от длины звука — запас большой), игре ядра остаются.
+        xvibe::Options o; o.threads = 2; o.voiceCache = 4; o.decodeChunk = 12;
         return xvibe::Load(g_base + "/tts", OrtPath(), o, err);
     }
 
@@ -270,6 +283,7 @@ namespace
 
     void TtsThread()
     {
+        LowerPriority("голоса");
         for(;;)
         {
             TtsJob j;
