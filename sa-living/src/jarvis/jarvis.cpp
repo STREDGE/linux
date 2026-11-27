@@ -381,6 +381,19 @@ namespace
             Done("Запомнил место «" + name + "»");
             return "запомнил место «" + name + "» (квадрат " + jbrain::GridOf(p.x, p.y) + ")";
         }
+        if(tool == "player" && in["to"].str() == "friend")
+        {   // здоровье/броня/деньги ДРУГУ: его CJ живёт на его телефоне — команду выполняет он (как give_weapon)
+            if(coopnet::GetRole() == coopnet::NONE || !coopnet::Connected()) return "друга нет на связи";
+            json::Value a = json::Value::Object();
+            const char* keys[] = { "health", "armour", "money", "god", "never_tired", "infinite_ammo" };
+            std::string what;
+            for(const char* k : keys) if(in.has(k)) { a[k] = in[k]; what += std::string(what.empty() ? "" : ", ") + k; }
+            if(what.empty()) return "не сказано, что дать другу";
+            json::Value m = json::Value::Object(); m["t"] = "jv"; m["tool"] = "player"; m["in"] = a;
+            coopnet::Send(m);
+            Done("Другу: " + what);
+            return std::string("другу «") + coopnet::PeerNick() + "» отправлено: " + what;
+        }
         if(tool == "player")
         {
             std::string res;
@@ -638,7 +651,7 @@ namespace
 {"name":"wanted","description":"Розыск. level 0–6 (0 — снять). delta — прибавить/убавить звёзды. immune=true — полиция не трогает и звёзды не растут (false — как обычно).","input_schema":{"type":"object","properties":{"level":{"type":"integer"},"delta":{"type":"integer"},"immune":{"type":"boolean"}}}},
 {"name":"teleport","description":"Перенести игрока (вместе с машиной, если он в ней). place: квадрат сетки («C7» или «C7.3»; столбцы A–L с запада на восток, строки 1–12 с севера на юг, квадрат 500 м, подквадрат .1–.9), «waypoint» (метка на карте), «back» (назад), «friend» (к другу), название известного места (Гроув-стрит, аэропорт Лос-Сантоса/Сан-Фиерро/Лас-Вентураса, гора Чилиад, Зона 69, казино Четыре дракона, …) или своё место игрока. Либо точные x, y (и z) в координатах игры. who — КОГО переносить: me (игрока, по умолчанию) или friend (друга в коопе). «Перенеси друга ко мне» = who=friend, place=me. «Перенеси меня к другу» = place=friend.","input_schema":{"type":"object","properties":{"place":{"type":"string"},"who":{"type":"string","enum":["me","friend"]},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},
 {"name":"place","description":"Свои места игрока: save — запомнить текущее место под именем, delete — забыть, list — перечислить.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["save","delete","list"]},"name":{"type":"string"}}}},
-{"name":"player","description":"Игрок: health (100 — полное), armour (100), money (прибавить, можно отрицательное), god (бессмертие), never_tired (бег без усталости), infinite_ammo (патроны пополняются сами). Указывай только то, что меняешь.","input_schema":{"type":"object","properties":{"health":{"type":"integer"},"armour":{"type":"integer"},"money":{"type":"integer"},"god":{"type":"boolean"},"never_tired":{"type":"boolean"},"infinite_ammo":{"type":"boolean"}}}},
+{"name":"player","description":"Игрок: health (100 — полное), armour (100), money (прибавить, можно отрицательное), god (бессмертие), never_tired (бег без усталости), infinite_ammo (патроны пополняются сами). Указывай только то, что меняешь. to — me или friend (другу в коопе: «дай другу броню» = armour 100, to=friend).","input_schema":{"type":"object","properties":{"health":{"type":"integer"},"armour":{"type":"integer"},"money":{"type":"integer"},"god":{"type":"boolean"},"never_tired":{"type":"boolean"},"infinite_ammo":{"type":"boolean"},"to":{"type":"string","enum":["me","friend"]}}}},
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
 {"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак; explode_near — взорвать машины вокруг (who: all, police, empty; radius — метров, по умолчанию 40, до 120; машину игрока не трогает).","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack","explode_near"]},"model":{"type":"string"},"who":{"type":"string"},"radius":{"type":"number"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
 {"name":"mission","description":"Миссии сюжета. action: skip — засчитать ИДУЩУЮ миссию как пройденную (игра сама даст «Миссия пройдена», прогресс, награду; работает для сюжетных миссий — гонки, подработки, тиры, спортзалы, подружки так не засчитываются; это меняет прохождение — сначала спроси подтверждение); skip_cutscene — пропустить идущую заставку.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["skip","skip_cutscene"]}}}},
@@ -686,7 +699,8 @@ namespace
                      me.c_str(), host ? 1 : 2, host ? "хост" : "гость", mate.empty() ? "друг" : mate.c_str(), host ? 2 : 1, host ? "гость" : "хост", host ? 2 : 1,
                      coopnet::Connected() ? "Друг сейчас на связи." : "Друг сейчас НЕ на связи — для него ничего не сделать.");
             p += "- Про друга: «перенеси друга ко мне» — teleport who=friend place=me; «перенеси друга в …» — teleport who=friend place=…; "
-                 "«перенеси меня к другу» — teleport place=friend; «дай другу …» — give_weapon to=friend.\n";
+                 "«перенеси меня к другу» — teleport place=friend; «дай другу оружие» — give_weapon to=friend; «дай другу броню / здоровье / деньги» — player to=friend. "
+                 "Своими командами (run_commands) друга не трогай: его CJ на его телефоне, у тебя только копия.\n";
             if(!host) p += "- Игрок — гость: общий мир (время, погода, движение, районы, миссии) меняет только хост. На такие просьбы отвечай, что это решает хост. Личное (оружие, здоровье, перенос) — можно.\n";
         }
         p += "- Говори ровно то, что вернул инструмент: кого и куда перенесли, что выдали. Не выдумывай результат.\n";
@@ -896,7 +910,7 @@ void OnCoopMessage(const json::Value& m)
         LOG_INFO("[ДЖАРВИС] друг перенёс меня: %s (%.0f, %.0f)", in["title"].str().c_str(), x, y);
         return;
     }
-    if(tool != "give_weapon") return;
+    if(tool != "give_weapon" && tool != "player") return;
     json::Value in = m["in"]; in["to"] = "me";
     std::string r = Exec(tool, in);
     talk::Notify("Джарвис друга: " + r);
