@@ -683,7 +683,13 @@ namespace
             if(!g_enterSinceUs || g_enterVehId != s.vehId)
             {
                 int seat = s.enterSeat;
-                if(!SeatFree(tv, seat, r)) { int p = FreePassengerSeat(tv, seat - 1); seat = p >= 0 ? p + 1 : -1; }
+                // Угон: друг садится за руль, а там пед игры — второй CJ тоже вытаскивает водителя (как в игре).
+                // Раньше место «занято» → второго CJ сажали пассажиром, пед ехал дальше вместе с ним (тест 1.4.4).
+                // Пассажиром — только если за рулём ты (тебя не выкидываем).
+                uintptr_t drv = seat == 0 ? Field<uintptr_t>(tv, off::VehDriver) : 0;
+                bool jack = drv && drv != r && drv != g_ctx.local;
+                if(!jack && !SeatFree(tv, seat, r)) { int p = FreePassengerSeat(tv, seat - 1); seat = p >= 0 ? p + 1 : -1; }
+                if(jack) Log(false, "[МАШИНЫ] Друг угоняет %04X — второй CJ вытаскивает водителя", s.vehId);
                 if(seat >= 0 && Dist(GetPosition(r), GetPosition(tv)) < 15.0f)
                 {
                     GiveEnterTask(r, tv, seat);
@@ -1733,6 +1739,14 @@ uintptr_t VehicleById(uint16_t id)
     NetVeh* v = FindId(id);
     return (v && Valid(*v)) ? v->veh : 0;
 }
+bool LocalTakesSeat(uintptr_t local, uintptr_t veh, int seat)
+{
+    if(!g_installed || !local || !veh) return false;
+    LocalSeat ls = ReadLocalSeat(local);
+    if(ls.veh) return ls.veh == veh && ls.seat == seat;
+    return ls.enterVeh == veh && ls.enterSeat == seat;
+}
+
 void WarpPedInto(uintptr_t ped, uintptr_t veh, int seat)
 {
     if(!ped || !veh) return;

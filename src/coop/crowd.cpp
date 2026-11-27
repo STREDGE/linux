@@ -268,6 +268,7 @@ namespace
         net::PedEntry st{}; uint64_t stUs = 0;
         uint64_t requestUs = 0; uint64_t goUs = 0; CVector goTarget{}; int goMove = 0;
         bool dead = false; bool killed = false; int weapon = -1;
+        bool jackLogged = false;
     };
     std::vector<Copy> g_copies;
     bool g_popOff = false;                // своё население выключено
@@ -359,7 +360,17 @@ namespace
             if(veh)
             {
                 uintptr_t cur = InVehicle(ped) ? Field<uintptr_t>(ped, off::PedVehicle) : 0;
-                if(cur != veh) sync::WarpPedInto(ped, veh, s.seat);
+                if(cur != veh)
+                {
+                    // ты угоняешь эту машину (садишься на его место) — игра вытащила копию водителя: не сажать обратно,
+                    // иначе место снова занято и ты садишься пассажиром (тест 1.4.4). Хост у себя тоже выкинет водителя.
+                    if(sync::LocalTakesSeat(g_local, veh, s.seat))
+                    {
+                        if(!c.jackLogged) { c.jackLogged = true; CTRACE("КОПИЯ", "#%u: ты занимаешь его место в машине — не сажаю обратно", c.id); }
+                        return;
+                    }
+                    sync::WarpPedInto(ped, veh, s.seat);
+                }
                 return;
             }
             // машины ещё нет у нас — пусть стоит, где пакет
