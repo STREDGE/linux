@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h>
 
 #include <string>
 #include <vector>
@@ -544,19 +545,16 @@ namespace
         for(int id : kIds)
         {
             int g = VehAnimGroupGetGroup(vag, id);
-            if(g < 0 || g > 255) continue;
-            uintptr_t grp = groups + (uintptr_t)g * 32;    // CAnimBlendAssocGroup: +8 анимации, +0x10 сколько, +0x14 первый номер
-            uintptr_t assocs = Field<uintptr_t>(grp, 8);
-            int idx = id - Field<int>(grp, 0x14), n = Field<int>(grp, 0x10);
-            if(assocs && (idx < 0 || (n > 0 && idx >= n))) continue;
-            if(assocs && Field<uintptr_t>(assocs + (uintptr_t)idx * 32, 0x18)) continue;   // иерархия анимации есть — загружена
+            if(g < 0 || g > 255 || !AnimBlockName || !AnimBlockIndex || !AnimBlocksVar) continue;
+            // Решаем по блоку анимаций, а не по самой анимации (1.5.3: вылет у друга — мод счёл блок «ped» незагруженным
+            // и заказал его; «ped» игра держит в памяти всегда и не грузит потоком — CdStreamThread упал).
+            const char* name = AnimBlockName(g);
+            if(!name || !name[0] || !strcasecmp(name, "ped")) continue;
+            int bi = AnimBlockIndex(name);
+            if(bi < 0 || bi > 255) continue;
+            if(Field<uint8_t>(AnimBlocksVar + (uintptr_t)bi * 32, 0x10)) continue;          // CAnimBlock::bLoaded — уже в памяти
             ready = false;
-            if(load && AnimBlockName && AnimBlockIndex)
-            {
-                const char* name = AnimBlockName(g);
-                int bi = name && name[0] ? AnimBlockIndex(name) : -1;
-                if(bi >= 0) { RequestModel(kIfpBase + bi, 2); asked = true; Log(false, "[МАШИНЫ] Гружу анимации дверей «%s» (группа %d)", name, g); }
-            }
+            if(load) { RequestModel(kIfpBase + bi, 2); asked = true; Log(false, "[МАШИНЫ] Гружу анимации дверей «%s» (группа %d)", name, g); }
         }
         if(ready || !asked) return ready;
         LoadAllRequestedModels(false);
@@ -896,8 +894,9 @@ namespace
         const char* bn = AnimBlockName(group);
         int bi = bn && bn[0] ? AnimBlockIndex(bn) : -1;
         if(bi < 0 || bi >= 256) return;
-        if(!Field<uint8_t>(AnimBlocksVar + (uintptr_t)bi * 32, 0x10)) { RequestModel(kIfpBase + bi, 8); return; }
-        if(!g_animBlockRef[bi] && AddAnimBlockRef) { AddAnimBlockRef(bi); g_animBlockRef[bi] = true; Log(false, "[ВЫСТРЕЛ] Анимации стрельбы из машины «%s» загружены", bn); }
+        bool pedBlock = !strcasecmp(bn, "ped");                                         // «ped» всегда в памяти — не заказывать (вылет 1.5.2)
+        if(!pedBlock && !Field<uint8_t>(AnimBlocksVar + (uintptr_t)bi * 32, 0x10)) { RequestModel(kIfpBase + bi, 8); return; }
+        if(!pedBlock && !g_animBlockRef[bi] && AddAnimBlockRef) { AddAnimBlockRef(bi); g_animBlockRef[bi] = true; Log(false, "[ВЫСТРЕЛ] Анимации стрельбы из машины «%s» загружены", bn); }
         // четверть: куда стреляет относительно носа машины (как CTaskSimpleGangDriveBy::PlayerTarget)
         CVector vp = GetPosition(veh);
         const float kPi = 3.14159265f;
