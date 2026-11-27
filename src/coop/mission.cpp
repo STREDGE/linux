@@ -212,6 +212,7 @@ namespace
     uint64_t g_cutSinceUs = 0, g_teleportAtUs = 0, g_cutFadeFixUs = 0;
     int      g_cutFadeFixes = 0;
     CVector  g_cutFreezePos{};
+    CVector  g_holdPos{}; bool g_holdValid = false;   // друг: держать на месте до переноса к хосту после катсцены
     uint8_t  g_cutPrevArea = 0;           // друг: свой интерьер до катсцены хоста (вернуть, если хост ещё в катсцене)
     bool     g_waitHostCutEnd = false;    // друг: своя копия кончилась раньше — к хосту переносим после его конца
     uint64_t g_waitHostCutSinceUs = 0;
@@ -660,6 +661,7 @@ namespace
         float side = (h.flags & net::PSF_IN_VEHICLE) ? 3.5f : 1.8f;
         CVector to{ h.pos[0] + cosf(hh) * side, h.pos[1] + sinf(hh) * side, h.pos[2] + 0.5f };
         PedTeleport(g_local, to, false);
+        Field<CVector>(g_local, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };     // без скорости падения с прошлого места
         Log(false, "[МИССИЯ] Друг перенесён к хосту (%s): %.1f, %.1f, %.1f", why, to.x, to.y, to.z);
     }
 
@@ -694,13 +696,19 @@ namespace
     // HAS_DEATHARREST_BEEN_EXECUTED) и CTheScripts::FailCurrentMission = 2 (как команда FAIL_CURRENT_MISSION):
     // сценарий возвращается в начало миссии, видит «смерть» и идёт в свой «провал» — надпись «Миссия провалена»,
     // уборка. Текст у друга — как все тексты хоста.
-    bool g_friendWasDead = false;
+    bool g_friendWasDead = false; uint64_t g_lastCutUs = 0;
     void HostFriendDeath()
     {
         bool dead = g_rs && g_remote && (g_rs->flags & net::PSF_DEAD);
         bool justDied = dead && !g_friendWasDead;
         g_friendWasDead = dead;
+        if(CutsceneRunning()) g_lastCutUs = g_now;
         if(!justDied || !OnMission() || CutsceneRunning() || !g_failMission || !g_activeScripts) return;
+        if(g_lastCutUs && net::Since(g_now, g_lastCutUs) < 5000000)
+        {   // сразу после катсцены друга переносит к хосту — «смерть» в эти секунды не считаем (перенос, а не бой)
+            Log(false, "[МИССИЯ] Друг «погиб» через %.1f с после катсцены — это перенос, провал не ставлю", net::Since(g_now, g_lastCutUs) / 1e6);
+            return;
+        }
         uintptr_t mis = 0;
         int guard = 0;
         for(uintptr_t s = *g_activeScripts; s && guard < 200; s = Field<uintptr_t>(s, 0x0), ++guard)
@@ -829,7 +837,10 @@ namespace
                 g_cut = Cut::None;
                 g_cutHaveEnded = true; g_cutEndedId = g_cutId;
                 if(g_cutEndReceived)
+                {
                     g_teleportAtUs = g_now + 1500000;  // скрипт хоста ставит его на место — потом и друга рядом
+                    g_holdPos = GetPosition(g_local); g_holdValid = true;
+                }
                 else
                 {   // у хоста катсцена ещё идёт (его интерьер — катсценный): вернуть свой интерьер и ждать её конца
                     SetLocalArea(g_cutPrevArea, "своя копия кончилась раньше — свой мир");
@@ -844,9 +855,17 @@ namespace
             g_waitHostCutEnd = false; g_teleportAtUs = g_now + 500000;
             Log(true, "[КАТСЦЕНА] Конец катсцены хоста не пришёл за 2 мин — переношу к хосту");
         }
+        // 1.6.4: пока ждём переноса к хосту (1,5 с), держим своего CJ на месте. Интерьер уже мог стать «как у хоста»
+        // (улица), а сам CJ ещё на месте интерьера, в километре над землёй, — он падал и погибал при переносе
+        // (тест 1.6.2: после катсцены «Биг Смоука» друг «умер» → провал миссии у обоих).
+        if(g_teleportAtUs && g_cut == Cut::None && g_local && g_holdValid)
+        {
+            SetPosition(g_local, g_holdPos);
+            Field<CVector>(g_local, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };
+        }
         if(g_teleportAtUs && g_now >= g_teleportAtUs && g_cut == Cut::None)
         {
-            g_teleportAtUs = 0;
+            g_teleportAtUs = 0; g_holdValid = false;
             if(g_rs)
             {
                 CVector hp{ g_rs->pos[0], g_rs->pos[1], g_rs->pos[2] };
@@ -1107,6 +1126,7 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
             if(e.counter == g_cutId && g_waitHostCutEnd)
             {   // своя копия уже кончилась — теперь и у хоста: через 1,5 с (он встанет на место) — к нему
                 g_waitHostCutEnd = false; g_teleportAtUs = g_now + 1500000;
+                if(g_local) { g_holdPos = GetPosition(g_local); g_holdValid = true; }
                 Log(false, "[КАТСЦЕНА] У хоста тоже кончилась — переношу к нему");
             }
             if(e.counter == g_cutId && g_cut != Cut::None) g_cutEndReceived = true;

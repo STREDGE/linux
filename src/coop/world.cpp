@@ -364,6 +364,28 @@ DECL_HOOKv(MakeValidSaveName, int slot)
     }
 }
 
+// 1.6.4: имя файла для ЗАГРУЗКИ. Игра грузит не по MakeValidSaveName (оно только для сохранения), а по имени из
+// C_PcSave::GenerateGameFilename (CheckSlotDataValid → OpenFileForReading → ms_LoadFileName → GenericLoad).
+// Без этой подмены загрузка в кооп-мире брала одиночный файл GTASAsfN.b: «Повторить миссию» (игра грузит ячейку 10,
+// куда сама сохраняется в начале миссии) подняла старое одиночное сохранение игрока с другой миссией (тест 1.6.2),
+// и загрузка файла коопа через ячейку 10 (мир хоста, выбор в лобби) читала тот же одиночный файл.
+DECL_HOOKv(GenerateGameFilename, void* self, int slot, char* out)
+{
+    GenerateGameFilename(self, slot, out);
+    if(!out) return;
+    if(g_loadRedirect && slot == kLoadSlot)
+    {
+        strcpy(out, g_loadName);
+        Log(false, "[МИР] Загрузка: ячейка %d → файл коопа «%s»", slot + 1, g_loadName);
+    }
+    else if(g_coopWorld && slot >= 0 && slot < 16)
+    {
+        static int logged = -1;
+        CoopSlotName(slot, out, 32);
+        if(logged != slot) { logged = slot; Log(false, "[ЛОББИ] Кооп-мир: ячейка %d читается из кооп-файла «%s»", slot + 1, out); }
+    }
+}
+
 // Сохранение в кооп-мире: копия — в папку SA/SACoop/Сохранения
 DECL_HOOK(int, SaveSlotHook, void* self, int8_t slot, bool noExtras)
 {
@@ -404,6 +426,8 @@ bool Install(void* h, FLogger* log)
            OSFileOpen && OSFileRead && OSFileWrite && OSFileSize && OSFileClose && mk;
     if(!g_ok) { Log(true, "[МИР] Не все функции сохранения найдены — друг будет загружать свою игру"); return false; }
     aml->Hook(mk, (void*)HookOf_MakeValidSaveName, (void**)&MakeValidSaveName);
+    if(void* gen = sym("_ZN8C_PcSave20GenerateGameFilenameEiPc")) aml->Hook(gen, (void*)HookOf_GenerateGameFilename, (void**)&GenerateGameFilename);
+    else Log(true, "[МИР] Нет C_PcSave::GenerateGameFilename — загрузка в кооп-мире возьмёт одиночные ячейки");
     aml->Hook((void*)SaveSlot, (void*)HookOf_SaveSlotHook, (void**)&SaveSlotHook);
     SaveSlot = SaveSlotHook;   // свои сохранения мира для друга — без копии в папку (g_hostSaving)
     MakeFolders();

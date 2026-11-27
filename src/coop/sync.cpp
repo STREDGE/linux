@@ -1596,6 +1596,45 @@ DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool
     ComputeDamage(calc, victim, resp, painAudio);
 }
 
+// ---------- защита от вылета «анимации дверей» (1.6.4) ----------
+// CVehicleAnimGroup::ComputeAnimDoorOffsets берёт анимацию двери и сразу читает её «скелет» (assoc+0x18). Если блок
+// анимаций группы не в памяти — скелета нет, игра падает (+0x6B7054). Так падал хост: 1.4.4 — посадка второго CJ,
+// 1.6.2 — свой CJ садился в машину миссии сразу после «Повторить миссию» (перезагрузка мира посреди игры).
+// Теперь перед расчётом проверяем скелет: нет — пробуем догрузить блок, не вышло — отдаём нулевое смещение (без вылета).
+namespace { uintptr_t (*GetAnimAssociationFn)(int group, int anim) = nullptr; }
+DECL_HOOK(CVector, ComputeAnimDoorOffsets, uintptr_t self, int door)
+{
+    if(self && GetAnimAssociationFn && VehAnimGroupGetGroup && g_libBase)
+    {
+        const CVector& cached = Field<CVector>(self, 0x40 + (uintptr_t)door * 12);
+        if(cached.x == 0 && cached.y == 0 && cached.z == 0)                 // ещё не считали — игра полезет в анимацию
+        {
+            int anim = (door >= 1 && door <= 6) ? *(int*)(g_libBase + 0x762D30 + (uintptr_t)(door - 1) * 4) : 359;
+            int g = VehAnimGroupGetGroup(self, anim);
+            auto ready = [&]() { uintptr_t a = (g >= 0 && g < 256) ? GetAnimAssociationFn(g, anim) : 0; return a && Field<uintptr_t>(a, 0x18); };
+            if(!ready())
+            {
+                const char* name = (AnimBlockName && g >= 0 && g < 256) ? AnimBlockName(g) : nullptr;
+                int bi = (name && name[0] && AnimBlockIndex) ? AnimBlockIndex(name) : -1;
+                if(bi >= 0 && bi < 256 && strcasecmp(name, "ped") != 0 && AnimBlocksVar && !Field<uint8_t>(AnimBlocksVar + (uintptr_t)bi * 32, 0x10))
+                {
+                    RequestModel(25575 + bi, 2); LoadAllRequestedModels(false);
+                }
+                bool ok = ready();
+                static uint64_t lastLog = 0;
+                if(!lastLog || net::Since(g_ctx.now, lastLog) > 3000000)
+                {
+                    lastLog = g_ctx.now ? g_ctx.now : 1;
+                    Log(!ok, "[МАШИНЫ] Анимации дверей не были в памяти (группа %d «%s», анимация %d, дверь %d) — %s",
+                        g, name ? name : "?", anim, door, ok ? "догрузил" : "догрузить не вышло, сажаю без смещения (вылета не будет)");
+                }
+                if(!ok) return CVector{ 0, 0, 0 };
+            }
+        }
+    }
+    return ComputeAnimDoorOffsets(self, door);
+}
+
 // ---------- снаружи ----------
 
 bool Install(void* h, FLogger* log)
@@ -1627,6 +1666,12 @@ bool Install(void* h, FLogger* log)
         if(!aml->GetSym(h, d.sym)) { Log(true, "Машины/оружие: нет символа %s — кооп только пешком", d.sym); return false; }
     for(const auto& d : hooks)
         aml->Hook((void*)aml->GetSym(h, d.sym), d.fn, d.orig);
+    GetAnimAssociationFn = (uintptr_t(*)(int, int))aml->GetSym(h, "_ZN12CAnimManager18GetAnimAssociationE12AssocGroupId11AnimationId");
+    if(void* cado = (void*)aml->GetSym(h, "_ZN17CVehicleAnimGroup22ComputeAnimDoorOffsetsEi"))
+    {
+        if(GetAnimAssociationFn) aml->Hook(cado, (void*)HookOf_ComputeAnimDoorOffsets, (void**)&ComputeAnimDoorOffsets);
+    }
+    else Log(true, "Машины: нет CVehicleAnimGroup::ComputeAnimDoorOffsets — защиты от вылета анимаций дверей нет");
     // Наш вызов «сесть водителем» тоже идёт через перехват — так и задумано (он ничего не меняет,
     // если за рулём не друг). Пассажирский конструктор не перехвачен.
     g_installed = true;
