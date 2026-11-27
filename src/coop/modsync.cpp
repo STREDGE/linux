@@ -70,6 +70,7 @@ namespace
         std::vector<Entry> files; size_t fi = 0; int64_t off = 0; int fd = -1;
         uint32_t nextSeq = 0; std::deque<Pending> inflight;
         int64_t total = 0, sent = 0; uint64_t nextTickUs = 0;
+        int window = 64;                      // сколько кусков в полёте: растёт, пока доходит; потеря — вдвое меньше
     } g_hs;
     // передача файлов: друг
     struct ClientRecv
@@ -206,7 +207,7 @@ namespace
                 continue;
             }
             if(!S_ISREG(st.st_mode) || !SafeRel(r)) continue;
-            if(kind == 'a' && !EndsWith(Lower(r), ".so")) continue;
+            if(kind == 'a' && (!EndsWith(Lower(r), ".so") || ProtectedAml(r))) continue;   // свой SA Coop не сверяется (и в нём есть слова-«ключи» для проверки)
             if(kind == 'g' && (SkipGameFile(r) || st.st_size > (600ll << 20))) continue;
             Entry en; en.kind = kind; en.rel = r; en.size = st.st_size; en.abs = abs; en.hash = (uint64_t)st.st_mtime;   // mtime — временно
             out.push_back(en);
@@ -480,8 +481,11 @@ namespace
         if(!g_hs.active || !g_session || now < g_hs.nextTickUs) return;
         g_hs.nextTickUs = now + 50000;
         if(!g_hs.inflight.empty() && net::Since(now, g_hs.inflight.front().sentUs) > 1500000)
+        {   // не дошло — повторить и сбавить (тест 1.5.1: ~285 КБ/с при пинге 190 мс — было ограничено 16 кусками за 50 мс)
+            g_hs.window = std::max(16, g_hs.window / 2);
             for(auto& p : g_hs.inflight) { g_session->SendGame(p.pkt.data(), (int)p.pkt.size()); p.sentUs = now; }
-        for(int k = 0; k < 16 && g_hs.inflight.size() < 128 && g_hs.fi < g_hs.files.size(); ++k)
+        }
+        for(int k = 0; k < 96 && (int)g_hs.inflight.size() < g_hs.window && g_hs.fi < g_hs.files.size(); ++k)
         {
             const Entry& e = g_hs.files[g_hs.fi];
             net::ModFileChunkPacket p{};
@@ -700,7 +704,9 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
     {
         const auto* a = (const net::ModFileAckPacket*)data;
         if(!g_hs.active || a->req != g_hs.req) return;
-        while(!g_hs.inflight.empty() && (int32_t)(a->seq - g_hs.inflight.front().seq) >= 0) g_hs.inflight.pop_front();
+        int acked = 0;
+        while(!g_hs.inflight.empty() && (int32_t)(a->seq - g_hs.inflight.front().seq) >= 0) { g_hs.inflight.pop_front(); ++acked; }
+        if(acked) g_hs.window = std::min(768, g_hs.window + 1);      // всё доходит — понемногу быстрее
         return;
     }
     if(type == net::PKT_MODFILE_CHUNK && len >= net::kModFileChunkHeaderSize)

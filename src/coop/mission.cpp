@@ -223,6 +223,10 @@ namespace
     }
 
     bool AfterNewer(uint16_t a, uint16_t b) { return (int16_t)(a - b) > 0; }   // a новее b
+    // Тест 1.5.1: команда «катсцена» ушла, пока друг ещё грузил новую игру, — потерялась, у друга катсцены не было.
+    // Пока катсцена у хоста идёт — повторяем её раз в 2 с; друг берёт её, как только его игра готова (тот же номер — один раз).
+    net::CutsceneEvent g_lastCutEv{};
+    uint64_t g_cutResendUs = 0;
 }
 
 DECL_HOOKv(CutLoadHook, const char* name)
@@ -234,7 +238,7 @@ DECL_HOOKv(CutLoadHook, const char* name)
     strncpy(e.name, name, 8);
     memcpy(e.textStem, g_textStem, 8);
     g_session->SendReliable(&e, sizeof(e));
-    g_cutOpen = true;
+    g_cutOpen = true; g_lastCutEv = e; g_cutResendUs = net::NowUs() + 2000000;
     Log(false, "[КАТСЦЕНА] у хоста «%.8s» (тексты «%s») — у друга та же", name, g_textStem);
 }
 DECL_HOOKv(CutDeleteHook)
@@ -905,6 +909,11 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
 
     if(role == net::Role::Host)
     {
+        if(g_cutOpen && g_session && g_now >= g_cutResendUs)
+        {   // друг мог ещё грузиться, когда ушла команда, — повторить
+            g_cutResendUs = g_now + 2000000;
+            g_session->SendReliable(&g_lastCutEv, sizeof(g_lastCutEv));
+        }
         for(auto& r : g_recruits) HostRecruit(r.npc);
         g_recruits.clear();
         HostBlips();
@@ -924,6 +933,7 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
         if(e.op == net::CUT_LOAD)
         {
             if(g_cutHaveEnded && !AfterNewer(e.counter, g_cutEndedId)) continue;
+            if(e.counter == g_cutId && g_cut != Cut::None) continue;                  // повтор от хоста — уже идёт
             if(g_cut != Cut::None && g_cut != Cut::After)
             {
                 Log(false, "[КАТСЦЕНА] Новая катсцена хоста, а прошлая ещё идёт — убираю прошлую");
