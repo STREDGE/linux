@@ -11,7 +11,8 @@ namespace settings
         bool  enabled = true;
         std::string key;                    // ключ Anthropic игрока
         std::string model = "claude-haiku-5-5";
-        std::string effort = "low";         // low | medium
+        std::string effort = "medium";      // педы: medium | high (0.5.9, решение игрока)
+        std::string jarvisEffort = "high";  // Джарвис: high | xhigh (0.5.9)
         bool  voices = true;                // голоса педов (TextToSpeech)
         bool  subtitles = true;
         std::string lang = "ru-RU";

@@ -854,10 +854,12 @@ namespace
         req.system = json::Value::Array(); req.system.push(sys);
         req.tools = Tools();
         req.messages = g_hist;
-        req.maxTokens = 6000;
         req.tag = "джарвис";
         req.role = claude::ROLE_JARVIS;
-        req.effort = "medium";                   // Haiku 5.5: на medium Джарвис был и умный, и быстрый (тест 0.2.10)
+        // 0.5.9 (решение игрока): «Высокий» (high) или «Сверхвысокий» (xhigh) — в настройках Джарвиса
+        req.effort = settings::Get().jarvisEffort == "xhigh" ? "xhigh" : "high";
+        req.maxTokens = req.effort == "xhigh" ? 24000 : 12000;   // размышление входит в max_tokens — с запасом
+        req.timeoutMs = 90000;
         Show(THINKING);
         g_req = claude::Send(req, OnAiText, OnAiDone);
         if(!g_req) { g_hist = json::Value::Array(); Reply(Fmt("ИИ сейчас недоступен, %s.", Sir())); }

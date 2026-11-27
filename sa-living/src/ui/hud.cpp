@@ -439,6 +439,10 @@ namespace
         int ai = s.jarvisAddress == "босс" ? 1 : s.jarvisAddress == "шеф" ? 2 : 0;
         int na = Chips(y, x0, x1, "Как к тебе обращаться", addr, 3, ai);
         if(na != ai) s.jarvisAddress = addr[na];
+        static const char* jeff[] = { "Высокий", "Сверхвысокий" };
+        int je = s.jarvisEffort == "xhigh" ? 1 : 0;
+        int nje = Chips(y, x0, x1, "Размышление Джарвиса (выше — умнее, но ответ дольше)", jeff, 2, je);
+        if(nje != je) s.jarvisEffort = nje ? "xhigh" : "high";
         static const char* conf[] = { "Опасное", "Всегда", "Никогда" };
         s.jarvisConfirm = Chips(y, x0, x1, "Переспрашивать «Подтверждаете?»", conf, 3, s.jarvisConfirm);
         Toggle(y, x0, x1, "Кооп: другу можно менять общий мир через Джарвиса", s.jarvisFriend);
@@ -458,10 +462,10 @@ namespace
 
     void TabSettings(settings::Data& s, float x0, float x1, float& y)
     {
-        static const char* efforts[] = { "Быстро", "Умнее" };
-        int ei = s.effort == "medium" ? 1 : 0;
-        int ne = Chips(y, x0, x1, "Режим размышлений", efforts, 2, ei);
-        if(ne != ei) { s.effort = ne ? "medium" : "low"; claude::Settings cs = claude::Get(); cs.effort = s.effort; claude::Configure(cs); }
+        static const char* efforts[] = { "Средний", "Высокий" };
+        int ei = s.effort == "high" ? 1 : 0;
+        int ne = Chips(y, x0, x1, "Размышление людей (выше — умнее, но ответ дольше)", efforts, 2, ei);
+        if(ne != ei) { s.effort = ne ? "high" : "medium"; claude::Settings cs = claude::Get(); cs.effort = s.effort; claude::Configure(cs); }
         static const char* inits[] = { "Выкл", "Редко", "Часто" };
         s.initiative = Chips(y, x0, x1, "Педы сами заговаривают", inits, 3, s.initiative);
         static const char* limits[] = { "Без лимита", "1500", "400" };

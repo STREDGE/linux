@@ -599,13 +599,13 @@ namespace
         req.system = json::Value::Array(); req.system.push(rules); req.system.push(card);
         req.tools = Tools();
         req.messages = dialog;
-        req.maxTokens = 2500;
+        req.maxTokens = 8000;                    // 0.5.9: размышление на medium/high входит в max_tokens
         req.tag = "разговор";
         // мгновенная реакция на событие (ударили, ствол, напали) — быстрая модель: важнее успеть; разговор — Sonnet 5.5
         req.role = userText.find("[Событие:") != std::string::npos ? claude::ROLE_REACT : claude::ROLE_TALK;
         // Живой разговор: ответ нужен за секунду-две. «Быстро» — без размышления; «Умнее» — с коротким размышлением.
         g_lastTalkReq = Now();
-        req.effort = settings::Get().effort.empty() ? "low" : settings::Get().effort;   // «Быстро» — low, «Умнее» — medium
+        req.effort = settings::Get().effort == "high" ? "high" : "medium";   // 0.5.9: «Средний» / «Высокий» (настройки «ИИ»)
         // С коротким размышлением: без него модель вслух проговаривала ремарки и свои рассуждения (тест 0.2.6).
         // Задержка с размышлением на low по логам 1,2–2 с — разница с «без» небольшая.
         req.noThinking = false;
@@ -1840,7 +1840,7 @@ static void WarmFrame(double now)
         json::Value m = json::Value::Object(); m["role"] = "user"; m["content"] = "warmup";
         req.messages = json::Value::Array(); req.messages.push(m);
         req.role = role;
-        req.effort = settings::Get().effort.empty() ? "low" : settings::Get().effort;   // те же параметры, что у настоящего запроса
+        req.effort = settings::Get().effort == "high" ? "high" : "medium";   // те же параметры, что у настоящего запроса
         req.noThinking = false; req.cache = false; req.warmOnly = true; req.tag = "прогрев кэша";
         if(claude::Send(req, nullptr, nullptr)) sent = true;
         if(claude::ModelFor(claude::ROLE_TALK) == claude::ModelFor(claude::ROLE_REACT)) break;   // «Быстрее»: модель одна
