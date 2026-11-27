@@ -162,6 +162,15 @@ namespace gta
     extern void      (*EventScriptCommandCtor)(void* ev, int primaryTask, void* task, bool affectsDeadPeds);
     extern void      (*EventScriptCommandDtor)(void* ev);
     extern void      (*EventGroupAdd)(uintptr_t group, void* ev, bool valid);
+    // вид стрельбы второго CJ из машины: анимация пассажира «высунулся из окна» (как CTaskSimpleGangDriveBy::ManageAnim)
+    extern uintptr_t AnimBlocksVar, DriveByLoopStart, DriveByLoopEnd;     // CAnimManager::ms_aAnimBlocks (шаг 32, +0x10 загружен); float*
+    extern uintptr_t (*BlendAnimation)(uintptr_t clump, int group, int anim, float delta);
+    extern uintptr_t (*ClumpGetAssociation)(uintptr_t clump, unsigned anim);
+    extern void      (*AddAnimBlockRef)(int block);
+    extern void      (*VehSetWindowOpen)(uintptr_t veh, uint8_t door);
+    extern void      (*AnimSetDeleteCallback)(uintptr_t assoc, void* cb, void* data);
+    extern void      (*AnimSetCurrentTime)(uintptr_t assoc, float t);
+    extern void*     DefaultAnimCB;
     extern uintptr_t StreamingInfo; // CStreaming::ms_aInfoForModel
     extern uint8_t*  CurrArea;      // CGame::currArea
 

@@ -851,6 +851,89 @@ namespace
         SetCurrentWeaponType(ped, w);
     }
 
+    // ---------- вид стрельбы друга из машины (1.4.7) ----------
+    // Друг стреляет из машины — у тебя его CJ сидел ровно, пули летели «из салона». Теперь при каждом выстреле
+    // друга из машины его CJ высовывается из окна в сторону выстрела (те же анимации, что у игры в
+    // CTaskSimpleGangDriveBy: группа 72 машина / 73–74 байк / 75, анимации 231–238 по четверти и стороне).
+    // Задачу игры второму CJ не даём: для «игрока» она переключила бы ТВОЮ камеру в прицел. Стреляет по-прежнему
+    // только повтор выстрелов друга — анимация ничего сама не стреляет. Нет выстрелов 1,2 с — CJ садится обратно.
+    struct RemoteDbPose { uintptr_t ped = 0, assoc = 0; int anim = -1; uint64_t untilUs = 0; };
+    RemoteDbPose g_rdb;
+    int g_poseLogs = 0;
+    bool g_animBlockRef[256] = {};
+    uintptr_t PedClump(uintptr_t ped) { return ped ? Field<uintptr_t>(ped, 0x20) : 0; }   // CEntity::m_pRwClump
+    bool PoseAlive()
+    {
+        if(!g_rdb.assoc || !ClumpGetAssociation || !g_rdb.ped || g_rdb.ped != g_ctx.remote) return false;   // второго CJ пересоздали — старое не трогать
+        uintptr_t clump = PedClump(g_rdb.ped);
+        return clump && ClumpGetAssociation(clump, (unsigned)g_rdb.anim) == g_rdb.assoc;
+    }
+    void PoseEnd()
+    {
+        if(PoseAlive())
+        {
+            Field<float>(g_rdb.assoc, 0x34) = -8.0f;                                     // m_fBlendDelta — плавно убрать (как игра)
+            if(AnimSetDeleteCallback && DefaultAnimCB) AnimSetDeleteCallback(g_rdb.assoc, DefaultAnimCB, nullptr);
+        }
+        g_rdb = RemoteDbPose{};
+    }
+    void RemoteDriveByPose(uintptr_t r, const CVector& target, int weapon)
+    {
+        if(!r || r != g_ctx.remote || !BlendAnimation || !ClumpGetAssociation || !AnimBlocksVar || !AnimBlockName || !AnimBlockIndex) return;
+        uintptr_t veh = PedVehicle(r), clump = PedClump(r);
+        if(!veh || !clump) return;
+        int vtype = Field<int>(veh, 0x734), sub = Field<int>(veh, 0x738);
+        uintptr_t drv = Field<uintptr_t>(veh, off::VehDriver);
+        int group = sub == 2 ? 75 : vtype == 9 ? 73 + ((Field<int>(veh, 0x830) == 2 && drv == r) ? 1 : 0) : 72;
+        bool right = false; int window = -1;
+        if(drv != r)
+        {
+            if(Field<uintptr_t>(veh, off::VehPassengers) == r)          { right = true;  window = 8;  }
+            else if(Field<uintptr_t>(veh, off::VehPassengers + 8) == r)  { right = false; window = 11; }
+            else if(Field<uintptr_t>(veh, off::VehPassengers + 16) == r) { right = true;  window = 9;  }
+        }
+        // блок анимаций группы: не загружен — заказать (следующие выстрелы уже с анимацией)
+        const char* bn = AnimBlockName(group);
+        int bi = bn && bn[0] ? AnimBlockIndex(bn) : -1;
+        if(bi < 0 || bi >= 256) return;
+        if(!Field<uint8_t>(AnimBlocksVar + (uintptr_t)bi * 32, 0x10)) { RequestModel(kIfpBase + bi, 8); return; }
+        if(!g_animBlockRef[bi] && AddAnimBlockRef) { AddAnimBlockRef(bi); g_animBlockRef[bi] = true; Log(false, "[ВЫСТРЕЛ] Анимации стрельбы из машины «%s» загружены", bn); }
+        // четверть: куда стреляет относительно носа машины (как CTaskSimpleGangDriveBy::PlayerTarget)
+        CVector vp = GetPosition(veh);
+        const float kPi = 3.14159265f;
+        float a = atan2f(-(target.x - vp.x), target.y - vp.y);
+        uintptr_t m = Field<uintptr_t>(veh, off::EntMatrix);
+        float h = m ? atan2f(-Field<float>(m, 0x10), Field<float>(m, 0x14)) : Field<float>(veh, 0x14);
+        float d = a - h;
+        if(d > kPi) d -= 2 * kPi; else if(d < -kPi) d += 2 * kPi;
+        d += kPi / 4; if(d < 0) d += 2 * kPi;
+        int q = (int)(d / (kPi / 2)) & 3;
+        static const int kLeft[4] = { 233, 231, 234, 232 }, kRight[4] = { 237, 236, 238, 235 };
+        int anim = right ? kRight[q] : kLeft[q];
+        if(window >= 0 && VehSetWindowOpen) VehSetWindowOpen(veh, (uint8_t)window);
+        if(PedAddWeaponModel && GetWeaponInfo && !PoseAlive())
+            if(uintptr_t wi = GetWeaponInfo(weapon, 1)) PedAddWeaponModel(r, Field<int>(wi, 0xC));   // в машине игра прячет оружие
+        if(PoseAlive() && g_rdb.anim != anim) PoseEnd();
+        uintptr_t as = ClumpGetAssociation(clump, (unsigned)anim);
+        if(!as) as = BlendAnimation(clump, group, anim, 4.0f);
+        if(!as) return;
+        bool first = !g_rdb.assoc;
+        g_rdb.ped = r; g_rdb.assoc = as; g_rdb.anim = anim; g_rdb.untilUs = g_ctx.now + 1200000;
+        if(first && g_poseLogs < 5) { ++g_poseLogs; Log(false, "[ВЫСТРЕЛ] Друг стреляет из машины — его CJ высунулся из окна (анимация %d, группа %d)", anim, group); }
+    }
+    void RemoteDriveByTick()
+    {
+        if(!g_rdb.assoc) return;
+        if(!PoseAlive()) { g_rdb = RemoteDbPose{}; return; }
+        if(!PedVehicle(g_rdb.ped) || g_ctx.now >= g_rdb.untilUs) { PoseEnd(); return; }
+        // пока стреляет — держим «огонь»: дошла до конца цикла стрельбы — назад к его началу
+        if(AnimSetCurrentTime && DriveByLoopStart && DriveByLoopEnd)
+        {
+            float t = Field<float>(g_rdb.assoc, 0x38), end = *(float*)DriveByLoopEnd;
+            if(end > 0 && t >= end) AnimSetCurrentTime(g_rdb.assoc, *(float*)DriveByLoopStart);
+        }
+    }
+
     void ReplayShot(const net::ShotPacket& p)
     {
         uintptr_t r = p.npc ? crowd::CopyById(p.npc) : g_ctx.remote;
@@ -877,6 +960,7 @@ namespace
         {   // друг попал в тебя: след пули — в тебя (урон придёт отдельным событием)
             end = GetPosition(g_ctx.local); end.z += 0.4f;
         }
+        if(!p.npc && PedVehicle(r)) RemoteDriveByPose(r, end, w);
         g_replaying = true;
         bool ok = WeaponFire(weap, r, &start, &start, 0, &end, nullptr);
         g_replaying = false;
@@ -1593,6 +1677,7 @@ void Frame(const Ctx& c)
     UpdateCarInput();
     UpdateCombat();
     PassengerDriveBy();
+    RemoteDriveByTick();
     UpdateWanted();
     if(c.remote) MirrorPlayer2Relations();
     TraceTransitions();

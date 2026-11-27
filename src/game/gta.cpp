@@ -64,6 +64,14 @@ namespace gta
     void      (*EventScriptCommandCtor)(void*, int, void*, bool)       = nullptr;
     void      (*EventScriptCommandDtor)(void*)                         = nullptr;
     void      (*EventGroupAdd)(uintptr_t, void*, bool)                 = nullptr;
+    uintptr_t AnimBlocksVar = 0, DriveByLoopStart = 0, DriveByLoopEnd = 0;
+    uintptr_t (*BlendAnimation)(uintptr_t, int, int, float)            = nullptr;
+    uintptr_t (*ClumpGetAssociation)(uintptr_t, unsigned)              = nullptr;
+    void      (*AddAnimBlockRef)(int)                                  = nullptr;
+    void      (*VehSetWindowOpen)(uintptr_t, uint8_t)                  = nullptr;
+    void      (*AnimSetDeleteCallback)(uintptr_t, void*, void*)        = nullptr;
+    void      (*AnimSetCurrentTime)(uintptr_t, float)                  = nullptr;
+    void*     DefaultAnimCB = nullptr;
     uintptr_t StreamingInfo = 0;
     uint8_t*  CurrArea = nullptr;
 
@@ -150,6 +158,17 @@ namespace gta
         Resolve(h, (void**)&EventScriptCommandCtor, "_ZN19CEventScriptCommandC2EiP5CTaskb");
         Resolve(h, (void**)&EventScriptCommandDtor, "_ZN19CEventScriptCommandD2Ev");
         Resolve(h, (void**)&EventGroupAdd,          "_ZN11CEventGroup3AddER6CEventb");
+        // вид стрельбы друга из машины (анимация «высунулся из окна») — необязательные
+        Resolve(h, (void**)&AnimBlocksVar,          "_ZN12CAnimManager14ms_aAnimBlocksE");
+        Resolve(h, (void**)&DriveByLoopStart,       "_ZN22CTaskSimpleGangDriveBy15ANIM_LOOP_STARTE");
+        Resolve(h, (void**)&DriveByLoopEnd,         "_ZN22CTaskSimpleGangDriveBy13ANIM_LOOP_ENDE");
+        Resolve(h, (void**)&BlendAnimation,         "_ZN12CAnimManager14BlendAnimationEP7RpClump12AssocGroupId11AnimationIdf");
+        Resolve(h, (void**)&ClumpGetAssociation,    "_Z30RpAnimBlendClumpGetAssociationP7RpClumpj");
+        Resolve(h, (void**)&AddAnimBlockRef,        "_ZN12CAnimManager15AddAnimBlockRefEi");
+        Resolve(h, (void**)&VehSetWindowOpen,       "_ZN8CVehicle17SetWindowOpenFlagEh");
+        Resolve(h, (void**)&AnimSetDeleteCallback,  "_ZN21CAnimBlendAssociation17SetDeleteCallbackEPFvPS_PvES1_");
+        Resolve(h, (void**)&AnimSetCurrentTime,     "_ZN21CAnimBlendAssociation14SetCurrentTimeEf");
+        Resolve(h, (void**)&DefaultAnimCB,          "_ZN20CDefaultAnimCallback13DefaultAnimCBEP21CAnimBlendAssociationPv");
         g_vehOk = v; g_combatOk = c && v;   // урону нужны и машины (TaskNew, модели)
         return ok;
     }
