@@ -208,6 +208,11 @@ namespace gta
     int       ActiveTaskType(uintptr_t ped, uintptr_t* taskOut = nullptr);
     bool      ModelLoaded(int model);
     bool      ModelOnDisk(int model);                // файл модели есть (у пустой «особой» ячейки — нет)
+    int       VehStructFree();                       // свободно мест для моделей машин (-1 — не знаем)
+    int       VehStructSize();
+    void      MarkModelDeletable(int model);         // модель, заказанную модом, игра может выгрузить
+    extern void (*SetModelIsDeletable)(int model);
+    extern void (*SetModelTxdIsDeletable)(int model);
     const char* ModelName(int model);                // имя модели ("" — нет)
     bool      SpecialOnDisk(const char* name);       // особый персонаж с таким именем есть в файлах игры
     uintptr_t CurrentWeapon(uintptr_t ped);          // CWeapon* в руках

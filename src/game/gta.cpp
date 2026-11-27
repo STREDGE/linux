@@ -70,6 +70,9 @@ namespace gta
     void      (*AddAnimBlockRef)(int)                                  = nullptr;
     void      (*VehSetWindowOpen)(uintptr_t, uint8_t)                  = nullptr;
     void      (*RequestSpecialModel)(int, const char*, int)            = nullptr;
+    void      (*SetModelIsDeletable)(int)                              = nullptr;
+    void      (*SetModelTxdIsDeletable)(int)                           = nullptr;
+    uintptr_t VehStructPoolVar = 0;
     bool      (*DirFindItem)(uintptr_t, const char*, unsigned*, unsigned*) = nullptr;
     uintptr_t ModelInfoPtrs = 0, ExtraObjectsDir = 0;
     void      (*AnimSetDeleteCallback)(uintptr_t, void*, void*)        = nullptr;
@@ -171,6 +174,10 @@ namespace gta
         Resolve(h, (void**)&VehSetWindowOpen,       "_ZN8CVehicle17SetWindowOpenFlagEh");
         // особые модели педов миссий (ячейки 290..299) — необязательные
         Resolve(h, (void**)&RequestSpecialModel,    "_ZN10CStreaming19RequestSpecialModelEiPKci");
+        // 1.6.7: модели копий — «можно выгрузить» (иначе копятся в памяти до вылета в CVehicleModelInfo::SetClump)
+        Resolve(h, (void**)&SetModelIsDeletable,    "_ZN10CStreaming19SetModelIsDeletableEi");
+        Resolve(h, (void**)&SetModelTxdIsDeletable, "_ZN10CStreaming22SetModelTxdIsDeletableEi");
+        Resolve(h, (void**)&VehStructPoolVar,       "_ZN17CVehicleModelInfo17CVehicleStructure11m_pInfoPoolE");
         Resolve(h, (void**)&DirFindItem,            "_ZN10CDirectory8FindItemEPKcRjS2_");
         Resolve(h, (void**)&ModelInfoPtrs,          "_ZN10CModelInfo16ms_modelInfoPtrsE");
         Resolve(h, (void**)&ExtraObjectsDir,        "_ZN10CStreaming19ms_pExtraObjectsDirE");
@@ -209,6 +216,32 @@ namespace gta
         if(!StreamingInfo || model < 0 || model >= 20000) return false;
         uintptr_t si = StreamingInfo + (uintptr_t)model * off::StreamInfoSize;
         return Field<uint8_t>(si, off::StreamStatus) == 1 || Field<uint32_t>(si, 0xC) != 0;
+    }
+
+    // Свободных мест в пуле «устройства машин» (по одному на каждую загруженную модель машины; -1 — не знаем)
+    int VehStructFree()
+    {
+        if(!VehStructPoolVar) return -1;
+        uintptr_t pool = Field<uintptr_t>(VehStructPoolVar, 0);
+        if(!pool) return -1;
+        uintptr_t flags = Field<uintptr_t>(pool, 8);
+        int size = Field<int>(pool, 0x10);
+        if(!flags || size <= 0 || size > 4096) return -1;
+        int free = 0;
+        for(int i = 0; i < size; ++i) if(Field<uint8_t>(flags, (uintptr_t)i) & 0x80) ++free;
+        return free;
+    }
+    int VehStructSize()
+    {
+        if(!VehStructPoolVar) return -1;
+        uintptr_t pool = Field<uintptr_t>(VehStructPoolVar, 0);
+        return pool ? Field<int>(pool, 0x10) : -1;
+    }
+    void MarkModelDeletable(int model)
+    {
+        if(model < 0 || model >= 20000) return;
+        if(SetModelIsDeletable) SetModelIsDeletable(model);
+        if(SetModelTxdIsDeletable) SetModelTxdIsDeletable(model);
     }
 
     // Имя модели (CBaseModelInfo+0xC, до 20 букв) — "" если нет

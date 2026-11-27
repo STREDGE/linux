@@ -392,6 +392,7 @@ namespace
             uintptr_t ped = AddPed(s.pedType, (unsigned)model, target, false);
             if(!ped) return;
             PedSetCharCreatedBy(ped, 2);
+            if(!IsSpecialModel(model)) MarkModelDeletable(model);   // 1.6.7: модели копий не держать в памяти вечно
             c.ped = ped; c.ref = GetPedRef(ped); c.weapon = -1; c.goUs = 0;
             CTRACE("КОПИЯ", "+ #%u P%d модель %d тип %d (%.1f,%.1f,%.1f) hp=%u оружие %u%s", c.id, c.ref, model, (int)s.pedType,
                    target.x, target.y, target.z, (unsigned)s.health, (unsigned)s.weapon, (s.flags & net::PDF_IN_VEHICLE) ? ", в машине" : "");

@@ -312,6 +312,20 @@ namespace
         if(!ModelLoaded(model))
         {
             if(!ModelOnDisk(model)) { Log(true, "[МАШИНЫ] Модели %d нет в файлах игры — копии %04X не будет", model, v.id); v.dead = true; return false; }
+            // 1.6.7: вылет у друга (CVehicleModelInfo::SetClump, memset по нулю) — кончились места для моделей машин.
+            // Мест мало — новую модель не грузим, копию сделаем, когда освободится.
+            int freeSlots = VehStructFree();
+            if(freeSlots >= 0 && freeSlots < 4)
+            {
+                static uint64_t lastLog = 0;
+                if(!lastLog || net::Since(g_ctx.now, lastLog) > 10000000)
+                {
+                    lastLog = g_ctx.now ? g_ctx.now : 1;
+                    Log(true, "[МАШИНЫ] Мест для новых моделей машин мало (%d из %d) — копию %04X (модель %d) пока не делаю", freeSlots, VehStructSize(), v.id, model);
+                }
+                v.requestUs = 0;
+                return false;
+            }
             if(!v.requestUs) { RequestModel(model, 2); v.requestUs = g_ctx.now; return false; }
             if(net::Since(g_ctx.now, v.requestUs) < 1500000) return false;
             LoadAllRequestedModels(false);
@@ -332,6 +346,7 @@ namespace
         SetMatrix(veh, pos, V(v.st.right), V(v.st.fwd));
         PhysicalRemoveAndAdd(veh);
         v.blownDone = false;
+        MarkModelDeletable(model);                                   // 1.6.7: пока машина есть — не выгрузят; убрали — можно
         Log(false, "[МАШИНЫ] Копия машины друга: модель %d, номер %04X", model, v.id);
         return true;
     }
@@ -1277,6 +1292,10 @@ namespace
     {
         if(g_ctx.now < g_nextDebugUs) return;
         g_nextDebugUs = g_ctx.now + 3000000;   // 1.6.6: раз в 3 с (лог меньше)
+        {   // 1.6.7: места для моделей машин (кончились — вылет в CVehicleModelInfo::SetClump)
+            static int n = 0;
+            if(++n % 20 == 1) { int f = VehStructFree(), z = VehStructSize(); if(f >= 0) Log(false, "[МАШИНЫ] Места для моделей машин: свободно %d из %d", f, z); }
+        }
         if(g_shotsOut || g_shotsIn)
             Log(false, "[ВЫСТРЕЛЫ] за 3 с: твоих %d, от друга %d (повторено %d)", g_shotsOut, g_shotsIn, g_shotsReplayed);
         g_shotsOut = g_shotsIn = g_shotsReplayed = 0;
