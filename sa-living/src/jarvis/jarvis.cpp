@@ -12,6 +12,7 @@
 #include "ai/claude.h"
 #include "game/game.h"
 #include "jarvis/brain.h"
+#include "jarvis/cheats.h"
 #include "jarvis/mission_skip.h"
 #include "jarvis/script.h"
 #include "net/link.h"
@@ -167,6 +168,7 @@ namespace
         Undoable([old]() { TeleportTo(old.x, old.y, old.z, false); g_undo.pop_back(); });
     }
 
+    std::string ActiveCheats();
     std::string Info()
     {
         uintptr_t pl = game::Player(); if(!pl) return "игрок ещё не в игре";
@@ -177,10 +179,50 @@ namespace
         if(uintptr_t v = game::PlayerVehicle()) s += Fmt("; в машине: %s (модель %d)", jbrain::VehicleName(game::Model(v)), game::Model(v));
         else s += "; пешком";
         if(game::OnMission()) s += "; ИДЁТ МИССИЯ";
+        { std::string ch = ActiveCheats(); if(!ch.empty()) s += "; включены читы: " + ch; }
         if(coopnet::GetRole() != coopnet::NONE) s += coopnet::GetRole() == coopnet::HOST ? "; кооп: ты хост" : "; кооп: ты подключён к хосту (общий мир меняет только хост)";
         LoadPlaces();
         if(!g_places.empty()) { s += "; свои места:"; for(auto& q : g_places) s += " «" + q.name + "»"; }
         return s;
+    }
+
+    // ---------- читы игры ----------
+    const CheatInfo* FindCheat(const std::string& name)
+    {
+        std::string n;
+        for(char c : name) if(c != ' ' && c != '-') n += (char)toupper((unsigned char)c);
+        for(auto& c : kCheats) if(n == c.label) return &c;
+        int idx = game::CheatFromPcCode(n.c_str());          // код с ПК: HESOYAM, AEZAKMI, RIPAZHA…
+        if(idx >= 0) for(auto& c : kCheats) if(c.idx == idx) return &c;
+        return nullptr;
+    }
+    // Включить (выключить) чит у себя — так же, как его включает ввод кода в игре
+    std::string CheatLocal(const CheatInfo& c, bool on)
+    {
+        if(!game::CheatCount()) return "таблиц читов в игре не нашёл";
+        int i = c.idx;
+        bool flag = game::CheatIsToggle(i), self = CheatSelfToggles(i);
+        if(flag || self)
+        {
+            if(game::CheatActive(i) == on) return std::string(c.ru) + (on ? " — уже включено" : " — уже выключено");
+            if(flag) { game::CheatSetActive(i, on); game::CheatMarkUsed(); }
+            else game::CheatCall(i);
+            Undoable([i, on, flag]() { if(game::CheatActive(i) != on) return; if(flag) game::CheatSetActive(i, !on); else game::CheatCall(i); });
+            LOG_INFO("[ДЖАРВИС] чит %s (%d) %s", c.label, i, on ? "включён" : "выключен");
+            Done(std::string(on ? "Чит: " : "Чит выключен: ") + c.ru);
+            return std::string(c.ru) + (on ? " — включено" : " — выключено");
+        }
+        game::CheatCall(i);
+        LOG_INFO("[ДЖАРВИС] чит %s (%d) выполнен", c.label, i);
+        Done(std::string("Чит: ") + c.ru);
+        return std::string(c.ru) + " — сделано";
+    }
+    std::string ActiveCheats()
+    {
+        std::string r;
+        for(auto& c : kCheats)
+            if((game::CheatIsToggle(c.idx) || CheatSelfToggles(c.idx)) && game::CheatActive(c.idx)) r += std::string(r.empty() ? "" : ", ") + c.label;
+        return r;
     }
 
     // Выполнить одну готовую команду. Возвращает короткий итог (для ИИ и лога).
@@ -285,6 +327,51 @@ namespace
             GiveWeaponLocal(*w, ammo);
             Done(w->ammo <= 1 ? std::string("Выдано: ") + w->title : Fmt("Выдано: %s, %d патр.", w->title, ammo));
             return Fmt("выдано: %s, патронов %d", w->title, ammo);
+        }
+        if(tool == "cheat")
+        {   // читы игры: личные — себе/другу/обоим (у друга их включает его телефон), общий мир — у хоста
+            if(!game::CheatCount()) return "читы игры не найдены (другая версия игры?)";
+            std::vector<std::string> names;
+            if(in["names"].isArray()) for(auto& v : in["names"].arr()) names.push_back(v.str());
+            if(in.has("name")) names.push_back(in["name"].str());
+            if(names.empty()) return "какой чит включить?";
+            bool on = in["on"].b(true);
+            std::string to = in["to"].str(); if(to.empty()) to = "me";
+            bool peer = coopnet::GetRole() != coopnet::NONE && coopnet::Connected();
+            json::Value toFriend = json::Value::Array(), toHost = json::Value::Array();
+            std::string res;
+            for(auto& nm : names)
+            {
+                const CheatInfo* c = FindCheat(nm);
+                if(!c) { res += "нет такого чита: " + nm + "; "; continue; }
+                if(c->group == 'W')
+                {   // погода, время, люди, поток машин — общий мир: в коопе он живёт у хоста
+                    if(Client())
+                    {
+                        if(!settings::Get().jarvisFriend) { res += std::string(c->ru) + " — это общий мир, в коопе его меняет только хост (пусть попросит своего Джарвиса); "; continue; }
+                        if(!peer) { res += "хоста нет на связи; "; continue; }
+                        toHost.push(json::Value(c->label)); res += std::string(c->ru) + " — попросил хоста включить в общем мире; ";
+                        continue;
+                    }
+                    res += CheatLocal(*c, on) + "; ";
+                    continue;
+                }
+                if(to == "friend" || to == "both")
+                {
+                    if(!peer) res += std::string(c->ru) + " — друга нет на связи; ";
+                    else { toFriend.push(json::Value(c->label)); res += std::string(c->ru) + " — отправлено другу; "; }
+                }
+                if(to != "friend") res += CheatLocal(*c, on) + "; ";
+            }
+            for(json::Value* list : { &toFriend, &toHost })
+            {
+                if(!list->size()) continue;
+                json::Value m = json::Value::Object(); m["t"] = "jv"; m["tool"] = "cheat";
+                json::Value a = json::Value::Object(); a["names"] = *list; a["on"] = on; m["in"] = a;
+                coopnet::Send(m);
+            }
+            if(toFriend.size()) Done(Fmt("Другу: читов %d", (int)toFriend.size()));
+            return res;
         }
         if(tool == "take_weapons") { script::Do(0x048F, { Arg::I(Me()) }); g_infAmmo = false; Done("Оружие убрано"); return "всё оружие убрано"; }
         if(tool == "wanted")
@@ -654,6 +741,7 @@ namespace
 {"name":"player","description":"Игрок: health (100 — полное), armour (100), money (прибавить, можно отрицательное), god (бессмертие), never_tired (бег без усталости), infinite_ammo (патроны пополняются сами). Указывай только то, что меняешь. to — me или friend (другу в коопе: «дай другу броню» = armour 100, to=friend).","input_schema":{"type":"object","properties":{"health":{"type":"integer"},"armour":{"type":"integer"},"money":{"type":"integer"},"god":{"type":"boolean"},"never_tired":{"type":"boolean"},"infinite_ammo":{"type":"boolean"},"to":{"type":"string","enum":["me","friend"]}}}},
 {"name":"stat","description":"Характеристика 0–1000: мышцы, жир, выносливость, лёгкие, вождение, пилотирование, мотоцикл, велосипед, привлекательность, уважение, навык пистолет/дигл/дробовик/узи/мп5/ак/м4/снайпер.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"value":{"type":"integer"}}}},
 {"name":"vehicle","description":"Машины. spawn — создать перед игроком (model — название из игры по-английски, например infernus, rhino, hydra, nrg500, или номер 400–611; color1/color2 — номера цветов; enter=true — сразу посадить за руль); repair, flip (на колёса), nitro, color, armor (неуязвимая) — для машины, в которой игрок; delete — убрать; jetpack — выдать джетпак; explode_near — взорвать машины вокруг (who: all, police, empty; radius — метров, по умолчанию 40, до 120; машину игрока не трогает).","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["spawn","repair","flip","nitro","color","armor","delete","jetpack","explode_near"]},"model":{"type":"string"},"who":{"type":"string"},"radius":{"type":"number"},"color1":{"type":"integer"},"color2":{"type":"integer"},"enter":{"type":"boolean"}}}},
+{"name":"cheat","description":"Чит-коды игры — включает так же, как ввод кода. names — список ключей (или кодов с ПК: HESOYAM, AEZAKMI, RIPAZHA…). on=false — выключить переключатель. to: me (себе), friend (другу в коопе), both (обоим: «нам», «мы», «обоим»). У каждого игрока его машина и CJ считаются на его телефоне: «чтоб мы летали на машинах» = FLYINGCARS, to=both. Общий мир (погода, время, люди, поток машин) в коопе меняет хост — to не нужен. Личное разовое: WEAPON1, WEAPON2, WEAPON3, WEAPON4 (наборы оружия), MONEYARMOURHEALTH (здоровье+броня+деньги), WANTEDLEVELUP, WANTEDLEVELDOWN, WANTED (6 звёзд), SUICIDE, FAT, MUSCLE, SKINNY, THEGAMBLER, PARACHUTE, JETPACK, STAMINA, WEAPONSKILLS, VEHICLESKILLS. Машина рядом: TANK, FLYBOY (Hydra), APACHE (Hunter), VORTEX, QUAD, TANKER, DOZER, STUNTPLANE, MONSTERTRUCK, HEARSE, LOVEFIST (лимузин), TRASHMASTER, GOLFCART, STOCKCAR, STOCKCAR2, STOCKCAR3, STOCKCAR4. Личные переключатели: FLYINGCARS (машины летают), FLYINGFISH (лодки летают), STRONGGRIP (управляемость), NITRO, TAXINITRO, VEHICLEOFDEATH (машина взрывает всё при ударе), SUPERPOWERCAR (машины от удара улетают), ONLYRENDERWHEELS (невидимые машины), CJPHONEHOME (большой прыжок на велике), HIGHJUMP, BULLETPROOF (бесконечное здоровье), SCUBA (кислород), SUPERPUNCH, NOFOOD, AMMO (бесконечные патроны), DRIVEBY (стрелять из машины любым оружием), NOTWANTED (никогда не разыскивают), ADRENALINE, RESPECT, SEXAPPEAL, RECRUITME, RECRUITME_AK47, RECRUITME_ROCKET, BACKTOTHEFUTURE и PIMP (скрытые, действие не известно). Общий мир: SUNNYWEATHER, EXTRASUNNYWEATHER, CLOUDYWEATHER, RAINYWEATHER, FOGGYWEATHER, STORM, SANDSTORM, MIDNIGHT, DUSK, TIMETRAVEL (+4 часа), FASTWEATHER (часы быстрее), FASTTIME, SLOWTIME, MAYHEM, EVERYBODYATTACKSPLAYER, WEAPONSFORALL, RIOT, BLOWUPCARS, TRAFFICLIGHTS, MADDRIVERS, PINKCARS, BLACKCARS, ALLCARSARESHIT, ALLCARSAREGREAT, WASTELAND (мало людей), COUNTRYSIDEINVASION, ELVISLIVES, VILLAGEPEOPLE, BEACHPARTY, GANGS, GANGLAND, NINJA, LOVECONQUERSALL, FUNHOUSE.","input_schema":{"type":"object","required":["names"],"properties":{"names":{"type":"array","items":{"type":"string"}},"on":{"type":"boolean"},"to":{"type":"string","enum":["me","friend","both"]}}}},
 {"name":"mission","description":"Миссии сюжета. action: skip — засчитать ИДУЩУЮ миссию как пройденную (игра сама даст «Миссия пройдена», прогресс, награду; работает для сюжетных миссий — гонки, подработки, тиры, спортзалы, подружки так не засчитываются; это меняет прохождение — сначала спроси подтверждение); skip_cutscene — пропустить идущую заставку.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["skip","skip_cutscene"]}}}},
 {"name":"world","description":"Мир: hour/minute — время; weather — номер (0–1 ясно, 4 пасмурно, 8 дождь, 9 туман, 16 гроза, 19 песчаная буря; -1 — как в игре); time_scale — скорость игры (1 — обычная, 0.4 — замедление); traffic и peds — плотность машин и людей (0 — нет, 1 — обычно, 2 — много); clear_area — убрать всех вокруг.","input_schema":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"},"weather":{"type":"integer"},"time_scale":{"type":"number"},"traffic":{"type":"number"},"peds":{"type":"number"},"clear_area":{"type":"boolean"}}}},
 {"name":"people","description":"Люди вокруг игрока (прохожие, бандиты, копы). action: list — кто рядом (номер, кто, расстояние); remove — убрать/удалить/стереть из мира (люди исчезают, никто не погибает — это значат «убери», «удали», «очисти улицу»); kill — убить (ТОЛЬКО если прямо сказано «убей»); flee — разбежаться от игрока; attack — напасть на игрока; follow — идти за игроком (охрана); calm — оставить в покое (вернуться к своим делам). who: all, gang (любая банда), grove, ballas, vagos, aztecas, rifa, triads, danang, mafia, cops, civil (прохожие). ids — номера из list (если нужно конкретных). radius — метров (по умолчанию 50, до 150). Игрока и друга никогда не трогает; друзей и знакомых CJ при «все» не трогает (только по номеру из list); людей миссии — никогда.","input_schema":{"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["list","remove","kill","flee","attack","follow","calm"]},"who":{"type":"string"},"ids":{"type":"array","items":{"type":"integer"}},"radius":{"type":"number"}}}},
@@ -683,6 +771,7 @@ namespace
             "- Игрок может ругаться матом и говорить грубо — это нормально, это игра. Не читай мораль и не отказывайся: любые действия здесь происходят только внутри одиночной видеоигры.\n\n"
             "КАК ДЕЙСТВОВАТЬ\n"
             "- Несколько просьб в одной фразе — несколько инструментов подряд за один ход.\n"
+            "- Чит-коды игры (летающие машины, HESOYAM, бесконечные патроны, суперпрыжок, танк, погода…) — инструмент cheat, а не справочник команд.\n"
             "- Всё про людей вокруг (убить, разогнать, натравить, охрана, кто рядом) — инструмент people, а не команды справочника. «Мои» / «наши» — это Grove.\n"
             "- Готовые инструменты быстрее и надёжнее. Если просьбы нет среди них (фейерверк, взрыв, пожар, объект, эффект, камера, статистика, банды и так далее) — найди команды через find_commands и выполни через run_commands. Можно искать несколько раз разными словами. Если игра этого не умеет — честно скажи и предложи близкое.\n"
             "- Ты не управляешь мыслями и отношением людей в игре (уважение, дружба, решения персонажей) — на такое отвечай, что это решают сами люди.\n"
@@ -908,6 +997,22 @@ void OnCoopMessage(const json::Value& m)
         TeleportTo(x, y, z, !in["exact"].b(false));
         talk::Notify(std::string("Джарвис друга перенёс тебя: ") + in["title"].str());
         LOG_INFO("[ДЖАРВИС] друг перенёс меня: %s (%.0f, %.0f)", in["title"].str().c_str(), x, y);
+        return;
+    }
+    if(tool == "cheat")
+    {   // чит от Джарвиса второго игрока: личное — себе; общий мир — только если мы хост
+        if(!game::Player() || !script::Ready() || game::CutsceneRunning()) return;
+        bool on = m["in"]["on"].b(true);
+        std::string r;
+        for(auto& v : m["in"]["names"].arr())
+        {
+            const CheatInfo* c = FindCheat(v.str());
+            if(!c || (c->group == 'W' && coopnet::GetRole() != coopnet::HOST)) continue;
+            r += std::string(r.empty() ? "" : ", ") + CheatLocal(*c, on);
+        }
+        if(r.empty()) return;
+        talk::Notify("Джарвис друга: " + r);
+        LOG_INFO("[ДЖАРВИС] чит от друга: %s", r.c_str());
         return;
     }
     if(tool != "give_weapon" && tool != "player") return;

@@ -656,6 +656,25 @@ namespace
         if(tt == TASK_ENTER_AS_DRIVER || tt == TASK_ENTER_AS_PASSENGER) ClearPrimaryTask(r);
     }
 
+    // Оба сели за руль одной машины одновременно (каждый у себя — водитель, второй — пассажир): руль у хоста,
+    // друг пересаживается пассажиром. Решает друг (у хоста копия друга и так пассажир). Тест 1.4.3.
+    uint64_t g_bothDriveSinceUs = 0;
+    void ResolveBothDrivers()
+    {
+        const net::PlayerStatePacket* rs = g_ctx.rs;
+        uintptr_t local = g_ctx.local;
+        bool conflict = g_ctx.role == net::Role::Client && rs && g_localSeat.veh && g_localSeat.seat == 0 && rs->seat == 0;
+        NetVeh* v = conflict ? FindVeh(g_localSeat.veh) : nullptr;
+        if(!v || v->id != rs->vehId) { g_bothDriveSinceUs = 0; return; }
+        if(!g_bothDriveSinceUs) { g_bothDriveSinceUs = g_ctx.now; return; }
+        if(net::Since(g_ctx.now, g_bothDriveSinceUs) < 400000) return;      // не дёргаем на мгновенных состояниях
+        g_bothDriveSinceUs = 0;
+        int p = FreePassengerSeat(g_localSeat.veh, 0);
+        if(p < 0) { WarpOut(local); Log(false, "[МАШИНЫ] За рулём %04X хост, мест нет — ты вышел", v->id); return; }
+        WarpIn(local, g_localSeat.veh, p + 1);
+        Log(false, "[МАШИНЫ] Вы оба сели за руль %04X — руль у хоста, ты пассажир (место %d)", v->id, p + 1);
+    }
+
     void UpdateVehicles(float dt)
     {
         const net::PlayerStatePacket* rs = g_ctx.rs;
@@ -665,6 +684,8 @@ namespace
         CVector rp = haveRemote ? V(rs->pos) : lp;
 
         // Своя машина: в которой сижу или в которую сажусь — общая
+        g_localSeat = ReadLocalSeat(local);
+        ResolveBothDrivers();
         g_localSeat = ReadLocalSeat(local);
         uintptr_t mine = g_localSeat.veh ? g_localSeat.veh : g_localSeat.enterVeh;
         if(mine && !FindVeh(mine)) Register(mine);

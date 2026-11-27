@@ -99,6 +99,15 @@ namespace game
     int  Weather();
     std::string ZoneName();                 // район, где стоит игрок (из интерфейса игры)
     bool CutsceneRunning();
+    // читы игры (CCheat): номер 0–110 по имени из таблицы игры; переключатель — чит без функции (флаг m_aCheatsActive)
+    int  CheatCount();                      // 111 или 0, если таблиц нет
+    const char* CheatLabel(int i);          // «FLYINGCARS», «JETPACK»…
+    bool CheatIsToggle(int i);
+    bool CheatActive(int i);
+    void CheatSetActive(int i, bool on);
+    bool CheatCall(int i);                  // вызвать функцию чита (как ввод кода); false — у чита нет функции
+    void CheatMarkUsed();
+    int  CheatFromPcCode(const char* code); // код с ПК (HESOYAM, AEZAKMI…) → номер чита, -1 — не нашёлся
     bool SkipCutscene();                    // пропустить идущую заставку (как тап по экрану); false — заставки нет
     uintptr_t MissionCodeBase();            // где в памяти лежит код текущей миссии (ScriptSpace + MainScriptSize)
     void ForEachScript(const std::function<void(uintptr_t script)>& fn);   // все активные скрипты сценария (CRunningScript*)

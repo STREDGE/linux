@@ -43,6 +43,7 @@ namespace
     bool g_ok = false;
     uintptr_t g_base = 0;
     uintptr_t g_radarTrace = 0;
+    uintptr_t g_cheatFns = 0, g_cheatActive = 0, g_cheatHash = 0, g_cheatLabel = 0, g_cheated = 0;   // CCheat (2.10: 111 читов)
 
     uintptr_t g_players = 0, g_focus = 0, g_pedPool = 0, g_vehPool = 0, g_timeMs = 0, g_userPause = 0, g_codePause = 0;
     uintptr_t g_camera = 0;
@@ -176,6 +177,11 @@ bool Init(void* h)
     g_zoneName  = Sym(h, "_ZN4CHud11m_pZoneNameE", false);
     g_animBlocks= Sym(h, "_ZN12CAnimManager14ms_aAnimBlocksE", false);
     g_radarTrace= Sym(h, "_ZN6CRadar13ms_RadarTraceE", false);
+    g_cheatFns    = Sym(h, "_ZN6CCheat17m_aCheatFunctionsE", false);
+    g_cheatActive = Sym(h, "_ZN6CCheat15m_aCheatsActiveE", false);
+    g_cheatHash   = Sym(h, "_ZN6CCheat16m_aCheatHashKeysE", false);
+    g_cheatLabel  = Sym(h, "_ZN6CCheat10CheatLabelE", false);
+    g_cheated     = Sym(h, "_ZN6CCheat18m_bHasPlayerCheatedE", false);
 
     TaskNew      = (TaskNew_t)Sym(h, "_ZN5CTasknwEm");
     SetTask      = (SetTask_t)Sym(h, "_ZN12CTaskManager7SetTaskEP5CTaskib");
@@ -680,6 +686,55 @@ int Hour()   { return g_clockH ? *(uint8_t*)g_clockH : 12; }
 int Minute() { return g_clockM ? *(uint8_t*)g_clockM : 0; }
 int Weather(){ return g_weatherNew ? *(int16_t*)g_weatherNew : 0; }
 bool CutsceneRunning() { return g_cutscene && *(uint8_t*)g_cutscene; }
+// ---------- читы игры (CCheat) ----------
+// Таблицы 2.10: CheatLabel[111] (имена), m_aCheatFunctions[111] (null — чит-переключатель), m_aCheatsActive[111].
+// Порядок имён и функций совпадает (проверено по символам). m_aCheatHashKeys — в порядке ПК (без 7 отладочных читов
+// мобильной версии на местах 3–9 и без THEGAMBLER на 45), поэтому код с ПК переводим в номер сами.
+int CheatCount() { return g_cheatFns && g_cheatActive ? 111 : 0; }
+const char* CheatLabel(int i)
+{
+    if(!g_cheatLabel || i < 0 || i >= 111) return "";
+    const char* l = F<const char*>(g_cheatLabel, i * 8);
+    if(!l) return "";
+    while(*l == ' ') ++l;
+    return l;
+}
+bool CheatIsToggle(int i) { return CheatCount() && i >= 0 && i < 111 && !F<uintptr_t>(g_cheatFns, i * 8); }
+bool CheatActive(int i) { return CheatCount() && i >= 0 && i < 111 && F<uint8_t>(g_cheatActive, i) != 0; }
+void CheatSetActive(int i, bool on) { if(CheatCount() && i >= 0 && i < 111) *(uint8_t*)(g_cheatActive + i) = on ? 1 : 0; }
+bool CheatCall(int i)
+{
+    if(!CheatCount() || i < 0 || i >= 111) return false;
+    void (*fn)() = F<void(*)()>(g_cheatFns, i * 8);
+    if(!fn) return false;
+    TRACE("МОД", "CCheat: функция чита %d (%s)", i, CheatLabel(i));
+    fn();
+    if(g_cheated) *(uint8_t*)g_cheated = 1;
+    return true;
+}
+void CheatMarkUsed() { if(g_cheated) *(uint8_t*)g_cheated = 1; }
+int CheatFromPcCode(const char* code)
+{
+    if(!g_cheatHash || !code || !*code) return -1;
+    // CKeyGen: CRC32 (таблица 0xEDB88320) по строке задом наперёд, без финального NOT — т.е. ~crc32(обратная строка)
+    size_t n = strlen(code); if(n < 6 || n > 29) return -1;
+    uint32_t c = 0xFFFFFFFFu;
+    for(size_t k = n; k-- > 0;)
+    {
+        c ^= (uint8_t)toupper((unsigned char)code[k]);
+        for(int b = 0; b < 8; ++b) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+    }
+    for(int p = 0; p < 111; ++p)
+    {
+        if(F<uint32_t>(g_cheatHash, p * 4) != c) continue;
+        if(p <= 2) return p;
+        if(p <= 37) return p + 7;
+        if(p <= 89) return p + 8;
+        return -1;
+    }
+    return -1;
+}
+
 bool SkipCutscene() { if(!SkipCutsceneFn || !CutsceneRunning()) return false; TRACE("МОД", "CCutsceneMgr::SkipCutscene"); SkipCutsceneFn(); return true; }
 
 // Скрипты сценария (CRunningScript, 2.10 arm64): pNext +0x0, имя +0x10, BaseAddress +0x18, PC +0x20, PCStack[8] +0x28,

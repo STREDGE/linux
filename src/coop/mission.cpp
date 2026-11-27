@@ -648,6 +648,9 @@ namespace
                 {
                     if(g_cutEndReceived) { CutDelete(); g_cut = Cut::After; Log(false, "[КАТСЦЕНА] Хост уже пропустил — не показываю"); break; }
                     CutStart();
+                    // проявить экран: у хоста это делает сценарий (DO_FADE 1000 1 после START_CUTSCENE); новая игра у друга
+                    // начинается с затемнения (main.scm DO_FADE 0 0 перед вступлением) — без этого «только надпись, чёрный экран»
+                    if(Fade && TheCamera) Fade(TheCamera, 1.0f, 1);
                     g_cut = Cut::Playing; g_cutSinceUs = g_now;
                     Log(false, "[КАТСЦЕНА] Идёт «%s» (пропускает хост)", g_cutName);
                 }
@@ -675,6 +678,7 @@ namespace
                 break;
             case Cut::After:
                 if(CameraRestore && TheCamera) CameraRestore(TheCamera);
+                if(WideScreenOff && TheCamera) WideScreenOff(TheCamera);   // иначе нет карты (радар не рисуется в «кино»)
                 if(Fade && TheCamera) Fade(TheCamera, 0.5f, 1);
                 if(MakePlayerSafe) MakePlayerSafe(pi, false, 10.0f);
                 g_cut = Cut::None;
@@ -937,6 +941,16 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
     g_cutEvents.clear();
     ClientCutFrame();
     ClientRecover();
+    {   // «кино» (широкий экран) у друга без катсцены — остаток чужого сценария: без него нет карты. Снять через 3 с.
+        static uint64_t wsSince = 0;
+        bool ws = TheCamera && Field<uint8_t>(TheCamera, 0x43);   // CCamera::m_bWideScreenOn (2.10: CHud::Draw не рисует радар)
+        if(ws && g_cut == Cut::None && !CutsceneRunning() && WideScreenOff)
+        {
+            if(!wsSince) wsSince = g_now;
+            else if(net::Since(g_now, wsSince) > 3000000) { WideScreenOff(TheCamera); wsSince = 0; Log(false, "[КАТСЦЕНА] Снял «кино» (широкий экран) — вернул карту"); }
+        }
+        else wsSince = 0;
+    }
 
     for(const auto& t : g_textQueue) ShowText(t);
     g_textQueue.clear();
