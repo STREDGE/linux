@@ -155,7 +155,8 @@ namespace
     {
         std::string l = Lower(rel);
         size_t sl = l.find('/');
-        std::string top = sl == std::string::npos ? l : l.substr(0, sl);
+        if(sl == std::string::npos) return true;   // файлы прямо в files — личное состояние игры (gamesave.mls, Adjustable.cfg — кнопки, gta_sa.set, сохранения), не моды (тест 1.5.2)
+        std::string top = l.substr(0, sl);
         if(top == "saliving") return l.rfind("saliving/speech/", 0) != 0;
         static const char* kSkipTop[] = { "sacoop", "cache", "tmp", "temp", "logs", "documents", "amlmodlogs", "configs", "mods", "files" };
         for(const char* s : kSkipTop) if(top == s) return true;
@@ -600,6 +601,21 @@ namespace
 
 void Init(net::Role role)
 {
+    // 1.5.1 передал другу личные файлы из корня files (Adjustable.cfg — раскладка кнопок): вернуть его прежние из резерва
+    FindPaths();
+    if(!g_filesDir.empty())
+        if(DIR* d = opendir((g_bakDir + "/files").c_str()))
+        {
+            while(dirent* e = readdir(d))
+            {
+                if(e->d_name[0] == '.') continue;
+                std::string from = g_bakDir + "/files/" + e->d_name, to = g_filesDir + "/" + e->d_name;
+                if(IsDir(from)) continue;
+                remove(to.c_str());
+                if(MoveFile(from, to)) Log(false, "Вернул свой %s из «Резерва модов» (это личный файл, его не надо было менять)", e->d_name);
+            }
+            closedir(d);
+        }
     if(role != net::Role::Client) Restore("режим не «Подключиться»");
 }
 
