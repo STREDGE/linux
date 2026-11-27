@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -28,7 +29,8 @@ namespace modsync
 {
 namespace
 {
-    // kind: 'a' — AML-мод (.so), 'c' — CLEO (SA/cleo, с папками), 'g' — файлы игры и данных модов (папка files игры)
+    // kind: 'a' — AML-мод (.so), 'c' — CLEO (SA/cleo, с папками), 'g' — файлы игры и данных модов (папка files игры),
+    //       's' — сам SA Coop (один файл; сверяется по версии, друг обновляется с телефона хоста)
     struct Entry { char kind = 0; std::string rel; int64_t size = 0; uint64_t hash = 0; std::string abs; bool secret = false; };
 
     net::Session* g_session = nullptr;
@@ -49,6 +51,7 @@ namespace
     // список второго телефона
     std::vector<Entry> g_peer;
     bool g_peerReady = false, g_peerRestart = false, g_peerNoAml = false, g_peerNoFiles = false, g_peerKnown = false;
+    std::string g_peerVersion;                // версия SA Coop на втором телефоне
     uint32_t g_peerHash = 0, g_rxHash = 0;
     std::vector<std::string> g_rxParts; std::vector<bool> g_rxHave;
 
@@ -147,7 +150,37 @@ namespace
         Log(g_modsDir.empty(), "Папки: AML %s; CLEO %s; файлы игры %s", g_modsDir.empty() ? "НЕ НАЙДЕНА (AML не сверяются)" : g_modsDir.c_str(),
             g_cleoDir.c_str(), g_filesDir.empty() ? "не найдена" : g_filesDir.c_str());
     }
-    std::string BaseOf(char kind) { return kind == 'a' ? g_modsDir : kind == 'c' ? g_cleoDir : kind == 'g' ? g_filesDir : std::string(); }
+    std::string BaseOf(char kind) { return kind == 'a' || kind == 's' ? g_modsDir : kind == 'c' ? g_cleoDir : kind == 'g' ? g_filesDir : std::string(); }
+
+    // Свой файл мода в папке модов (имя — как у загруженной библиотеки; нет такого — первый libSACoop*.so)
+    void OwnModAnchor() {}
+    std::string OwnModName()
+    {
+        std::string want;
+        Dl_info di;
+        if(dladdr((void*)&OwnModAnchor, &di) && di.dli_fname) { want = di.dli_fname; size_t s = want.rfind('/'); if(s != std::string::npos) want = want.substr(s + 1); }
+        if(!want.empty() && Exists(g_modsDir + "/" + want)) return want;
+        std::string first;
+        if(DIR* d = opendir(g_modsDir.c_str()))
+        {
+            while(dirent* e = readdir(d)) { std::string n = e->d_name; if(ProtectedAml(n) && EndsWith(Lower(n), ".so") && (first.empty() || n < first)) first = n; }
+            closedir(d);
+        }
+        return first;
+    }
+    // «1.5.10» больше «1.5.9»
+    int VerCmp(const std::string& a, const std::string& b)
+    {
+        const char* x = a.c_str(); const char* y = b.c_str();
+        while(*x || *y)
+        {
+            long p = strtol(x, (char**)&x, 10), q = strtol(y, (char**)&y, 10);
+            if(p != q) return p < q ? -1 : 1;
+            while(*x && !isdigit((unsigned char)*x)) ++x;
+            while(*y && !isdigit((unsigned char)*y)) ++y;
+        }
+        return 0;
+    }
     bool SafeRel(const std::string& rel) { return !rel.empty() && rel[0] != '/' && rel.find("..") == std::string::npos && rel.find('\\') == std::string::npos && rel.find('|') == std::string::npos; }
 
     // Что из папки files не сверяем: личное, сохранения, настройки, кэши. SA Living — только speech (голоса, распознавание).
@@ -222,6 +255,13 @@ namespace
         if(!g_modsDir.empty()) Walk(g_modsDir, "", 'a', 0, list);
         Walk(g_cleoDir, "", 'c', 0, list);
         if(!g_filesDir.empty()) Walk(g_filesDir, "", 'g', 0, list);
+        if(!g_modsDir.empty())
+        {   // сам SA Coop: одна запись «s» (друг со старой версией возьмёт файл у хоста)
+            std::string own = OwnModName();
+            struct stat st;
+            if(!own.empty() && stat((g_modsDir + "/" + own).c_str(), &st) == 0)
+            { Entry en; en.kind = 's'; en.rel = own; en.size = st.st_size; en.abs = g_modsDir + "/" + own; en.hash = (uint64_t)st.st_mtime; list.push_back(en); }
+        }
         // кэш: путь → размер, время, сумма
         std::map<std::string, CacheRow> cache;
         if(FILE* f = fopen(CachePath().c_str(), "rb"))
@@ -247,7 +287,7 @@ namespace
             {
                 uint64_t h; bool sec;
                 if(!HashFile(e.abs, h, sec)) { e.hash = 0; continue; }
-                e.hash = h; e.secret = sec; ++hashed;
+                e.hash = h; e.secret = sec && e.kind != 's'; ++hashed;      // в самом моде есть слова-«ключи» для проверки — это не секрет
             }
             if(e.secret) { ++secrets; Log(false, "Файл %s похож на секрет (ключ внутри) — в сверку и передачу не идёт", e.abs.c_str()); }
             char row[2200]; snprintf(row, sizeof(row), "%s\t%lld\t%lld\t%016llx\t%d\n", e.abs.c_str(), (long long)e.size, (long long)mt, (unsigned long long)e.hash, e.secret ? 1 : 0);
@@ -275,6 +315,7 @@ namespace
         { std::lock_guard<std::mutex> l(g_mx); g_mine.swap(g_scanOut); g_scanOut.clear(); }
         g_scanState = 0;
         std::string t;
+        t += std::string("v|") + modinfo->VersionString() + "|0|0\n";
         if(g_restartNeeded) t += "r|1|0|0\n";
         if(g_modsDir.empty()) t += "n|aml|0|0\n";
         if(g_filesDir.empty()) t += "f|files|0|0\n";
@@ -290,7 +331,7 @@ namespace
 
     void ParsePeer(const std::string& t)
     {
-        g_peer.clear(); g_peerRestart = false; g_peerNoAml = false; g_peerNoFiles = false;
+        g_peer.clear(); g_peerRestart = false; g_peerNoAml = false; g_peerNoFiles = false; g_peerVersion.clear();
         size_t pos = 0;
         while(pos < t.size())
         {
@@ -301,9 +342,10 @@ namespace
             size_t b1 = l.rfind('|', b2 - 1); if(b1 == std::string::npos || b1 < 2) continue;
             char k = l[0];
             if(k == 'r') { g_peerRestart = true; continue; }
+            if(k == 'v') { g_peerVersion = l.substr(2, b1 - 2); continue; }
             if(k == 'n') { g_peerNoAml = true; continue; }
             if(k == 'f') { g_peerNoFiles = true; continue; }
-            if(k != 'a' && k != 'c' && k != 'g') continue;
+            if(k != 'a' && k != 'c' && k != 'g' && k != 's') continue;
             Entry e; e.kind = k; e.rel = l.substr(2, b1 - 2); e.size = atoll(l.c_str() + b1 + 1); e.hash = strtoull(l.c_str() + b2 + 1, nullptr, 16);
             if(SafeRel(e.rel)) g_peer.push_back(e);
         }
@@ -322,7 +364,7 @@ namespace
         if(!ok) { remove(to.c_str()); return false; }
         return remove(from.c_str()) == 0;
     }
-    const char* KindDir(char k) { return k == 'a' ? "aml" : k == 'c' ? "cleo" : "files"; }
+    const char* KindDir(char k) { return k == 'a' || k == 's' ? "aml" : k == 'c' ? "cleo" : "files"; }
     std::string ManifestPath() { return g_offDir + "/список.txt"; }
 
     void Disable(const std::vector<Entry>& extra)
@@ -348,7 +390,8 @@ namespace
         }
     }
 
-    int RestoreFrom(const std::string& manifest)
+    // personalOnly — вернуть только личные файлы из корня files (их старая версия мода могла «отключить» как лишние)
+    int RestoreFrom(const std::string& manifest, bool personalOnly = false)
     {
         FILE* man = fopen(manifest.c_str(), "rb");
         if(!man) return 0;
@@ -365,6 +408,12 @@ namespace
         for(auto& r : rows)
         {
             if(!Exists(r.second)) continue;
+            if(personalOnly)
+            {
+                bool personal = !g_filesDir.empty() && r.first.compare(0, g_filesDir.size() + 1, g_filesDir + "/") == 0 && r.first.find('/', g_filesDir.size() + 1) == std::string::npos;
+                if(!personal) { keep.push_back(r); continue; }
+                remove(r.first.c_str());
+            }
             if(Exists(r.first)) { Log(false, "Не возвращаю %s: на месте уже есть такой файл (лежит в %s)", r.first.c_str(), r.second.c_str()); keep.push_back(r); continue; }
             if(MoveFile(r.second, r.first)) { ++back; Log(false, "Вернул: %s", r.first.c_str()); }
             else { keep.push_back(r); Log(true, "Не смог вернуть %s (%s)", r.first.c_str(), strerror(errno)); }
@@ -407,7 +456,7 @@ namespace
         const std::vector<Entry>& mateL = isHost ? g_peer : g_mine;
         const auto& hostI = isHost ? mineIdx : peerIdx;
         const auto& mateI = isHost ? peerIdx : mineIdx;
-        auto skip = [&](const Entry& e) { return (skipAml && e.kind == 'a') || (e.kind == 'a' && ProtectedAml(e.rel)); };
+        auto skip = [&](const Entry& e) { return e.kind == 's' || (skipAml && e.kind == 'a') || (e.kind == 'a' && ProtectedAml(e.rel)); };
         bool skipG = g_peerNoFiles || g_filesDir.empty();        // папку files игры у кого-то не нашли — эту часть не сверяем
 
         std::vector<Entry> extraMine;
@@ -428,6 +477,19 @@ namespace
             if(mateI.find(Key(e)) == mateI.end()) { missing.push_back(e.rel); if(!isHost) { want.push_back(i); wantBytes += e.size; } }
         }
 
+        // Версия самого SA Coop (тест 1.5.4: у хоста 1.5.4, у друга 1.5.2 — тот же вылет и «лишние» личные файлы).
+        // У хоста новее — друг берёт файл мода у хоста той же кнопкой; у друга новее — хосту обновиться самому.
+        std::string myV = modinfo->VersionString();
+        const std::string& hostV = isHost ? myV : g_peerVersion;
+        const std::string& mateV = isHost ? g_peerVersion : myV;
+        int vc = VerCmp(hostV, mateV);
+        // файл мода у друга уже такой же, как у хоста (обновил, но ещё не перезапустил игру)?
+        uint64_t hostSelf = 0, mateSelf = 0; int hostSelfIdx = -1;
+        for(int i = 0; i < (int)hostL.size(); ++i) if(hostL[i].kind == 's') { hostSelf = hostL[i].hash; hostSelfIdx = i; break; }
+        for(auto& e : mateL) if(e.kind == 's') { mateSelf = e.hash; break; }
+        bool selfUpdated = vc > 0 && hostSelf && hostSelf == mateSelf;
+        if(vc > 0 && !isHost && !selfUpdated && hostSelfIdx >= 0) { want.insert(want.begin(), hostSelfIdx); wantBytes += hostL[hostSelfIdx].size; }
+
         if(!isHost && !extraMine.empty() && g_actedOnPeer != g_peerHash)
         {   // решение игрока: лишнее у друга — сразу в «Отключённые моды»
             g_actedOnPeer = g_peerHash;
@@ -437,10 +499,16 @@ namespace
         if(!isHost) { g_installIdx = want; g_installBytes = wantBytes; }
 
         bool restart = isHost ? g_peerRestart : g_restartNeeded;
-        g_matched = isHost && extra.empty() && missing.empty() && differ.empty() && !restart;
+        g_matched = isHost && vc == 0 && extra.empty() && missing.empty() && differ.empty() && !restart;
         std::vector<Line> lines;
         int nA = 0, nC = 0, nG = 0; for(auto& e : g_mine) (e.kind == 'a' ? nA : e.kind == 'c' ? nC : nG)++;
-        if(extra.empty() && missing.empty() && differ.empty() && !restart)
+        if(selfUpdated) lines.push_back({ isHost ? "Друг обновил SA Coop до " + hostV + " — ждём, пока он перезапустит игру"
+                                                 : "SA Coop обновлён до " + hostV + " — ПЕРЕЗАПУСТИ ИГРУ и подключись снова", 2 });
+        else if(vc > 0) lines.push_back({ isHost ? "У друга старый SA Coop " + mateV + " (у тебя " + hostV + ") — пусть нажмёт «Установить от хоста» и перезапустит игру"
+                                             : "У тебя старый SA Coop " + mateV + " (у хоста " + hostV + ") — нажми «Установить от хоста», потом перезапусти игру", 2 });
+        if(vc < 0) lines.push_back({ isHost ? "У тебя SA Coop " + hostV + ", у друга новее — " + mateV + ". Поставь себе такую же версию"
+                                             : "У хоста SA Coop старее (" + hostV + "), чем у тебя (" + mateV + ") — хосту нужно обновиться", 2 });
+        if(vc == 0 && extra.empty() && missing.empty() && differ.empty() && !restart)
             lines.push_back({ "Моды: совпадают (AML " + std::to_string(nA) + ", CLEO " + std::to_string(nC) + ", файлы " + std::to_string(nG) + ")" + (skipAml ? " — AML не сверялись" : ""), 0 });
         if(restart)
             lines.push_back({ isHost ? "Другу нужно перезапустить игру — моды у него сменились, включатся после перезапуска"
@@ -553,6 +621,12 @@ namespace
                 if(Exists(bak)) remove(bak.c_str());
                 if(MoveFile(dest, bak)) Log(false, "Старая версия %s — в «Резерв модов»", e.rel.c_str());
             }
+            if(e.kind == 's')
+            {   // обновление самого мода: в папке должен остаться один SA Coop (у друга лежал ещё «libSACoop (1).so»)
+                std::vector<std::string> old;
+                if(DIR* d = opendir(g_modsDir.c_str())) { while(dirent* x = readdir(d)) { std::string n = x->d_name; if(ProtectedAml(n) && EndsWith(Lower(n), ".so") && n != e.rel) old.push_back(n); } closedir(d); }
+                for(auto& n : old) { std::string bak = g_bakDir + "/aml/" + n; remove(bak.c_str()); if(MoveFile(g_modsDir + "/" + n, bak)) Log(false, "Лишняя копия SA Coop %s — в «Резерв модов»", n.c_str()); }
+            }
             if(MoveFile(g_cr.tmp, dest)) { ++g_cr.ok; g_changedNames.push_back(e.rel); Log(false, "Установлен от хоста: %s (%s)", dest.c_str(), Mb(e.size).c_str()); }
             else { ++g_cr.fail; Log(true, "Не смог положить %s (%s)", dest.c_str(), strerror(errno)); remove(g_cr.tmp.c_str()); }
         }
@@ -601,6 +675,8 @@ namespace
 
 void Init(net::Role role)
 {
+    FindPaths();
+    if(int n = RestoreFrom(ManifestPath(), true)) Log(false, "Вернул личные файлы игры (%d): их не надо было отключать", n);
     // 1.5.1 передал другу личные файлы из корня files (Adjustable.cfg — раскладка кнопок): вернуть его прежние из резерва
     FindPaths();
     if(!g_filesDir.empty())

@@ -1234,6 +1234,16 @@ bool PopNotice(char* out, size_t len)
 {
     std::string m;
     if(modsync::PopNotice(m)) { snprintf(out, len, "%s", m.c_str()); return true; }
+    {   // пакеты другой версии протокола: раньше об этом было только в логе — игроки не понимали, почему не соединяется
+        static uint32_t shown = 0; static uint64_t nextUs = 0;
+        uint32_t bad = g_session.GetStats().badVersion; uint64_t now = net::NowUs();
+        if(bad != shown && now >= nextUs)
+        {
+            shown = bad; nextUs = now + 20000000;
+            snprintf(out, len, "У друга другая версия SA Coop — соединиться нельзя. Поставьте оба последнюю версию");
+            return true;
+        }
+    }
     return world::PopNotice(out, len) || sync::PopNotice(out, (int)len);
 }
 

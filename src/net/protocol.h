@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 18;   // 18: передача модов от хоста (MODFILE_*), сверка по контрольной сумме; 17: сверка модов (PKT_MODS); 16: лог друга в файл хоста (LOG_CHUNK/LOG_ACK); 15: «Новая игра» в лобби
+    constexpr uint8_t  kProtocolVersion = 19;   // 19: версия SA Coop в сверке, обновление друга с телефона хоста — старые версии не соединяются; 18: передача модов от хоста (MODFILE_*), сверка по контрольной сумме; 17: сверка модов (PKT_MODS); 16: лог друга в файл хоста (LOG_CHUNK/LOG_ACK); 15: «Новая игра» в лобби
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
