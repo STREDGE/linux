@@ -7,7 +7,7 @@
 namespace net
 {
     constexpr uint32_t kMagic           = 0x50434153; // "SACP"
-    constexpr uint8_t  kProtocolVersion = 17;   // 17: сверка модов (PKT_MODS); 16: лог друга в файл хоста (LOG_CHUNK/LOG_ACK); 15: «Новая игра» в лобби
+    constexpr uint8_t  kProtocolVersion = 18;   // 18: передача модов от хоста (MODFILE_*), сверка по контрольной сумме; 17: сверка модов (PKT_MODS); 16: лог друга в файл хоста (LOG_CHUNK/LOG_ACK); 15: «Новая игра» в лобби
     constexpr int      kNickLen         = 24;
 
     enum PacketType : uint8_t
@@ -34,7 +34,10 @@ namespace net
         PKT_LOBBY        = 20,// хост -> клиент: лобби (что выбрано, «Запуск»), раз в секунду
         PKT_LOG_CHUNK    = 21,// клиент -> хост: кусок его SA_LOG.txt (хост дописывает в свой с пометкой «Д»)
         PKT_LOG_ACK      = 22,// хост -> клиент: кусок записан
-        PKT_MODS         = 23,// в обе стороны: список модов (AML и CLEO) для сверки, раз в 3 с
+        PKT_MODS         = 23,// в обе стороны: список модов (AML, CLEO, файлы игры) для сверки, раз в 3 с
+        PKT_MODFILE_REQ  = 24,// клиент -> хост: пришли эти файлы модов (номера в списке хоста)
+        PKT_MODFILE_CHUNK= 25,// хост -> клиент: кусок файла мода
+        PKT_MODFILE_ACK  = 26,// клиент -> хост: принято по порядку до seq
     };
 
     enum DenyReason : uint8_t { DENY_BY_HOST = 1, DENY_BUSY = 2, DENY_TIMEOUT = 3 };
@@ -347,6 +350,31 @@ namespace net
         uint8_t  data[kModsChunkMax];
     };
     constexpr int kModsHeaderSize = (int)sizeof(Header) + 12;
+
+    // Передача модов хост -> друг (ТЗ 1.1 §8а): куски по порядку с подтверждением, как лог друга
+    constexpr int kModFileReqMax = 400;
+    struct ModFileReqPacket
+    {
+        Header   hdr;
+        uint32_t req;             // номер передачи
+        uint32_t listHash;        // по какому списку хоста просят (другой — хост пришлёт новый список)
+        uint16_t count, pad;
+        uint16_t idx[kModFileReqMax];
+    };
+    constexpr int kModFileReqHeaderSize = (int)sizeof(Header) + 12;
+    constexpr int kModFileChunkMax = 1000;
+    struct ModFileChunkPacket
+    {
+        Header   hdr;
+        uint32_t req, seq;
+        uint16_t fileNo;          // номер в запросе
+        uint16_t flags;           // 1 — последний кусок файла, 2 — хост не смог прочитать файл
+        uint32_t offset, total;
+        uint16_t len, pad;
+        uint8_t  data[kModFileChunkMax];
+    };
+    constexpr int kModFileChunkHeaderSize = (int)sizeof(Header) + 24;
+    struct ModFileAckPacket { Header hdr; uint32_t req; uint32_t seq; };
 
     // Лобби: хост выбирает сохранение и жмёт «Запуск» — launchId меняется, друг загружается
     // LOBBY_NEW: хост начинает новую игру — друг тоже начинает новую (мир не передаётся), сюжет ведёт хост

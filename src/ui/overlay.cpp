@@ -706,6 +706,7 @@ namespace
     {
         coop::LobbyInfo l = coop::GetLobbyInfo();
         if(l.lobby.hostLoading) return false;
+        if(!modsync::LaunchAllowed()) return false;          // ТЗ 1.1 §8а: моды не совпали
         if(g_lobbySel == -1) return l.inGame;
         if(g_lobbySel == -3) return coop::NewGameAvailable();
         return g_lobbySel >= 0 && g_lobbySel < (int)g_saves.size();
@@ -913,12 +914,21 @@ namespace
             }
             y += h + U(2);
         }
-        // сверка модов (AML и CLEO) с хостом
+        // сверка модов с хостом (ТЗ 1.1 §8а): строки + кнопки
         for(const auto& ml : modsync::LobbyLines())
         {
             Rgb c = ml.level == 0 ? kGrove : ml.level == 1 ? kGold : kRed;
             Text(F_SMALL, ImVec2(px, y), C(c), ml.text.c_str(), pw);
             y += TextSize(F_SMALL, ml.text.c_str(), pw).y + U(1.2f);
+        }
+        {
+            modsync::Actions ma = modsync::GetActions();
+            float cx = px, ch = U(6.4f); bool any = false;
+            auto chip = [&](const char* label) { float w = ChipWidth(label); bool c = false; Chip(ImVec2(cx, y), ImVec2(cx + w, y + ch), label, &c); cx += w + U(1.4f); any = true; return c; };
+            if(ma.canInstall && chip(ma.installLabel.c_str())) { modsync::StartInstall(); Toast("Беру моды у хоста — не выходи из лобби"); }
+            if(ma.canRestore && chip("Вернуть мои моды")) { modsync::RestoreNow(); Toast("Твои моды возвращены — заработают после перезапуска игры"); }
+            if(ma.hostCanSkip && chip(ma.skipping ? "Сверять моды" : "Играть без сверки")) { modsync::SetSkip(!ma.skipping); Toast(ma.skipping ? "«Запуск» — только когда моды совпадут" : "Запуск без сверки модов — на свой риск"); }
+            if(any) y += ch + U(1.6f);
         }
         if(!l.isHost)
         {

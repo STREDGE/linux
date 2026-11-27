@@ -552,6 +552,15 @@ namespace net
             case PKT_LOG_CHUNK:
                 if(len >= kLogChunkHeaderSize && len <= (int)sizeof(LogChunkPacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
+            case PKT_MODFILE_REQ:
+                if(len >= kModFileReqHeaderSize && len <= (int)sizeof(ModFileReqPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_MODFILE_CHUNK:
+                if(len >= kModFileChunkHeaderSize && len <= (int)sizeof(ModFileChunkPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_MODFILE_ACK:
+                if(len == sizeof(ModFileAckPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
             case PKT_MODS:
                 if(len >= kModsHeaderSize && len <= (int)sizeof(ModsPacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
