@@ -47,6 +47,8 @@ namespace
     void      (*CameraRestore)(uintptr_t cam) = nullptr;
     void      (*WideScreenOff)(uintptr_t cam) = nullptr;
     uintptr_t (*VehicleCheat)(int model) = nullptr;     // CCheat::VehicleCheat: машина перед своим CJ (как чит)
+    uint8_t*  g_failMission = nullptr;                   // CTheScripts::FailCurrentMission
+    uintptr_t* g_activeScripts = nullptr;                // CTheScripts::pActiveScripts
     int32_t*  g_scriptParams = nullptr;
 
     void Log(bool error, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -687,6 +689,30 @@ namespace
         }
     }
 
+    // 1.6.2 (игрок: «если умрёт друг во время миссии — провал у обоих»). Хост: друг погиб, идёт миссия → провал.
+    // Как у игры при смерти CJ: у сценария миссии ставим «смерть/арест были» (CRunningScript+0x124, его читает
+    // HAS_DEATHARREST_BEEN_EXECUTED) и CTheScripts::FailCurrentMission = 2 (как команда FAIL_CURRENT_MISSION):
+    // сценарий возвращается в начало миссии, видит «смерть» и идёт в свой «провал» — надпись «Миссия провалена»,
+    // уборка. Текст у друга — как все тексты хоста.
+    bool g_friendWasDead = false;
+    void HostFriendDeath()
+    {
+        bool dead = g_rs && g_remote && (g_rs->flags & net::PSF_DEAD);
+        bool justDied = dead && !g_friendWasDead;
+        g_friendWasDead = dead;
+        if(!justDied || !OnMission() || CutsceneRunning() || !g_failMission || !g_activeScripts) return;
+        uintptr_t mis = 0;
+        int guard = 0;
+        for(uintptr_t s = *g_activeScripts; s && guard < 200; s = Field<uintptr_t>(s, 0x0), ++guard)
+            if(Field<uint8_t>(s, 0x12C)) { mis = s; break; }                       // m_bIsMission
+        if(!mis) { Log(true, "[МИССИЯ] Друг погиб, но сценарий миссии не найден — провал не ставлю"); return; }
+        char name[9] = {}; memcpy(name, (void*)(mis + 0x10), 8);
+        Field<uint8_t>(mis, 0x124) = 1;                                              // «смерть/арест были»
+        *g_failMission = 2;
+        Log(false, "[МИССИЯ] Друг погиб во время миссии «%s» — провал у обоих", name);
+        Notice("Друг погиб — миссия провалена");
+    }
+
     // Хост: перенос к маркеру, где стоит друг (миссию запустит свой сценарий)
     void HostStartMission()
     {
@@ -902,6 +928,8 @@ bool Install(void* h, FLogger* log)
     MakePlayerSafe = (void(*)(uintptr_t, bool, float))sym("_ZN11CPlayerInfo14MakePlayerSafeEbf");
     CameraRestore = (void(*)(uintptr_t))sym("_ZN7CCamera7RestoreEv");
     VehicleCheat = (uintptr_t(*)(int))sym("_ZN6CCheat12VehicleCheatEi");
+    g_failMission = (uint8_t*)sym("_ZN11CTheScripts18FailCurrentMissionE");
+    g_activeScripts = (uintptr_t*)sym("_ZN11CTheScripts14pActiveScriptsE");
     WideScreenOff = (void(*)(uintptr_t))sym("_ZN7CCamera16SetWideScreenOffEv");
     g_scriptParams = (int32_t*)sym("ScriptParams");
 
@@ -1045,6 +1073,7 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
         HostBlips();
         HostSeatFriend();
         HostStartMission();
+        HostFriendDeath();
         return;
     }
 
