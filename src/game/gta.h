@@ -149,6 +149,19 @@ namespace gta
     extern void      (*WantedSetLevel)(uintptr_t wanted, int level);
     extern void      (*WantedCheatLevel)(uintptr_t wanted, int level);
     extern void      (*PedTeleport)(uintptr_t ped, CVector to, bool clearOrientation);
+    // анимации дверей машин: CVehicleAnimGroupData::m_vehicleAnimGroups (шаг 0x94), CAnimManager::ms_aAnimAssocGroups (указатель)
+    extern uintptr_t VehicleAnimGroups, AnimAssocGroupsVar;
+    extern int       (*VehAnimGroupGetGroup)(uintptr_t vehAnimGroup, int animId);
+    extern const char* (*AnimBlockName)(int assocGroup);
+    extern int       (*AnimBlockIndex)(const char* name);
+    // стрельба пассажира из окна (как в миссиях: CTaskSimpleGangDriveBy через событие «команда сценария»)
+    extern void      (*GangDriveByCtor)(void* task, uintptr_t target, const CVector* pos, float range, int8_t freq, int8_t style, bool seatRight);
+    extern bool      (*VehCanPedLeanOut)(uintptr_t veh, uintptr_t ped);
+    extern uintptr_t (*GetWeaponInfo)(int type, int8_t skill);
+    extern void      (*PedAddWeaponModel)(uintptr_t ped, int model);
+    extern void      (*EventScriptCommandCtor)(void* ev, int primaryTask, void* task, bool affectsDeadPeds);
+    extern void      (*EventScriptCommandDtor)(void* ev);
+    extern void      (*EventGroupAdd)(uintptr_t group, void* ev, bool valid);
     extern uintptr_t StreamingInfo; // CStreaming::ms_aInfoForModel
     extern uint8_t*  CurrArea;      // CGame::currArea
 

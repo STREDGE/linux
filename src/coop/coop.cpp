@@ -743,12 +743,13 @@ namespace
         bool padOff = Field<uint16_t>(GetPad(0), off::PadDisableCtrl) != 0;
         bool cut = g_cutsceneRunning && *g_cutsceneRunning;
         bool fade = TheCamera && Field<uint8_t>(TheCamera, 0x57);   // CCamera::m_bFading
-        CTRACE("ИГРОК", "(%.1f,%.1f,%.1f) h=%.0f v=%.1f hp=%u бр=%u w=%u зв=%u st=%d mv=%u сила=%.2f i=%u%s%s%s%s%s%s%s%s%s",
+        bool black = TheCamera && Field<float>(TheCamera, 0xC28) >= 254.0f;   // CCamera::m_fFadeAlpha — экран полностью тёмный
+        CTRACE("ИГРОК", "(%.1f,%.1f,%.1f) h=%.0f v=%.1f hp=%u бр=%u w=%u зв=%u st=%d mv=%u сила=%.2f i=%u%s%s%s%s%s%s%s%s%s%s",
                lp.x, lp.y, lp.z, me.heading * 57.29578f, spd, (unsigned)me.health, (unsigned)me.armour, (unsigned)me.weapon, (unsigned)me.wanted,
                Field<int>(local, off::PedState), (unsigned)me.moveState, me.moveRatio, (unsigned)me.area, veh,
                (me.flags & net::PSF_AIMING) ? " ЦЕЛИТСЯ" : "", (me.flags & net::PSF_DUCK) ? " ПРИСЕЛ" : "", (me.flags & net::PSF_TALKING) ? " ГОВОРИТ" : "",
-               (me.flags & net::PSF_DEAD) ? " МЁРТВ" : "", cut ? " КАТСЦЕНА" : "", fade ? " ЗАТЕМНЕНИЕ" : "", padOff ? " УПРАВЛЕНИЕ-ВЫКЛ" : "",
-               mission::ClientCutscene() ? " КАТСЦЕНА-ХОСТА" : "");
+               (me.flags & net::PSF_DEAD) ? " МЁРТВ" : "", cut ? " КАТСЦЕНА" : "", fade ? " ЗАТЕМНЕНИЕ" : "", black ? " ЧЁРНЫЙ-ЭКРАН" : "",
+               padOff ? " УПРАВЛЕНИЕ-ВЫКЛ" : "", mission::ClientCutscene() ? " КАТСЦЕНА-ХОСТА" : "");
         int spawned = g_remotePed ? 1 : 0, inWorld = g_inWorld ? 1 : 0;
         if(spawned != g_tr.remoteSpawned || inWorld != g_tr.inWorld)
         {

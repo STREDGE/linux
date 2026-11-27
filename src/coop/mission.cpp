@@ -206,7 +206,8 @@ namespace
     uint16_t g_cutId = 0, g_cutEndedId = 0;
     bool     g_cutEndReceived = false, g_allowSkip = false, g_cutHaveEnded = false;
     char     g_cutName[9] = "", g_cutStem[9] = "";
-    uint64_t g_cutSinceUs = 0, g_teleportAtUs = 0;
+    uint64_t g_cutSinceUs = 0, g_teleportAtUs = 0, g_cutFadeFixUs = 0;
+    int      g_cutFadeFixes = 0;
     CVector  g_cutFreezePos{};
     uint8_t  g_cutPrevArea = 0;           // друг: свой интерьер до катсцены хоста (вернуть, если хост ещё в катсцене)
     bool     g_waitHostCutEnd = false;    // друг: своя копия кончилась раньше — к хосту переносим после его конца
@@ -651,7 +652,7 @@ namespace
                     // проявить экран: у хоста это делает сценарий (DO_FADE 1000 1 после START_CUTSCENE); новая игра у друга
                     // начинается с затемнения (main.scm DO_FADE 0 0 перед вступлением) — без этого «только надпись, чёрный экран»
                     if(Fade && TheCamera) Fade(TheCamera, 1.0f, 1);
-                    g_cut = Cut::Playing; g_cutSinceUs = g_now;
+                    g_cut = Cut::Playing; g_cutSinceUs = g_now; g_cutFadeFixUs = g_now; g_cutFadeFixes = 0;
                     Log(false, "[КАТСЦЕНА] Идёт «%s» (пропускает хост)", g_cutName);
                 }
                 else if(net::Since(g_now, g_cutSinceUs) > 20000000)
@@ -662,6 +663,14 @@ namespace
                 break;
             case Cut::Playing:
                 if(g_rs) SetLocalArea(g_rs->area, "как у хоста в катсцене");
+                // Тест 1.4.4: «катсцена показалась на секунду, потом чёрный экран». У друга нет сценария хоста, который
+                // ведёт затемнение; если экран снова стал полностью тёмным (m_fFadeAlpha = 255) — проявить, не чаще раза в 1,5 с
+                if(Fade && TheCamera && Field<float>(TheCamera, 0xC28) >= 254.0f && net::Since(g_now, g_cutFadeFixUs) > 1500000)
+                {
+                    g_cutFadeFixUs = g_now;
+                    Fade(TheCamera, 0.5f, 1);
+                    if(++g_cutFadeFixes <= 5) Log(false, "[КАТСЦЕНА] Экран стал тёмным через %.1f с — проявляю (%d)", net::Since(g_now, g_cutSinceUs) / 1e6, g_cutFadeFixes);
+                }
                 SetPosition(g_local, g_cutFreezePos);
                 Field<CVector>(g_local, off::PhysMoveSpeed) = CVector{ 0, 0, 0 };
                 if(g_cutEndReceived && !CutFinished())

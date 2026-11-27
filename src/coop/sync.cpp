@@ -197,11 +197,14 @@ namespace
         if(Field<uintptr_t>(veh, off::EntRwObject)) EntityUpdateRwFrame(veh);
     }
 
+    bool DoorAnimsReady(uintptr_t veh, bool load);
+
     // Высадить персонажа из машины сразу (как скриптовая WARP_CHAR_FROM_CAR_TO_COORD)
     void WarpOut(uintptr_t ped)
     {
         uintptr_t veh = PedVehicle(ped);
         if(!veh) return;
+        DoorAnimsReady(veh, true);                   // высадить нужно всё равно (машину могут удалять) — но с анимациями
         alignas(16) uint8_t task[0x60] = {};
         int seat = SeatOf(ped, veh);
         int door = seat <= 0 ? kDriverDoor : DoorForPassengerSeat(veh, seat - 1);
@@ -524,6 +527,42 @@ namespace
         return !who || who == forPed;
     }
 
+    // ---------- анимации дверей (вылет 1.4.4) ----------
+    // У машины может быть своя группа анимаций (фургон, автобус, байк…) в отдельном блоке. Если блок не загружен,
+    // игра при посадке/высадке берёт пустую анимацию двери → SIGSEGV в CVehicleAnimGroup::ComputeAnimDoorOffsets
+    // (тест 1.4.4: хост, второму CJ дали «сесть»). Перед посадкой и высадкой второго CJ проверяем и, если надо, грузим блок.
+    constexpr int kIfpBase = 25575;                       // номера блоков анимаций в CStreaming (2.10: 0x63E7)
+    bool DoorAnimsReady(uintptr_t veh, bool load)
+    {
+        if(!veh || !VehicleAnimGroups || !AnimAssocGroupsVar || !VehAnimGroupGetGroup) return true;   // нечем проверить — как раньше
+        uintptr_t hd = Field<uintptr_t>(veh, 0x4A8);       // CVehicle::m_pHandlingData; +0xDE — группа анимаций
+        uintptr_t groups = Field<uintptr_t>(AnimAssocGroupsVar, 0);
+        if(!hd || !groups) return true;
+        uintptr_t vag = VehicleAnimGroups + (uintptr_t)Field<uint8_t>(hd, 0xDE) * 0x94;
+        static const int kIds[] = { 359, 361, 363, 373, 375, 378, 379 };   // анимации, по которым игра считает двери
+        bool ready = true, asked = false;
+        for(int id : kIds)
+        {
+            int g = VehAnimGroupGetGroup(vag, id);
+            if(g < 0 || g > 255) continue;
+            uintptr_t grp = groups + (uintptr_t)g * 32;    // CAnimBlendAssocGroup: +8 анимации, +0x10 сколько, +0x14 первый номер
+            uintptr_t assocs = Field<uintptr_t>(grp, 8);
+            int idx = id - Field<int>(grp, 0x14), n = Field<int>(grp, 0x10);
+            if(assocs && (idx < 0 || (n > 0 && idx >= n))) continue;
+            if(assocs && Field<uintptr_t>(assocs + (uintptr_t)idx * 32, 0x18)) continue;   // иерархия анимации есть — загружена
+            ready = false;
+            if(load && AnimBlockName && AnimBlockIndex)
+            {
+                const char* name = AnimBlockName(g);
+                int bi = name && name[0] ? AnimBlockIndex(name) : -1;
+                if(bi >= 0) { RequestModel(kIfpBase + bi, 2); asked = true; Log(false, "[МАШИНЫ] Гружу анимации дверей «%s» (группа %d)", name, g); }
+            }
+        }
+        if(ready || !asked) return ready;
+        LoadAllRequestedModels(false);
+        return DoorAnimsReady(veh, false);
+    }
+
     uint64_t g_lastEnterTaskUs = 0;
     void GiveEnterTask(uintptr_t ped, uintptr_t veh, int seat)
     {
@@ -536,6 +575,7 @@ namespace
             if(g_lastEnterTaskUs && net::Since(g_ctx.now, g_lastEnterTaskUs) < 2000000) return;
             g_lastEnterTaskUs = g_ctx.now;
         }
+        if(!DoorAnimsReady(veh, true)) { Log(true, "[МАШИНЫ] Анимации дверей машины не загрузились — посадку пропускаю"); return; }
         void* t = TaskNew(0x80);
         if(!t) return;
         if(seat == 0) TaskEnterAsDriver(t, veh);
@@ -561,6 +601,7 @@ namespace
 
     void WarpIn(uintptr_t ped, uintptr_t veh, int seat)
     {
+        if(!DoorAnimsReady(veh, true)) { Log(true, "[МАШИНЫ] Анимации дверей машины не загрузились — пересадку пропускаю"); return; }
         if(PedVehicle(ped)) WarpOut(ped);
         int door = seat == 0 ? kDriverDoor : DoorForPassengerSeat(veh, seat - 1);
         if(door < 0) door = 8;
@@ -837,6 +878,47 @@ namespace
         if(g_shotsIn <= 10)
             Log(false, "[ВЫСТРЕЛ] друга: оружие %d, повторён %s, второй CJ от места выстрела в %.1f м%s", w, ok ? "да" : "НЕТ",
                 Dist(rp, V(p.shooter)), (p.flags & net::SHOT_HIT_MATE) ? ", попал в тебя" : "");
+    }
+
+    // ---------- стрельба пассажира из окна (1.4.5) ----------
+    // В игре пассажир стреляет только в режиме «двое на одном экране» (CTaskSimpleCarDrive, IsCoopGameGoingOn) — мод
+    // этот режим выключает, поэтому в коопе пассажиры не стреляли вовсе. Делаем как миссии («Драйв-бай»): пассажиру с
+    // огнестрельным оружием даём CTaskSimpleGangDriveBy через событие «команда сценария» (как сама игра). Задача сама
+    // переводит камеру в прицел из машины и стреляет по кнопке огня. Любое оружие с пулями (пистолеты, дробовики,
+    // автоматы, АК, М4, миниган) — у игры только «узи/TEC-9/MP5». Убрать стрельбу — переключить на кулак.
+    constexpr int kTaskGangDriveBy = 0x3FE;
+    uint64_t g_dbTryUs = 0;
+    int      g_dbLogged = -1;
+    void PassengerDriveBy()
+    {
+        uintptr_t me = g_ctx.local;
+        if(!me || !GangDriveByCtor || !VehCanPedLeanOut || !GetWeaponInfo || !EventScriptCommandCtor || !EventGroupAdd || !EventScriptCommandDtor) return;
+        uintptr_t veh = PedVehicle(me);
+        if(!veh || Field<uintptr_t>(veh, off::VehDriver) == me) { g_dbLogged = -1; return; }      // пешком или за рулём
+        int slot = Field<int8_t>(me, off::PedCurWeaponSlot);
+        if(slot < 2 || slot > 7) return;                                                       // кулак, ближний бой, гранаты — нет
+        uintptr_t w = me + off::PedWeapons + (uintptr_t)slot * off::WeaponSize;
+        int type = Field<int>(w, off::WeapType);
+        if(type < 22 || type > 38 || type == 34 || Field<int>(w, off::WeapTotal) <= 0) return;   // снайперка — своя камера, не берём
+        uintptr_t wi = GetWeaponInfo(type, 1);
+        if(!wi || Field<int>(wi, 0) != 1) return;                                              // только оружие «с пулями»
+        int tt = ActiveTaskType(me);
+        if(tt == kTaskGangDriveBy) return;
+        if(g_dbTryUs && net::Since(g_ctx.now, g_dbTryUs) < 1500000) return;
+        g_dbTryUs = g_ctx.now;
+        if(!VehCanPedLeanOut(veh, me)) return;
+        if(PedAddWeaponModel) PedAddWeaponModel(me, Field<int>(wi, 0xC));                     // при посадке игра прячет «не своё» оружие
+        uintptr_t intel = Field<uintptr_t>(me, off::PedIntel);
+        if(!intel) return;
+        void* t = TaskNew(0x60);
+        if(!t) return;
+        bool right = Field<uintptr_t>(veh, off::VehPassengers + 8) != me;                     // как у игры: левое заднее — «не справа»
+        GangDriveByCtor(t, 0, nullptr, 100.0f, 100, 8, right);
+        alignas(16) uint8_t ev[0x40] = {};
+        EventScriptCommandCtor(ev, 3, t, false);
+        EventGroupAdd(intel + 0xC8, ev, false);
+        EventScriptCommandDtor(ev);                                                           // как у игры: событие копируется, своё удаляем
+        if(g_dbLogged != type) { g_dbLogged = type; Log(false, "[МАШИНЫ] Ты пассажир с оружием %d — стрельба из окна (было задача %d)", type, tt); }
     }
 
     void UpdateCombat()
@@ -1504,6 +1586,7 @@ void Frame(const Ctx& c)
     else g_remoteBusy = false;
     UpdateCarInput();
     UpdateCombat();
+    PassengerDriveBy();
     UpdateWanted();
     if(c.remote) MirrorPlayer2Relations();
     TraceTransitions();

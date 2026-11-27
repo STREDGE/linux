@@ -53,6 +53,17 @@ namespace gta
     void      (*WantedSetLevel)(uintptr_t, int)                        = nullptr;
     void      (*WantedCheatLevel)(uintptr_t, int)                      = nullptr;
     void      (*PedTeleport)(uintptr_t, CVector, bool)                 = nullptr;
+    uintptr_t VehicleAnimGroups = 0, AnimAssocGroupsVar = 0;
+    int       (*VehAnimGroupGetGroup)(uintptr_t, int)                  = nullptr;
+    const char* (*AnimBlockName)(int)                                  = nullptr;
+    int       (*AnimBlockIndex)(const char*)                           = nullptr;
+    void      (*GangDriveByCtor)(void*, uintptr_t, const CVector*, float, int8_t, int8_t, bool) = nullptr;
+    bool      (*VehCanPedLeanOut)(uintptr_t, uintptr_t)                = nullptr;
+    uintptr_t (*GetWeaponInfo)(int, int8_t)                            = nullptr;
+    void      (*PedAddWeaponModel)(uintptr_t, int)                     = nullptr;
+    void      (*EventScriptCommandCtor)(void*, int, void*, bool)       = nullptr;
+    void      (*EventScriptCommandDtor)(void*)                         = nullptr;
+    void      (*EventGroupAdd)(uintptr_t, void*, bool)                 = nullptr;
     uintptr_t StreamingInfo = 0;
     uint8_t*  CurrArea = nullptr;
 
@@ -126,6 +137,19 @@ namespace gta
         c &= Resolve(h, (void**)&WantedCheatLevel,      "_ZN7CWanted16CheatWantedLevelEi");
         Resolve(h, (void**)&CurrArea, "_ZN5CGame8currAreaE");
         Resolve(h, (void**)&PedTeleport, "_ZN4CPed8TeleportE7CVectorh");
+        // анимации дверей машин (проверка перед посадкой второго CJ) и стрельба пассажира из окна — необязательные
+        Resolve(h, (void**)&VehicleAnimGroups,      "_ZN21CVehicleAnimGroupData19m_vehicleAnimGroupsE");
+        Resolve(h, (void**)&AnimAssocGroupsVar,     "_ZN12CAnimManager19ms_aAnimAssocGroupsE");
+        Resolve(h, (void**)&VehAnimGroupGetGroup,   "_ZN17CVehicleAnimGroup8GetGroupEi");
+        Resolve(h, (void**)&AnimBlockName,          "_ZN12CAnimManager16GetAnimBlockNameE12AssocGroupId");
+        Resolve(h, (void**)&AnimBlockIndex,         "_ZN12CAnimManager22GetAnimationBlockIndexEPKc");
+        Resolve(h, (void**)&GangDriveByCtor,        "_ZN22CTaskSimpleGangDriveByC2EP7CEntityPK7CVectorfaab");
+        Resolve(h, (void**)&VehCanPedLeanOut,       "_ZNK8CVehicle13CanPedLeanOutEP4CPed");
+        Resolve(h, (void**)&GetWeaponInfo,          "_ZN11CWeaponInfo13GetWeaponInfoE11eWeaponTypea");
+        Resolve(h, (void**)&PedAddWeaponModel,      "_ZN4CPed14AddWeaponModelEi");
+        Resolve(h, (void**)&EventScriptCommandCtor, "_ZN19CEventScriptCommandC2EiP5CTaskb");
+        Resolve(h, (void**)&EventScriptCommandDtor, "_ZN19CEventScriptCommandD2Ev");
+        Resolve(h, (void**)&EventGroupAdd,          "_ZN11CEventGroup3AddER6CEventb");
         g_vehOk = v; g_combatOk = c && v;   // урону нужны и машины (TaskNew, модели)
         return ok;
     }
