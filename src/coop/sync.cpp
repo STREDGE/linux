@@ -383,8 +383,8 @@ namespace
         if(v.appliedSeq == s.seq && v.appliedSeqValid) return ApplyCosmetics(v);
         v.appliedSeq = s.seq; v.appliedSeqValid = true;
 
-        float age = (float)(net::Since(g_ctx.now, v.stUs)) / 1e6f;
-        if(age > 0.15f) age = 0.15f;
+        float age = (float)(net::Since(g_ctx.now, v.stUs)) / 1e6f + g_ctx.leadS;   // 1.6.6: + полпинга
+        if(age > 0.3f) age = 0.3f;
         CVector target{ s.pos[0] + s.vel[0] * age, s.pos[1] + s.vel[1] * age, s.pos[2] + s.vel[2] * age };
         CVector cur = GetPosition(veh);
         uintptr_t m = Field<uintptr_t>(veh, off::EntMatrix);
@@ -1276,12 +1276,12 @@ namespace
     void DebugTick()
     {
         if(g_ctx.now < g_nextDebugUs) return;
-        g_nextDebugUs = g_ctx.now + 1000000;
+        g_nextDebugUs = g_ctx.now + 3000000;   // 1.6.6: раз в 3 с (лог меньше)
         if(g_shotsOut || g_shotsIn)
-            Log(false, "[ВЫСТРЕЛЫ] за секунду: твоих %d, от друга %d (повторено %d)", g_shotsOut, g_shotsIn, g_shotsReplayed);
+            Log(false, "[ВЫСТРЕЛЫ] за 3 с: твоих %d, от друга %d (повторено %d)", g_shotsOut, g_shotsIn, g_shotsReplayed);
         g_shotsOut = g_shotsIn = g_shotsReplayed = 0;
         if(g_friendPkts || g_friendLost)
-            Log(false, "[СЕТЬ] за секунду от друга пакетов %d, потеряно %d", g_friendPkts, g_friendLost);
+            Log(false, "[СЕТЬ] за 3 с от друга пакетов %d, потеряно %d", g_friendPkts, g_friendLost);
         g_friendPkts = g_friendLost = 0;
         // Снимок своего и второго CJ
         for(int k = 0; k < 2; ++k)
@@ -1364,9 +1364,12 @@ DECL_HOOKv(EnterAsDriverCtor, void* task, uintptr_t veh)
 // Кнопка «сесть» самой игры: пишем каждое изменение (что показала / спрятала и кто вызвал)
 DECL_HOOKv(EnterCarWidgetSet, uintptr_t self, int vehType, int flags, bool entering, const CVector& at, int model)
 {
-    static int lastType = -100, lastModel = -100; static bool lastEntering = false;
-    if(g_active && (vehType != lastType || model != lastModel || entering != lastEntering))
+    static int lastType = -100, lastModel = -100; static bool lastEntering = false; static uint64_t lastLogUs = 0;
+    // 1.6.6: игра зовёт это по два раза за кадр с разными значениями — в лог не чаще раза в 3 с (было ~20 000 строк)
+    if(g_active && (vehType != lastType || model != lastModel || entering != lastEntering) &&
+       (!lastLogUs || net::Since(g_ctx.now, lastLogUs) > 3000000))
     {
+        lastLogUs = g_ctx.now ? g_ctx.now : 1;
         Log(false, "[КНОПКА ИГРЫ] %s: тип машины %d, модель %d, %s, вызвано из +0x%lX",
             vehType < 0 ? "СПРЯТАНА" : "показана", vehType, model, entering ? "сесть" : "выйти",
             (unsigned long)((uintptr_t)__builtin_return_address(0) - g_libBase));

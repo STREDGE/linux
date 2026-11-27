@@ -35,7 +35,8 @@ namespace
     constexpr uint64_t kStaleUs          = 60000000;   // нет данных 60 с — убрать второго CJ (пока друг свернул игру, он «замирает»)
     constexpr float    kActiveRadius     = 180.0f;     // дальше — CJ скрыт, видна только метка
     constexpr float    kSnapDistance     = 10.0f;      // дальше — мгновенно переносим
-    constexpr float    kSmoothRate       = 12.0f;      // скорость сглаживания (1/с)
+    constexpr float    kSmoothRate       = 16.0f;      // скорость сглаживания (1/с); 1.6.6: 12 → 16 (меньше отставание)
+    float LeadS();                                       // 1.6.6: половина пинга, с (упреждение позиции друга)
     constexpr uint64_t kEchoDelayUs      = 500000;     // эхо-режим: повтор с задержкой 0,5 с
     constexpr float    kEchoOffset       = 3.5f;       // эхо-режим: постоянный сдвиг на восток, м (машина двойника не наезжает на твою)
     constexpr float    kMinMoveRatio     = 0.05f;      // меньше — стоит на месте
@@ -44,6 +45,12 @@ namespace
 
     net::Config  g_cfg{ net::Role::Off };
     net::Session g_session;
+    float LeadS()
+    {
+        int rtt = g_session.LastRttMs();
+        if(rtt <= 0 || rtt > 600) return 0.0f;
+        return rtt * 0.0005f;                            // половина пинга, мс → с
+    }
 
     // Смена режима из меню: кладём сюда, применяем в игровом кадре
     std::mutex   g_cfgMutex;
@@ -248,7 +255,9 @@ namespace
         const net::PlayerStatePacket& s = rs.pkt;
         float   age    = (float)net::Since(now, rs.receivedUs) / 1e6f;
         bool    frozen = age > 0.6f;            // друг свернул игру / пауза: стоит на месте, не идёт
-        if(age > 0.25f) age = 0.25f;
+        // 1.6.6: пакет шёл к нам ещё полпинга — ставим друга туда, где он сейчас (пинг через сервер Tailscale ~150 мс)
+        age += LeadS();
+        if(age > 0.35f) age = 0.35f;
         net::PlayerStatePacket sf = s;
         if(frozen) { sf.vel[0] = sf.vel[1] = sf.vel[2] = 0; sf.moveRatio = 0; sf.flags &= ~net::PSF_SPRINT; }
         CVector target { sf.pos[0] + sf.vel[0] * age, sf.pos[1] + sf.vel[1] * age, sf.pos[2] + sf.vel[2] * age };
@@ -733,7 +742,7 @@ namespace
     void TracePlayers(uint64_t now, uintptr_t local, const net::PlayerStatePacket& me, const net::RemoteState* rs)
     {
         if(!ctrace::Started() || now < g_tr.nextPlayerUs) return;
-        g_tr.nextPlayerUs = now + 250000;
+        g_tr.nextPlayerUs = now + 1000000;   // 1.6.6: раз в секунду (было 4 раза — лог рос на ~20 КБ/с и шёл другу)
         CVector lp = GetPosition(local);
         float spd = sqrtf(me.vel[0] * me.vel[0] + me.vel[1] * me.vel[1] + me.vel[2] * me.vel[2]);
         char veh[96] = "";
@@ -897,6 +906,7 @@ namespace
         sc.connected = g_session.Connected();
         sc.remote = CheckRemoteAlive() ? g_remotePed : 0;
         sc.rs = (rs.valid && net::Since(now, rs.receivedUs) < kStaleUs) ? &rs.pkt : nullptr;
+        sc.leadS = LeadS();
         g_where = "синхронизация машин/оружия";
         sync::Frame(sc);
         g_where = "общий мир людей";
@@ -905,7 +915,7 @@ namespace
         mission::Frame(g_cfg.role, sc.connected, local, sc.remote, sc.rs, now);
         g_where = "подробный лог коопа";
         TracePlayers(now, local, me, &rs);
-        logshare::Frame(g_cfg.role, g_session.Connected(), now);
+        logshare::Frame(g_cfg.role, g_session.Connected(), now, true);
         modsync::Frame(g_cfg.role, g_session.Connected(), true, now);
 
         // Загрузились в мир хоста — встать рядом с ним (один раз)

@@ -3,6 +3,7 @@
 #include <mod/amlmod.h>
 #include <mod/interface.h>
 #include <string.h>
+#include <zlib.h>
 
 #include <deque>
 #include <map>
@@ -33,7 +34,15 @@ namespace
     struct Hdr { uint8_t kind; uint32_t msg; uint16_t idx, count; };   // kind 0 — данные, 1 — подтверждение
     #pragma pack(pop)
 
-    struct Out { uint32_t id; std::vector<std::string> chunks; std::vector<bool> acked; double next; int tries; };
+    // 0.5.8: сообщения сжимаются (zlib) и уходят ровным потоком — не больше kRate байт/с, повтор куска — только если
+    // подтверждения нет kRetry с. Раньше весь запрос Джарвиса (30–60 КБ) уходил разом и разом повторялся каждые 0,35 с:
+    // связь через сервер Tailscale забивалась, игра у обоих «подлагивала».
+    constexpr double  kRate    = 40000;          // байт/с на канал SA Living
+    constexpr double  kBurst   = 8000;
+    constexpr double  kRetry   = 0.9;
+    constexpr double  kGiveUp  = 25.0;
+    double g_budget = kBurst, g_lastFrame = 0;
+    struct Out { uint32_t id; std::vector<std::string> chunks; std::vector<bool> acked; std::vector<double> sentAt; double born; };
     std::deque<Out> g_out;
     uint32_t g_nextId = 1;
 
@@ -73,7 +82,14 @@ namespace
         if(in.got == in.count)
         {
             std::string all; for(auto& p : in.parts) all += p;
-            g_ready.push_back(std::move(all));
+            if(all.size() > 5 && (uint8_t)all[0] == 1)
+            {   // сжатое: 1, длина (4 байта), данные zlib
+                uint32_t n; memcpy(&n, all.data() + 1, 4);
+                std::string out; uLongf outLen = n;
+                if(n > 0 && n < (8u << 20)) { out.resize(n); if(uncompress((Bytef*)&out[0], &outLen, (const Bytef*)all.data() + 5, (uLong)(all.size() - 5)) == Z_OK && outLen == n) all.swap(out); else all.clear(); }
+                else all.clear();
+            }
+            if(!all.empty()) g_ready.push_back(std::move(all));
             g_in.erase(h.msg);
             g_done.push_back(h.msg); if(g_done.size() > 128) g_done.pop_front();
         }
@@ -117,12 +133,23 @@ bool Send(const json::Value& msg)
 {
     if(!Connected()) { TRACE("КООП>", "не отправлено (нет связи): %.200s", msg.dump().c_str()); return false; }
     std::string s = msg.dump();
-    TRACE("КООП>", "%s", s.size() > 1500 ? (s.substr(0, 1500) + "…").c_str() : s.c_str());
-    Out o; o.id = g_nextId++; o.next = 0; o.tries = 0;
+    TRACE("КООП>", "%s", s.size() > 600 ? (s.substr(0, 600) + "…").c_str() : s.c_str());
+    if(s.size() > 400)
+    {
+        uLongf cl = compressBound((uLong)s.size());
+        std::string c(5 + cl, '\0');
+        if(compress2((Bytef*)&c[5], &cl, (const Bytef*)s.data(), (uLong)s.size(), 6) == Z_OK && 5 + cl < s.size())
+        {
+            c[0] = 1; uint32_t n = (uint32_t)s.size(); memcpy(&c[1], &n, 4); c.resize(5 + cl);
+            s.swap(c);
+        }
+    }
+    Out o; o.id = g_nextId++; o.born = talk::Now();
     for(size_t i = 0; i < s.size(); i += kChunk) o.chunks.push_back(s.substr(i, kChunk));
     if(o.chunks.empty()) o.chunks.push_back("");
     if(o.chunks.size() > 200) { LOG_ERROR("Связь: сообщение слишком большое (%d байт)", (int)s.size()); return false; }
     o.acked.assign(o.chunks.size(), false);
+    o.sentAt.assign(o.chunks.size(), 0.0);
     g_out.push_back(std::move(o));
     return true;
 }
@@ -143,16 +170,20 @@ void Frame()
         else { LOG_INFO("ИИ-кооп: выключен — одиночная игра"); g_out.clear(); g_in.clear(); }
     }
     double now = talk::Now();
+    if(g_lastFrame > 0 && now > g_lastFrame) g_budget += (now - g_lastFrame) * kRate;
+    if(g_budget > kBurst) g_budget = kBurst;
+    g_lastFrame = now;
     for(auto it = g_out.begin(); it != g_out.end();)
     {
         bool all = true;
         for(bool a : it->acked) all = all && a;
-        if(all || it->tries > 20) { if(!all) LOG_ERROR("Связь: сообщение %u не дошло", it->id); it = g_out.erase(it); continue; }
-        if(now >= it->next)
+        if(all || now - it->born > kGiveUp) { if(!all) LOG_ERROR("Связь: сообщение %u не дошло", it->id); it = g_out.erase(it); continue; }
+        for(size_t i = 0; i < it->chunks.size() && g_budget > 0; ++i)
         {
-            for(size_t i = 0; i < it->chunks.size(); ++i)
-                if(!it->acked[i]) { Hdr h{ 0, it->id, (uint16_t)i, (uint16_t)it->chunks.size() }; SendRaw(h, it->chunks[i].data(), (int)it->chunks[i].size()); }
-            it->tries++; it->next = now + 0.35;
+            if(it->acked[i] || (it->sentAt[i] > 0 && now - it->sentAt[i] < kRetry)) continue;
+            Hdr h{ 0, it->id, (uint16_t)i, (uint16_t)it->chunks.size() };
+            SendRaw(h, it->chunks[i].data(), (int)it->chunks[i].size());
+            it->sentAt[i] = now; g_budget -= (double)(sizeof(Hdr) + it->chunks[i].size());
         }
         ++it;
     }
@@ -160,7 +191,7 @@ void Frame()
     {
         std::string s = std::move(g_ready.front()); g_ready.pop_front();
         json::Value v;
-        if(json::Parse(s, v)) { TRACE("КООП<", "%s", s.size() > 1500 ? (s.substr(0, 1500) + "…").c_str() : s.c_str()); OnMessage(v); } else LOG_ERROR("Связь: битое сообщение");
+        if(json::Parse(s, v)) { TRACE("КООП<", "%s", s.size() > 600 ? (s.substr(0, 600) + "…").c_str() : s.c_str()); OnMessage(v); } else LOG_ERROR("Связь: битое сообщение");
     }
 }
 

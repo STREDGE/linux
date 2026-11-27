@@ -10,6 +10,6 @@
 namespace logshare
 {
     void SetSession(net::Session* s);
-    void Frame(net::Role role, bool connected, uint64_t now);   // игровой кадр или меню (игровой поток)
+    void Frame(net::Role role, bool connected, uint64_t now, bool inGame = false);   // inGame: идёт игра — тихо (≈5 КБ/с)   // игровой кадр или меню (игровой поток)
     void OnPacket(uint8_t type, const uint8_t* data, int len);
 }

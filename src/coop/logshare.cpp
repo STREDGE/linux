@@ -28,6 +28,7 @@ namespace
     int64_t  g_off = 0;                    // следующий байт файла к отправке
     uint32_t g_run = 0, g_nextSeq = 0;
     std::deque<Chunk> g_inflight;
+    bool     g_quiet = false; uint64_t g_quietTickUs = 0;
     bool     g_wasConnected = false;
     uint64_t g_nextTickUs = 0;
 
@@ -98,9 +99,17 @@ namespace
         }
         if(now < g_nextTickUs) return;
         g_nextTickUs = now + 100000;
+        // 1.6.6: в игре лог идёт тихо (≈5 КБ/с, 4 куска в пути), в меню — быстро (≈60 КБ/с): связь через сервер Tailscale
+        // медленная, большой поток лога мешал игровым пакетам (задержки между игроками). Повтор — только первых кусков.
         if(!g_inflight.empty() && net::Since(now, g_inflight.front().sentUs) > 1200000)
-            for(auto& c : g_inflight) { Send(c); c.sentUs = now; }   // нет подтверждения — повторить всё неподтверждённое
-        for(int k = 0; k < 6 && g_inflight.size() < 32; ++k)        // до ~60 КБ/с
+        {
+            int n = 0;
+            for(auto& c : g_inflight) { if(n++ >= (g_quiet ? 2 : 8)) break; Send(c); }
+            for(auto& c : g_inflight) c.sentUs = now;
+        }
+        if(g_quiet && net::Since(now, g_quietTickUs) < 200000) return;
+        g_quietTickUs = now;
+        for(int k = 0; k < (g_quiet ? 1 : 6) && (int)g_inflight.size() < (g_quiet ? 4 : 32); ++k)
         {
             char buf[net::kLogChunkMax];
             ssize_t n = pread(g_fd, buf, sizeof(buf), (off_t)g_off);
@@ -122,8 +131,9 @@ namespace
 
 void SetSession(net::Session* s) { g_session = s; }
 
-void Frame(net::Role role, bool connected, uint64_t now)
+void Frame(net::Role role, bool connected, uint64_t now, bool inGame)
 {
+    g_quiet = inGame;
     if(role == net::Role::Client) ClientTick(connected, now);
 }
 

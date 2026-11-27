@@ -31,6 +31,7 @@ namespace coop { namespace sync {
         bool      friendlyFireLocal = false;
         bool      sharedWantedLocal = true;
         float     echoOffset = 0;         // эхо: сдвиг на восток
+        float     leadS = 0;              // 1.6.6: половина пинга, с — упреждение позиций друга
     };
 
     bool Install(void* libHandle, FLogger* log);
