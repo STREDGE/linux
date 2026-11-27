@@ -507,6 +507,7 @@ namespace
 
     // ---------- второй CJ: посадка ----------
     uint64_t g_enterSinceUs = 0;     // когда дали задачу «сесть»
+    bool     g_jackWaitLogged = false;
     uint16_t g_enterVehId = 0;
     uint64_t g_leaveSinceUs = 0;
     uint64_t g_onFootSinceUs = 0;    // с какого момента друг «пешком» (для задержки выхода)
@@ -563,23 +564,24 @@ namespace
     }
 
     uint64_t g_lastEnterTaskUs = 0;
-    void GiveEnterTask(uintptr_t ped, uintptr_t veh, int seat)
+    bool GiveEnterTask(uintptr_t ped, uintptr_t veh, int seat)
     {
         uintptr_t mgr = TaskManager(ped);
-        if(!mgr) return;
+        if(!mgr) return false;
         // Не чаще раза в 2 с: в 0.8.7 задача «сесть» выдавалась десятки раз в секунду — игра упала
         // в CVehicleAnimGroup::ComputeAnimDoorOffsets (анимация двери для удалённого CJ)
         if(ped == g_ctx.remote)
         {
-            if(g_lastEnterTaskUs && net::Since(g_ctx.now, g_lastEnterTaskUs) < 2000000) return;
+            if(g_lastEnterTaskUs && net::Since(g_ctx.now, g_lastEnterTaskUs) < 2000000) return false;
             g_lastEnterTaskUs = g_ctx.now;
         }
-        if(!DoorAnimsReady(veh, true)) { Log(true, "[МАШИНЫ] Анимации дверей машины не загрузились — посадку пропускаю"); return; }
+        if(!DoorAnimsReady(veh, true)) { Log(true, "[МАШИНЫ] Анимации дверей машины не загрузились — посадку пропускаю"); return false; }
         void* t = TaskNew(0x80);
-        if(!t) return;
+        if(!t) return false;
         if(seat == 0) TaskEnterAsDriver(t, veh);
         else          TaskEnterAsPassenger(t, veh, seat - 1, false);
         TaskMgrSetTask(mgr, t, 3, false);
+        return true;
     }
 
     void GiveLeaveTask(uintptr_t ped, uintptr_t veh)
@@ -628,10 +630,24 @@ namespace
             if(cur && cur != tv) { WarpOut(r); return; }
             if(!tv) return;                                  // копия ещё не готова — пусть идёт пешком
             g_remoteBusy = true;
+            float d0 = Dist(GetPosition(r), GetPosition(tv));
             if(seat == 0)
-            {   // друг угнал машину с педом за рулём — у хоста пед тоже вылетает (как при обычном угоне)
+            {   // друг угнал машину с педом за рулём.
+                // 1.5.8: у друга угон доигрывает раньше (у хоста задача дана позже + сеть) — раньше хост в этот миг
+                // выкидывал водителя сразу, анимация второго CJ обрывалась и он «телепортировался» на место.
+                // Пока второй CJ сам вытаскивает водителя (задача «сесть за руль», не дольше 7 с) — ждём.
                 uintptr_t drv = Field<uintptr_t>(tv, off::VehDriver);
-                if(drv && drv != r && drv != g_ctx.local) { WarpOut(drv); Log(false, "[МАШИНЫ] Друг угнал машину %04X — водитель-пед выкинут", s.vehId); }
+                if(drv && drv != r && drv != g_ctx.local)
+                {
+                    bool jacking = tt == TASK_ENTER_AS_DRIVER && g_enterSinceUs && g_enterVehId == s.vehId && d0 < 12.0f &&
+                                   net::Since(now, g_enterSinceUs) < kEnterTimeoutUs;
+                    if(jacking)
+                    {
+                        if(!g_jackWaitLogged) { g_jackWaitLogged = true; Log(false, "[МАШИНЫ] Друг уже за рулём %04X — второй CJ доигрывает угон", s.vehId); }
+                        return;
+                    }
+                    WarpOut(drv); Log(false, "[МАШИНЫ] Друг угнал машину %04X — водитель-пед выкинут", s.vehId);
+                }
             }
             if(!SeatFree(tv, seat, r))
             {
@@ -643,8 +659,8 @@ namespace
             float d = Dist(GetPosition(r), GetPosition(tv));
             if(d < 12.0f && (!g_enterSinceUs || g_enterVehId != s.vehId))
             {
-                GiveEnterTask(r, tv, seat);
-                g_enterSinceUs = now; g_enterVehId = s.vehId;
+                if(!GiveEnterTask(r, tv, seat)) return;      // не дали (пауза 2 с) — попробуем в следующем кадре
+                g_enterSinceUs = now; g_enterVehId = s.vehId; g_jackWaitLogged = false;
                 Log(false, "[МАШИНЫ] Друг в машине %04X — второй CJ садится (место %d)", s.vehId, seat);
                 return;
             }
@@ -688,11 +704,10 @@ namespace
                 uintptr_t drv = seat == 0 ? Field<uintptr_t>(tv, off::VehDriver) : 0;
                 bool jack = drv && drv != r && drv != g_ctx.local;
                 if(!jack && !SeatFree(tv, seat, r)) { int p = FreePassengerSeat(tv, seat - 1); seat = p >= 0 ? p + 1 : -1; }
-                if(jack) Log(false, "[МАШИНЫ] Друг угоняет %04X — второй CJ вытаскивает водителя", s.vehId);
-                if(seat >= 0 && Dist(GetPosition(r), GetPosition(tv)) < 15.0f)
+                if(seat >= 0 && Dist(GetPosition(r), GetPosition(tv)) < 15.0f && GiveEnterTask(r, tv, seat))
                 {
-                    GiveEnterTask(r, tv, seat);
-                    g_enterSinceUs = now; g_enterVehId = s.vehId;
+                    g_enterSinceUs = now; g_enterVehId = s.vehId; g_jackWaitLogged = false;
+                    if(jack) Log(false, "[МАШИНЫ] Друг угоняет %04X — второй CJ вытаскивает водителя", s.vehId);
                     Log(false, "[МАШИНЫ] Друг садится в %04X — второй CJ тоже (место %d)", s.vehId, seat);
                 }
             }

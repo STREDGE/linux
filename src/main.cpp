@@ -22,7 +22,7 @@
 #include "coop/modsync.h"
 #include <sautils/isautils.h>
 
-MYMODCFG(net.sacoop.mod, SA Coop, 1.5.7, SA Coop Team)
+MYMODCFG(net.sacoop.mod, SA Coop, 1.5.8, SA Coop Team)
 
 // Строки этого логгера идут в общий Documents/SA_LOG.txt (FLogger::Sink → ctrace)
 static FLogger   g_fileLog("sacoop.txt");
