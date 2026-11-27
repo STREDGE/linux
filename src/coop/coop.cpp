@@ -1246,7 +1246,7 @@ bool PopNotice(char* out, size_t len)
             return true;
         }
     }
-    return world::PopNotice(out, len) || sync::PopNotice(out, (int)len);
+    return world::PopNotice(out, len) || sync::PopNotice(out, (int)len) || mission::PopNotice(out, (int)len);
 }
 
 void MenuTick()

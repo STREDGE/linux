@@ -34,4 +34,5 @@ namespace coop { namespace mission {
 
     bool ClientCutscene();              // друг смотрит катсцену хоста (coop не двигает своего CJ)
     bool IsHiddenPed(uintptr_t ped);    // хост: пед миссии уступил место другу
+    bool PopNotice(char* out, int len); // сообщения для ленты («Друг начинает миссию…»)
 }}

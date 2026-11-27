@@ -257,6 +257,32 @@ DECL_HOOKv(CutSkipHook)
 
 // ========== запуск миссий у друга — нельзя (ведёт хост) ==========
 namespace { uint64_t g_blockedUs = 0, g_blockLogUs = 0; bool g_blockRecover = false; bool g_forceBlock = false; }
+
+// ========== 1.6.1: друг начинает миссию ==========
+// Сценарий миссий идёт только на телефоне хоста (иначе у двоих были бы две разные миссии). Друг встал на маркер →
+// у него запуск, как и раньше, не идёт, а хосту уходит просьба: хоста переносит на это место, и сценарий хоста сам
+// запускает ту же миссию (он проверяет, что CJ стоит в маркере). Катсцены, тексты, враги — как всегда, у обоих.
+namespace
+{
+    uint64_t g_reqSentUs = 0;
+    std::vector<std::string> g_notices;
+    void Notice(const char* s) { if(g_notices.size() < 8) g_notices.push_back(s); }
+    // хост
+    bool     g_reqPending = false; net::StartMissionEvent g_req{}; uint64_t g_reqAtUs = 0, g_reqDoneUs = 0;
+}
+static void RequestHostMission(int mi)
+{
+    if(!g_session || !g_local) return;
+    if(g_reqSentUs && net::Since(g_now, g_reqSentUs) < 8000000) return;
+    g_reqSentUs = g_now;
+    net::StartMissionEvent e{};
+    e.type = net::REL_START_MISSION; e.area = CurrArea ? *CurrArea : 0; e.mission = (int16_t)mi;
+    CVector p = GetPosition(g_local);
+    e.pos[0] = p.x; e.pos[1] = p.y; e.pos[2] = p.z; e.heading = Field<float>(g_local, off::PedRotCurrent);
+    g_session->SendReliable(&e, sizeof(e));
+    Log(false, "[МИССИЯ] Ты встал на маркер миссии %d — зову хоста: миссию запустит его телефон", mi);
+    Notice("Миссия начнётся у хоста — его переносит к тебе");
+}
 DECL_HOOK(int8_t, ProcessCommands1000, uintptr_t script, int cmd)
 {
     if(cmd == 0x417 && (ClientOn() || g_forceBlock) && CollectParameters)
@@ -276,6 +302,7 @@ DECL_HOOK(int8_t, ProcessCommands1000, uintptr_t script, int cmd)
             Log(false, "[МИССИЯ] Друг встал на маркер миссии %d — миссии ведёт хост, не запускаю", g_scriptParams ? g_scriptParams[0] : -1);
         }
         g_blockedUs = g_now; g_blockRecover = true;
+        if(ClientOn() && !g_forceBlock) RequestHostMission(mi);
         return 0;
     }
     return ProcessCommands1000(script, cmd);
@@ -324,7 +351,7 @@ namespace
     uint64_t g_nextContactScanUs = 0;
     bool     g_forcedOnMission = false;     // друг стоит у спрятанного маркера: «на миссии», чтобы скрипт не запускал её
 
-    void HideContacts()
+    [[maybe_unused]] void HideContacts()
     {
         if(net::Since(g_now, g_nextContactScanUs) < 500000 && g_nextContactScanUs) return;
         g_nextContactScanUs = g_now;
@@ -362,7 +389,7 @@ namespace
     }
 
     // Стоишь на спрятанном маркере — скрипт игры думает, что ты «на миссии», и не запускает её
-    void GuardContacts()
+    [[maybe_unused]] void GuardContacts()
     {
         if(!g_local) return;
         CVector p = GetPosition(g_local);
@@ -660,6 +687,24 @@ namespace
         }
     }
 
+    // Хост: перенос к маркеру, где стоит друг (миссию запустит свой сценарий)
+    void HostStartMission()
+    {
+        if(!g_reqPending || g_now < g_reqAtUs) return;
+        g_reqPending = false;
+        if(OnMission() || CutsceneRunning()) { Log(false, "[МИССИЯ] Просьба друга начать миссию: у тебя уже идёт миссия/катсцена — не переношу"); Notice("У тебя уже идёт миссия — друг подождёт"); return; }
+        if(!g_local || !PedTeleport || !PedIsAlive(g_local)) return;
+        if(g_reqDoneUs && net::Since(g_now, g_reqDoneUs) < 10000000) return;
+        g_reqDoneUs = g_now;
+        if(InVehicle(g_local)) sync::WarpPedOut(g_local);
+        if(CurrArea && *CurrArea != g_req.area) { *CurrArea = g_req.area; Field<uint8_t>(g_local, off::EntArea) = g_req.area; }
+        // рядом с другом, в том же маркере (маркеры ~1,5 м; второй CJ стоит в центре — встаём на 0,6 м в сторону)
+        float h = g_req.heading;
+        CVector to{ g_req.pos[0] + cosf(h) * 0.6f, g_req.pos[1] + sinf(h) * 0.6f, g_req.pos[2] + 0.3f };
+        PedTeleport(g_local, to, false);
+        Log(false, "[МИССИЯ] Ты перенесён к другу на маркер миссии %d: %.1f, %.1f, %.1f", (int)g_req.mission, to.x, to.y, to.z);
+    }
+
     void ClientSeat()
     {
         if(!g_seatVeh) return;
@@ -891,7 +936,7 @@ bool Install(void* h, FLogger* log)
 
 void SetSession(net::Session* s) { g_session = s; }
 
-bool HandlesReliable(uint8_t t) { return (t >= net::REL_TEXT && t <= net::REL_RECRUIT) || t == net::REL_SAME_VEHICLE; }
+bool HandlesReliable(uint8_t t) { return (t >= net::REL_TEXT && t <= net::REL_RECRUIT) || t == net::REL_SAME_VEHICLE || t == net::REL_START_MISSION; }
 
 void OnPacket(uint8_t type, const uint8_t* data, int len)
 {
@@ -934,6 +979,16 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
                 g_seatVeh = e->vehId; g_seatNo = e->seat; g_seatTeleported = false;
                 g_seatUntil = (g_now ? g_now : net::NowUs()) + 6000000;
                 Log(false, "[МИССИЯ] Хост зовёт в машину #%04X, место %u", e->vehId, e->seat);
+            }
+            break;
+        case net::REL_START_MISSION:
+            if(g_role == net::Role::Host && len == sizeof(net::StartMissionEvent))
+            {
+                memcpy(&g_req, data, sizeof(g_req));
+                if(!isfinite(g_req.pos[0]) || !isfinite(g_req.pos[1]) || !isfinite(g_req.pos[2]) || fabsf(g_req.pos[0]) > 4000 || fabsf(g_req.pos[1]) > 4000) break;
+                g_reqPending = true; g_reqAtUs = (g_now ? g_now : net::NowUs()) + 1500000;   // 1,5 с: увидеть подсказку
+                Log(false, "[МИССИЯ] Друг встал на маркер миссии %d (%.1f, %.1f, %.1f) — переношу тебя туда", (int)g_req.mission, g_req.pos[0], g_req.pos[1], g_req.pos[2]);
+                Notice("Друг начинает миссию — переношу тебя к нему");
             }
             break;
         case net::REL_SAME_VEHICLE:
@@ -989,6 +1044,7 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
         g_recruits.clear();
         HostBlips();
         HostSeatFriend();
+        HostStartMission();
         return;
     }
 
@@ -1045,8 +1101,8 @@ void Frame(net::Role role, bool connected, uintptr_t local, uintptr_t remote, co
     for(const auto& t : g_textQueue) ShowText(t);
     g_textQueue.clear();
 
-    HideContacts();
-    GuardContacts();
+    // 1.6.1: маркеры миссий у друга видны — встал на маркер, миссия начнётся у хоста (RequestHostMission)
+    if(!g_hiddenContacts.empty()) RestoreContacts();
     ApplyBlips();
     ClientSeat();
     ClientGift();
@@ -1078,4 +1134,11 @@ void Reset(const char* why)
 bool ClientCutscene() { return g_cut == Cut::Loading || g_cut == Cut::Playing || g_cut == Cut::Pending; }
 bool IsHiddenPed(uintptr_t ped) { return ped && ped == g_hidden.ped; }
 
+bool PopNotice(char* out, int len)
+{
+    if(g_notices.empty()) return false;
+    snprintf(out, len, "%s", g_notices.front().c_str());
+    g_notices.erase(g_notices.begin());
+    return true;
+}
 }}
