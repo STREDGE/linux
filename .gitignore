@@ -10,3 +10,6 @@ sa-living/obj/
 sa-living/libs/
 !sa-living/release/*.so
 /third_party/tsbridge/
+sa-story/obj/
+sa-story/libs/
+!sa-story/release/*.so

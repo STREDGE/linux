@@ -149,3 +149,15 @@ SA Living распознаёт копию (`speech::ListenExternal/FeedExternal`
 SA Living: сборка и устройство — `sa-living/README.md`. Кооп определяется сам через интерфейс AML `SACoopNet`
 (SA Coop ≥ 0.7.0, `src/net/sacoop_api.h` — копия в `sa-living/src/net/`). Ключ вводится в плитке «AI» настроек игры.
 Пространство имён связи — `coopnet` (не `link`: конфликт с POSIX `link()`).
+
+## Третий мод: SA Story (свой сюжет) — папка `sa-story/` (выпущена 0.1.0)
+
+Решение игрока: «все миссии снести и сделать свой сюжет» — **сначала соло**, **другой герой**, **боевик**,
+**отдельный мод `.so` только для сюжета**. Сюжет пишет игрок, мы «докручиваем» и согласуем. Голоса: мы даём список
+реплик (кто говорит, текст, имя файла), игрок озвучивает через ИИ и присылает файлы — встраиваем в мод.
+Устройство, выключение родного сюжета, как писать миссии — [`sa-story/README.md`](sa-story/README.md).
+* «Новая игра» = свой сюжет; старые сохранения без файла `SAStory/<сохранение>.txt` — обычная игра, мод их не трогает.
+* Чужие игры/сюжеты не воссоздавать: свои персонажи, свои тексты (модели и места GTA SA — можно, это мод к ней).
+* С коопом и SA Living не смешивать (свой `src`, общие — только `third_party/`). Лог — строки «С» в `Documents/SA_LOG.txt`.
+* Сборка: `cd sa-story && $NDK/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk -j8`,
+  выпуск — `cp libs/arm64-v8a/libSAStory.so release/`, версия в `MYMODCFG` (`sa-story/src/main.cpp`), `sa-story/release/README.txt`.
