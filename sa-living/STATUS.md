@@ -51,6 +51,13 @@
 `CLEAR_THIS_BIG_PRINT_NOW` с плохим номером → `script::RunGuarded` (sigsetjmp, SIGSEGV/SIGBUS/SIGFPE/SIGILL
 только своего потока, остальное — прежнему обработчику; проверено на компьютере), упавшая команда в `jbrain::Ban`.
 
+### 0.5.3 — вылет на «Новой игре» (2026-11-27)
+
+Тест SA Coop 1.4.0 («Новая игра» в лобби из главного меню): `SIGSEGV` в `CRunningScript::ProcessCommands500To599`
++0x150 — `SET_POLICE_IGNORE_PLAYER` (0x01F7) читает `CWorld::Players[0].m_pPed->+0x540`, а CJ ещё нет. Вызов —
+наш: хук `Menu_NewGame` → `police::Reset()` → `PoliceIgnore(false)` → `script::Do(0x01F7)`. Падало бы на любой
+«Новой игре» из главного меню. Теперь `script::Run` ничего не выполняет, пока `game::Player() == 0`.
+
 ### 0.5.2 — фон думает глубже (2026-11-26)
 
 Игрок: «подними мозгу города и профилям». Режиссёр (`life.cpp`, раз в 2 игровых часа) и профиль персонажа — effort

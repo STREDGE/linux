@@ -38,6 +38,9 @@ bool Ready() { return g_ready; }
 bool Run(uint16_t opcode, std::vector<Arg>& args, bool* flag)
 {
     if(!g_ready) return false;
+    // Нет CJ (главное меню, «Новая игра», загрузка) — команды игры про игрока падают внутри игры
+    // (SET_POLICE_IGNORE_PLAYER из police::Reset на «Новой игре» из главного меню: вылет, тест SA Coop 1.4.0)
+    if(!game::Player()) return false;
     alignas(16) uint8_t scr[kScriptSize + 16];
     memset(scr, 0, sizeof(scr));
     uint8_t code[1024]; size_t n = 0;

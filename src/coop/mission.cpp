@@ -252,7 +252,15 @@ DECL_HOOK(int8_t, ProcessCommands1000, uintptr_t script, int cmd)
 {
     if(cmd == 0x417 && (ClientOn() || g_forceBlock) && CollectParameters)
     {
+        uintptr_t ip = Field<uintptr_t>(script, 0x20);   // CRunningScript::m_pCurrentIP (2.10 arm64, см. CollectParameters)
         CollectParameters(script, 1);              // номер миссии — забрать, миссию не грузить
+        int mi = g_scriptParams ? g_scriptParams[0] : -1;
+        if(mi == 0 || mi == 1)
+        {   // INITIAL / INITIL2 — настройка мира в начале новой игры (стоянки машин, банды, магазины): нужна и другу
+            *(uintptr_t*)(script + 0x20) = ip;
+            Log(false, "[МИССИЯ] Новая игра: служебная «%s» идёт и у друга (настройка мира)", mi == 0 ? "INITIAL" : "INITIL2");
+            return ProcessCommands1000(script, cmd);
+        }
         if(net::Since(g_now, g_blockLogUs) > 5000000)
         {
             g_blockLogUs = g_now;
