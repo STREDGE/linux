@@ -69,4 +69,8 @@ namespace coop { namespace sync {
 
     // Для строки состояния в логе
     int  TrackedVehicles();
+
+    // Пассажир с оружием: кнопка «Прицел» (0 — не показывать, 1 — в машине, 2 — высунулся); нажатие — из слоя поверх игры
+    int  PassengerAimState();
+    void PassengerAimToggle();
 }}

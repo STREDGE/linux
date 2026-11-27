@@ -1561,6 +1561,38 @@ namespace
         return box;
     }
 
+    // ---- кнопка «Прицел» пассажира (1.5.7): высунуться из окна / обратно в машину ----
+    // Своё место справа, чуть выше середины (там у пассажира нет кнопок игры). Срабатывает на отпускание пальца.
+    bool g_aimHeld = false;
+    void DrawPassengerAim()
+    {
+        int st = coop::PassengerAimState();
+        if(st <= 0) { g_aimHeld = false; return; }
+        bool out = st == 2;
+        float r = U(6.4f);
+        ImVec2 c(W() - U(12.0f), H() * 0.42f);
+        ImVec2 a(c.x - r, c.y - r), b(c.x + r, c.y + r);
+        if(Clicked(a, b)) coop::PassengerAimToggle();
+        bool held = HeldFrom(a, b);
+        g_aimHeld = held;
+        Rgb ring = out ? kRed : kGold;
+        DL()->AddCircleFilled(ImVec2(c.x, c.y + U(0.8f)), r, C(kBlack, 0.45f), 48);
+        DL()->AddCircleFilled(c, r, C(out ? Rgb{ 120, 16, 16 } : Rgb{ 11, 15, 21 }, held ? 0.95f : 0.8f), 48);
+        DL()->AddCircle(c, r - U(0.4f), C(ring), 48, U(0.8f));
+        // прицел: кольцо и четыре чёрточки
+        float g = r * 0.42f, th = U(0.55f);
+        ImU32 col = C(out ? kWhite : kGold);
+        DL()->AddCircle(c, g, col, 32, th);
+        DL()->AddLine(ImVec2(c.x - r * 0.72f, c.y), ImVec2(c.x - g * 0.45f, c.y), col, th);
+        DL()->AddLine(ImVec2(c.x + g * 0.45f, c.y), ImVec2(c.x + r * 0.72f, c.y), col, th);
+        DL()->AddLine(ImVec2(c.x, c.y - r * 0.72f), ImVec2(c.x, c.y - g * 0.45f), col, th);
+        DL()->AddLine(ImVec2(c.x, c.y + g * 0.45f), ImVec2(c.x, c.y + r * 0.72f), col, th);
+        DL()->AddCircleFilled(c, U(0.45f), col, 12);
+        const char* lbl = out ? "В МАШИНУ" : "ПРИЦЕЛ";
+        ImVec2 ls = TextSize(F_SMALL, lbl);
+        TextOutlined(F_SMALL, ImVec2(c.x - ls.x * 0.5f, a.y - ls.y - U(0.8f)), out ? Rgb{ 255, 214, 214 } : kGold, lbl, U(0.2f));
+    }
+
     // ======================= раскладка и её редактор =======================
     settings::Layout g_layout;
     bool             g_layoutLoaded = false;
@@ -1593,6 +1625,7 @@ namespace
         else if(g_micHeld) { g_micHeld = false; coop::SetTalking(false); }
         g_s = l.item[settings::L_FEED].s; g_editBox[settings::L_FEED] = DrawFeed(ItemPos(l, settings::L_FEED), sample);
         g_s = 1.0f;
+        if(!sample && t.show) DrawPassengerAim();
     }
 
     void DashedRect(ImVec2 a, ImVec2 b, ImU32 col, float th)
@@ -1911,8 +1944,8 @@ void DebugRequestEdit() { g_editRequested = true; }   // только для п�
 // Долгое удержание пальца — в игре «оглянуться назад» (CPad::GetLookBehindForPed/ForCar → IsHeldDown):
 // пока держишь кнопку микрофона, камера разворачивалась к лицу CJ. Касание у игры не забираем (сломались бы
 // кнопки других модов) — просто не даём «оглянуться», пока палец на нашей кнопке.
-DECL_HOOKb(LookBehindPed, uintptr_t self) { if(g_micHeld) return false; return LookBehindPed(self); }
-DECL_HOOKb(LookBehindCar, uintptr_t self) { if(g_micHeld) return false; return LookBehindCar(self); }
+DECL_HOOKb(LookBehindPed, uintptr_t self) { if(g_micHeld || g_aimHeld) return false; return LookBehindPed(self); }
+DECL_HOOKb(LookBehindCar, uintptr_t self) { if(g_micHeld || g_aimHeld) return false; return LookBehindCar(self); }
 
 bool Init(void* h, FLogger* log)
 {

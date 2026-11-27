@@ -1219,6 +1219,8 @@ bool PendingRequest(char* nick, size_t len, float* secondsLeft)
 
 void AnswerJoin(bool accept) { CTRACE("КНОПКА", "запрос «%s»: %s", g_session.PendingNick(), accept ? "ПРИНЯТЬ" : "отклонить"); g_session.AnswerJoin(accept); }
 bool TalkButtonOwned() { return g_talkOwned; }
+int  PassengerAimState() { return sync::PassengerAimState(); }
+void PassengerAimToggle() { CTRACE("КНОПКА", "«Прицел» пассажира"); sync::PassengerAimToggle(); }
 void SetTalking(bool talking) { if(talking != g_localTalking) CTRACE("ГОЛОС", "кнопка микрофона %s", talking ? "зажата" : "отпущена"); g_localTalking = talking; }
 void SetFriendlyFire(bool on) { if(on != g_friendlyFire) CTRACE("КНОПКА", "огонь по своим: %s", on ? "вкл" : "выкл"); g_friendlyFire = on; }
 void SetSharedWanted(bool on) { if(on != g_sharedWanted) CTRACE("КНОПКА", "общий розыск: %s", on ? "вкл" : "выкл"); g_sharedWanted = on; }

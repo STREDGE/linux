@@ -977,38 +977,72 @@ namespace
     // переводит камеру в прицел из машины и стреляет по кнопке огня. Любое оружие с пулями (пистолеты, дробовики,
     // автоматы, АК, М4, миниган) — у игры только «узи/TEC-9/MP5». Убрать стрельбу — переключить на кулак.
     constexpr int kTaskGangDriveBy = 0x3FE;
+    // 1.5.7 (игрок: «сразу высовывается и нельзя залезть обратно»): высовываться — только по своей кнопке «Прицел»
+    // (рисует слой поверх игры), второе нажатие — обратно в машину (CTask::MakeAbortable, срочно — как сама игра,
+    // когда пед вышел из машины). Кнопка рисуется в другом потоке — здесь только флаги.
     uint64_t g_dbTryUs = 0;
     int      g_dbLogged = -1;
+    bool     g_dbWant = false;                 // игрок хочет быть высунутым
+    volatile bool g_dbToggle = false;          // нажата кнопка (слой поверх игры)
+    volatile int  g_dbState = 0;               // 0 — кнопки нет, 1 — в машине, 2 — высунулся
     void PassengerDriveBy()
     {
         uintptr_t me = g_ctx.local;
-        if(!me || !GangDriveByCtor || !VehCanPedLeanOut || !GetWeaponInfo || !EventScriptCommandCtor || !EventGroupAdd || !EventScriptCommandDtor) return;
+        auto off_ = [&]() { if(g_dbWant) Log(false, "[МАШИНЫ] Стрельба из окна выключена"); g_dbWant = false; g_dbState = 0; g_dbToggle = false; };
+        if(!me || !GangDriveByCtor || !VehCanPedLeanOut || !GetWeaponInfo || !EventScriptCommandCtor || !EventGroupAdd || !EventScriptCommandDtor) { off_(); return; }
         uintptr_t veh = PedVehicle(me);
-        if(!veh || Field<uintptr_t>(veh, off::VehDriver) == me) { g_dbLogged = -1; return; }      // пешком или за рулём
+        if(!veh || Field<uintptr_t>(veh, off::VehDriver) == me) { g_dbLogged = -1; off_(); return; }      // пешком или за рулём
         int slot = Field<int8_t>(me, off::PedCurWeaponSlot);
-        if(slot < 2 || slot > 7) return;                                                       // кулак, ближний бой, гранаты — нет
+        if(slot < 2 || slot > 7) { off_(); return; }                                          // кулак, ближний бой, гранаты — нет
         uintptr_t w = me + off::PedWeapons + (uintptr_t)slot * off::WeaponSize;
         int type = Field<int>(w, off::WeapType);
-        if(type < 22 || type > 38 || type == 34 || Field<int>(w, off::WeapTotal) <= 0) return;   // снайперка — своя камера, не берём
+        if(type < 22 || type > 38 || type == 34 || Field<int>(w, off::WeapTotal) <= 0) { off_(); return; }   // снайперка — своя камера
         uintptr_t wi = GetWeaponInfo(type, 1);
-        if(!wi || Field<int>(wi, 0) != 1) return;                                              // только оружие «с пулями»
-        int tt = ActiveTaskType(me);
-        if(tt == kTaskGangDriveBy) return;
-        if(g_dbTryUs && net::Since(g_ctx.now, g_dbTryUs) < 1500000) return;
-        g_dbTryUs = g_ctx.now;
-        if(!VehCanPedLeanOut(veh, me)) return;
-        if(PedAddWeaponModel) PedAddWeaponModel(me, Field<int>(wi, 0xC));                     // при посадке игра прячет «не своё» оружие
-        uintptr_t intel = Field<uintptr_t>(me, off::PedIntel);
-        if(!intel) return;
-        void* t = TaskNew(0x60);
-        if(!t) return;
-        bool right = Field<uintptr_t>(veh, off::VehPassengers + 8) != me;                     // как у игры: левое заднее — «не справа»
-        GangDriveByCtor(t, 0, nullptr, 100.0f, 100, 8, right);
-        alignas(16) uint8_t ev[0x40] = {};
-        EventScriptCommandCtor(ev, 3, t, false);
-        EventGroupAdd(intel + 0xC8, ev, false);
-        EventScriptCommandDtor(ev);                                                           // как у игры: событие копируется, своё удаляем
-        if(g_dbLogged != type) { g_dbLogged = type; Log(false, "[МАШИНЫ] Ты пассажир с оружием %d — стрельба из окна (было задача %d)", type, tt); }
+        if(!wi || Field<int>(wi, 0) != 1) { off_(); return; }                                 // только оружие «с пулями»
+        if(PedAddWeaponModel && g_dbLogged != type) PedAddWeaponModel(me, Field<int>(wi, 0xC)); // при посадке игра прячет «не своё» оружие
+        if(g_dbLogged != type) { g_dbLogged = type; Log(false, "[МАШИНЫ] Ты пассажир с оружием %d — кнопка «Прицел»: высунуться и стрелять", type); }
+
+        uintptr_t task = 0;
+        int tt = ActiveTaskType(me, &task);
+        bool out = tt == kTaskGangDriveBy;
+        if(g_dbToggle)
+        {
+            g_dbToggle = false;
+            g_dbWant = !out;
+            Log(false, "[МАШИНЫ] Кнопка «Прицел»: %s", g_dbWant ? "высовываюсь из окна" : "обратно в машину");
+            g_dbTryUs = 0;
+        }
+        if(out && !g_dbWant)
+        {
+            // обратно в машину: как игра сама — MakeAbortable(ped, срочно, без события)
+            uintptr_t vt = task ? Field<uintptr_t>(task, 0) : 0;
+            if(vt) ((bool(*)(uintptr_t, uintptr_t, int, const void*))Field<uintptr_t>(vt, 0x38))(task, me, 1, nullptr);
+            g_dbState = 1;
+            return;
+        }
+        if(!out && g_dbWant)
+        {
+            if(!g_dbTryUs || net::Since(g_ctx.now, g_dbTryUs) >= 1500000)
+            {
+                g_dbTryUs = g_ctx.now;
+                if(!VehCanPedLeanOut(veh, me)) { Log(false, "[МАШИНЫ] Отсюда высунуться нельзя (место или машина)"); g_dbWant = false; g_dbState = 1; return; }
+                if(PedAddWeaponModel) PedAddWeaponModel(me, Field<int>(wi, 0xC));
+                uintptr_t intel = Field<uintptr_t>(me, off::PedIntel);
+                void* t = intel ? TaskNew(0x60) : nullptr;
+                if(t)
+                {
+                    bool right = Field<uintptr_t>(veh, off::VehPassengers + 8) != me;         // как у игры: левое заднее — «не справа»
+                    GangDriveByCtor(t, 0, nullptr, 100.0f, 100, 8, right);
+                    alignas(16) uint8_t ev[0x40] = {};
+                    EventScriptCommandCtor(ev, 3, t, false);
+                    EventGroupAdd(intel + 0xC8, ev, false);
+                    EventScriptCommandDtor(ev);                                               // как у игры: событие копируется, своё удаляем
+                }
+            }
+            g_dbState = 2;
+            return;
+        }
+        g_dbState = out ? 2 : 1;
     }
 
     void UpdateCombat()
@@ -1877,6 +1911,7 @@ void BeforeRemoteDespawn(uintptr_t remote)
 
 void Reset(const char* why)
 {
+    g_dbState = 0; g_dbWant = false; g_dbToggle = false;
     for(auto& v : g_vehs)
     {
         if(v.copy)
@@ -1897,4 +1932,6 @@ void Reset(const char* why)
 
 int TrackedVehicles() { return (int)g_vehs.size(); }
 
+int  PassengerAimState() { return g_dbState; }
+void PassengerAimToggle() { g_dbToggle = true; }
 }}
