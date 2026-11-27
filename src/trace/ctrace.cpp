@@ -85,6 +85,26 @@ void LineV(const char* tag, const char* fmt, va_list ap)
     Push(s);
 }
 
+void FriendHeader(const char* nick)
+{
+    char ts[24]; Stamp(ts, sizeof(ts));
+    char b[200]; snprintf(b, sizeof(b), "Д %s [ДРУГ] ======= дальше строки «Д» — лог с телефона друга «%s» =======\n", ts, nick && nick[0] ? nick : "?");
+    Push(b);
+}
+
+void FriendRaw(const char* data, size_t len)
+{
+    static bool atStart = true;
+    std::string s; s.reserve(len + len / 40 + 8);
+    for(size_t i = 0; i < len; ++i)
+    {
+        if(atStart) { s += "Д "; atStart = false; }
+        s += data[i];
+        if(data[i] == '\n') atStart = true;
+    }
+    Push(s);
+}
+
 void Line(const char* tag, const char* fmt, ...)
 {
     va_list ap; va_start(ap, fmt); LineV(tag, fmt, ap); va_end(ap);

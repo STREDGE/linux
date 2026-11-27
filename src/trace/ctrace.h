@@ -6,6 +6,7 @@
 // Пространство имён ctrace (не trace): у SA Living свой trace, имена не должны совпадать.
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 
 namespace ctrace
@@ -18,6 +19,9 @@ namespace ctrace
     void FromLog(bool error, const char* text);
     void Crash(int sig, unsigned long pc, unsigned long lr, const char* lib, unsigned long off, const char* where, unsigned long lrGame);
     const char* Path();
+    // Хост: лог друга (пришёл по сети) — в свой файл, каждая строка с пометкой «Д »
+    void FriendHeader(const char* nick);
+    void FriendRaw(const char* data, size_t len);
 }
 
 #define CTRACE(tag, ...) ctrace::Line(tag, __VA_ARGS__)

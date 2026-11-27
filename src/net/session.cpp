@@ -549,6 +549,12 @@ namespace net
             case PKT_WORLD_TIME:
                 if(len == sizeof(WorldTimePacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;
+            case PKT_LOG_CHUNK:
+                if(len >= kLogChunkHeaderSize && len <= (int)sizeof(LogChunkPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
+            case PKT_LOG_ACK:
+                if(len == sizeof(LogAckPacket) && m_gameSink) m_gameSink(h->type, data, len);
+                break;
             case PKT_LOBBY:
                 if(len == sizeof(LobbyPacket) && m_gameSink) m_gameSink(h->type, data, len);
                 break;

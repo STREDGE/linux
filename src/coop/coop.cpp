@@ -16,6 +16,7 @@
 #include "net/sacoop_api.h"
 #include "coop/sync.h"
 #include "coop/world.h"
+#include "coop/logshare.h"
 #include "coop/crowd.h"
 #include "coop/mission.h"
 #include "net/tailscale.h"
@@ -902,6 +903,7 @@ namespace
         mission::Frame(g_cfg.role, sc.connected, local, sc.remote, sc.rs, now);
         g_where = "подробный лог коопа";
         TracePlayers(now, local, me, &rs);
+        logshare::Frame(g_cfg.role, g_session.Connected(), now);
 
         // Загрузились в мир хоста — встать рядом с ним (один раз)
         if(world::TeleportPending() && sc.rs && !InVehicle(local) && PedTeleport)
@@ -1038,6 +1040,7 @@ namespace
 
 static void GameSinkDispatch(uint8_t type, const uint8_t* data, int len)
 {
+    if(type == net::PKT_LOG_CHUNK || type == net::PKT_LOG_ACK) { logshare::OnPacket(type, data, len); return; }
     if(type == net::PKT_WORLD_REQ || type == net::PKT_WORLD_CHUNK || type == net::PKT_WORLD_ACK || type == net::PKT_LOBBY) world::OnPacket(type, data, len);
     else if(type == net::PKT_PEDS || type == net::PKT_WORLD_TIME) crowd::OnPacket(type, data, len);
     else if(type == net::PKT_BLIPS || (type == net::PKT_RELIABLE && len >= 1 && mission::HandlesReliable(data[0]))) mission::OnPacket(type, data, len);
@@ -1057,6 +1060,7 @@ bool Install(void* h, FLogger* log)
     g_session.SetGameSink(GameSinkDispatch);
     sync::SetSession(&g_session);
     world::SetSession(&g_session);
+    logshare::SetSession(&g_session);
     RegisterInterface(SACOOP_NET_INTERFACE, &g_netApi);
     Log(false, "Канал данных для других модов (SACoopNet) зарегистрирован");
     if(!gta::Init(h, 0))
@@ -1234,6 +1238,7 @@ void MenuTick()
     g_session.Poll();
     TraceNet(now);
     world::Tick(g_cfg.role, g_session.Connected(), false, now);
+    logshare::Frame(g_cfg.role, g_session.Connected(), now);
 }
 
 bool MenuUpdateTick() { return world::RunDeferredLoad(true); }
