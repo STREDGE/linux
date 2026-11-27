@@ -347,6 +347,21 @@ namespace
             g_intendedHeading = g_shownHeading;
             g_stickActive = true;
         }
+        else if((sf.flags & net::PSF_AIMING) && !(sf.flags & net::PSF_IN_VEHICLE) && !frozen &&
+                (sf.vel[0] * sf.vel[0] + sf.vel[1] * sf.vel[1]) > 0.16f)
+        {   // 1.6.8: друг идёт с оружием наготове (прицел) — у игры «сила джойстика» тогда 0, и его CJ у нас стоял
+            // и скользил. Ведём его джойстиком по направлению скорости: игра играет шаг с оружием (боком/назад).
+            float sp = sqrtf(sf.vel[0] * sf.vel[0] + sf.vel[1] * sf.vel[1]);
+            float mag = (sp / 2.5f) * off::StickScale;
+            if(mag > 127.0f) mag = 127.0f;
+            float hv = atan2f(-sf.vel[0], sf.vel[1]);
+            float a = hv + Field<float>(TheCamera, off::CamOrientation);
+            g_stickX = (int16_t)(-mag * sinf(a));
+            g_stickY = (int16_t)(-mag * cosf(a));
+            g_sprint = false;
+            g_intendedHeading = g_shownHeading;
+            g_stickActive = true;
+        }
         else
         {
             g_stickX = g_stickY = 0;

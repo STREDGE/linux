@@ -1663,6 +1663,37 @@ DECL_HOOKv(ComputeDamage, uintptr_t calc, uintptr_t victim, uintptr_t resp, bool
     ComputeDamage(calc, victim, resp, painAudio);
 }
 
+// ---------- взрывы (1.6.8) ----------
+// Игрок: «у друга машина взорвалась, а у меня нет». Взрывы (бомба/взрывчатка Джарвиса, гранаты, ракеты) шли только
+// у того, кто их устроил. Теперь взрыв своего CJ уходит другу и повторяется у него (виновник — второй CJ). Урон по
+// людям и игрокам считается как раньше — телефоном виновника. Взрывы машин не шлём: машина взрывается флагом VF_BLOWN.
+namespace { bool g_replayingExplosion = false; }
+DECL_HOOK(bool, AddExplosionHook, uintptr_t victim, uintptr_t creator, int kind, CVector pos, uint32_t lifetime, uint8_t sound, float shake, uint8_t visible)
+{
+    if(g_active && !g_replayingExplosion && creator && creator == g_ctx.local && g_ctx.connected && !g_echo &&
+       (kind < 4 || kind > 7) && kind >= 0 && kind < 16)
+    {
+        net::ExplosionEvent e{};
+        e.type = net::REL_EXPLOSION; e.kind = (uint8_t)kind; e.sound = sound; e.visible = visible;
+        e.pos[0] = pos.x; e.pos[1] = pos.y; e.pos[2] = pos.z; e.lifetime = lifetime; e.shake = shake;
+        SendReliable(&e, sizeof(e));
+        static int logged = 0;
+        if(logged++ < 20) Log(false, "[ВЗРЫВ] твой (тип %d) в %.1f,%.1f,%.1f — другу тоже", kind, pos.x, pos.y, pos.z);
+    }
+    return AddExplosionHook(victim, creator, kind, pos, lifetime, sound, shake, visible);
+}
+static void ReplayExplosion(const net::ExplosionEvent& e)
+{
+    if(!AddExplosionHook || !isfinite(e.pos[0]) || !isfinite(e.pos[1]) || !isfinite(e.pos[2])) return;
+    CVector pos{ e.pos[0], e.pos[1], e.pos[2] };
+    if(g_ctx.local && Dist(GetPosition(g_ctx.local), pos) > 400.0f) return;     // далеко — не видно и не нужно
+    g_replayingExplosion = true;
+    AddExplosionHook(0, g_ctx.remote, e.kind, pos, e.lifetime, e.sound, e.shake * 0.5f, e.visible);
+    g_replayingExplosion = false;
+    static int logged = 0;
+    if(logged++ < 20) Log(false, "[ВЗРЫВ] друга (тип %d) в %.1f,%.1f,%.1f — повторён", (int)e.kind, pos.x, pos.y, pos.z);
+}
+
 // ---------- защита от вылета «анимации дверей» (1.6.4) ----------
 // CVehicleAnimGroup::ComputeAnimDoorOffsets берёт анимацию двери и сразу читает её «скелет» (assoc+0x18). Если блок
 // анимаций группы не в памяти — скелета нет, игра падает (+0x6B7054). Так падал хост: 1.4.4 — посадка второго CJ,
@@ -1734,6 +1765,9 @@ bool Install(void* h, FLogger* log)
     for(const auto& d : hooks)
         aml->Hook((void*)aml->GetSym(h, d.sym), d.fn, d.orig);
     GetAnimAssociationFn = (uintptr_t(*)(int, int))aml->GetSym(h, "_ZN12CAnimManager18GetAnimAssociationE12AssocGroupId11AnimationId");
+    if(void* ex = (void*)aml->GetSym(h, "_ZN10CExplosion12AddExplosionEP7CEntityS1_14eExplosionType7CVectorjhfh"))
+        aml->Hook(ex, (void*)HookOf_AddExplosionHook, (void**)&AddExplosionHook);
+    else Log(true, "Машины: нет CExplosion::AddExplosion — взрывы другу не передаются");
     if(void* cado = (void*)aml->GetSym(h, "_ZN17CVehicleAnimGroup22ComputeAnimDoorOffsetsEi"))
     {
         if(GetAnimAssociationFn) aml->Hook(cado, (void*)HookOf_ComputeAnimDoorOffsets, (void**)&ComputeAnimDoorOffsets);
@@ -1896,6 +1930,11 @@ void OnPacket(uint8_t type, const uint8_t* data, int len)
             {
                 const auto* e = (const net::GiveWeaponEvent*)data;
                 if(g_ctx.role == net::Role::Client) GiveWeaponLocal(e->weapon, (int)e->ammo, "Хост выдал тебе");
+                return;
+            }
+            if(len >= 1 && data[0] == net::REL_EXPLOSION && len == sizeof(net::ExplosionEvent))
+            {
+                ReplayExplosion(*(const net::ExplosionEvent*)data);
                 return;
             }
             if(len >= 1 && data[0] == net::REL_NPC_DAMAGE && len == sizeof(net::NpcDamageEvent))
