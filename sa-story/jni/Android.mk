@@ -5,7 +5,8 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := SAStory
 LOCAL_CPP_EXTENSION := .cpp
 LOCAL_SRC_FILES := src/main.cpp src/log.cpp src/game.cpp src/script.cpp src/story.cpp src/engine.cpp src/missions.cpp \
-                   src/ui.cpp src/imgui_rw.cpp \
+                   src/ui.cpp src/imgui_rw.cpp src/demolish.cpp src/base.cpp src/wanted.cpp src/intro.cpp src/api.cpp \
+                   ../third_party/swat/sgame.cpp ../third_party/swat/catalog.cpp ../third_party/swat/team.cpp ../third_party/swat/driver.cpp \
                    ../third_party/imgui/imgui.cpp ../third_party/imgui/imgui_draw.cpp \
                    ../third_party/imgui/imgui_widgets.cpp ../third_party/imgui/imgui_tables.cpp \
                    ../third_party/mod/logger.cpp ../third_party/mod/config.cpp

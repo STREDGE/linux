@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "log.h"
+#include "script.h"
 
 namespace game
 {
@@ -24,6 +25,8 @@ namespace
     void* (*FindWanted)(int) = nullptr;
     float (*GroundZFn)(float, float, float, bool*, void**) = nullptr;
     void (*ChangeBlipDisplay)(int, int) = nullptr;
+    bool (*CalcScreen)(const Vec&, Vec*, float*, float*, bool, bool) = nullptr;
+    uintptr_t g_clockH = 0;
 
     uintptr_t Sym(void* h, const char* s)
     {
@@ -71,6 +74,8 @@ bool Init(void* h)
     FindWanted   = (void*(*)(int))Sym(h, "_Z16FindPlayerWantedi");
     GroundZFn    = (float(*)(float, float, float, bool*, void**))Sym(h, "_ZN6CWorld21FindGroundZFor3DCoordEfffPbPP7CEntity");
     ChangeBlipDisplay = (void(*)(int, int))Sym(h, "_ZN6CRadar17ChangeBlipDisplayEi12eBlipDisplay");
+    CalcScreen = (bool(*)(const Vec&, Vec*, float*, float*, bool, bool))aml->GetSym(h, "_ZN7CSprite15CalcScreenCoorsERK5RwV3dPS0_PfS4_bb");
+    g_clockH = aml->GetSym(h, "_ZN6CClock18ms_nGameClockHoursE");
     return g_players && g_timeMs && g_scriptSpace && GetPedRef;
 }
 
@@ -96,6 +101,22 @@ float GroundZ(float x, float y, float z)
     bool found = false; void* ent = nullptr;
     float g = GroundZFn(x, y, z + 50.0f, &found, &ent);
     return found ? g : z;
+}
+
+bool WorldToScreen(const Vec& w, float& sx, float& sy)
+{
+    if(!CalcScreen) return false;
+    Vec out; float cw = 0, ch = 0;
+    if(!CalcScreen(w, &out, &cw, &ch, true, true)) return false;
+    if(out.z <= 1.0f) return false;
+    sx = out.x; sy = out.y; return true;
+}
+int Money() { uintptr_t pi = PlayerInfo(); return pi ? F<int>(pi, 0xF0) : 0; }
+void AddMoney(int d) { uintptr_t pi = PlayerInfo(); if(!pi) return; int m = F<int>(pi, 0xF0) + d; if(m < 0) m = 0; F<int>(pi, 0xF0) = m; }
+int Hour() { return g_clockH ? *(uint8_t*)g_clockH : 12; }
+int GameDay()
+{   // дни игры — стат «прошло дней» (134), сохраняется вместе с игрой
+    return script::OutInt(0x0652, { script::Arg::I(134), script::Arg::OI() });   // GET_INT_STAT 134 (DAYS_PASSED)
 }
 
 int32_t* Global(int offset) { return g_scriptSpace && offset > 0 ? (int32_t*)(g_scriptSpace + offset) : nullptr; }

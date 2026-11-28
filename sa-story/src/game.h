@@ -23,6 +23,11 @@ namespace game
     bool  Paused();
     bool  CutsceneRunning();
     float GroundZ(float x, float y, float z);
+    bool  WorldToScreen(const Vec& w, float& sx, float& sy);   // false — за камерой
+    int   Money();
+    void  AddMoney(int d);
+    int   GameDay();                    // игровые сутки (счётчик мода по часам игры)
+    int   Hour();
 
     // Переменные сценария игры ($N — смещение в байтах от начала ScriptSpace)
     int32_t* Global(int offset);
