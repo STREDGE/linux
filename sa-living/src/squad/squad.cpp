@@ -183,8 +183,8 @@ namespace
                       (g_api->StaffKind(idx) == SWAT_GUARD ? "сдержанный, внимательный, бывший охранник" : "собранный, немного ворчит, профессионал");
         g_api->ReleaseStaff(ref);
         // в отряд — со стволом и бронёй (как взял бы в оружейной)
-        swat::Do(0x01B2, { swat::Ai(ref), swat::Ai(31), swat::Ai(300) });
-        swat::Do(0x01B2, { swat::Ai(ref), swat::Ai(22), swat::Ai(120) });
+        swat::GiveWeapon(ref, 31, 300);
+        swat::GiveWeapon(ref, 22, 120);
         swat::Do(0x035F, { swat::Ai(ref), swat::Ai(50) });
         g_m.push_back(m);
         AttachToTeam(g_m.back());
@@ -371,8 +371,8 @@ namespace
         if(h <= 0) return 0;
         swat::Do(0x0249, { swat::Ai(m.model) });
         bool any = false;
-        for(int i = 0; i < 13; ++i) if(m.weapons[i] > 0 && m.ammo[i] > 0) { swat::Do(0x01B2, { swat::Ai(h), swat::Ai(m.weapons[i]), swat::Ai(m.ammo[i]) }); any = true; }
-        if(!any) swat::Do(0x01B2, { swat::Ai(h), swat::Ai(31), swat::Ai(300) });
+        for(int i = 0; i < 13; ++i) if(m.weapons[i] > 0 && m.ammo[i] > 0) { swat::GiveWeapon(h, m.weapons[i], m.ammo[i]); any = true; }
+        if(!any) swat::GiveWeapon(h, 31, 300);
         m.ref = h;
         if(world::Character* c = world::Find(m.charId)) world::Bind(*c, swat::Ped(h));
         AttachToTeam(m);

@@ -50,6 +50,8 @@ namespace swat
     bool Is(uint16_t op, std::vector<A> args);             // условие
     int  OutI(uint16_t op, std::vector<A> args);           // одна выходная (целое), -1 — нет
     bool Out3(uint16_t op, std::vector<A> args, V3& out);  // три выходных (x, y, z)
+    // Дать оружие: сначала грузит модель оружия (с ней — файл анимаций rifle/uzi/…), иначе игра падает в BlendAnimation.
+    bool GiveWeapon(int ped, int weaponType, int ammo);
 
     // ---------- педы ----------
     uintptr_t Player();

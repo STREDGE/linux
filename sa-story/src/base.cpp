@@ -389,7 +389,7 @@ namespace
         Do(0x0173, { Ai(h), Af(PlanToWorldH(s.planH)) });
         Do(0x02AB, { Ai(h), Ai(1), Ai(1), Ai(1), Ai(1), Ai(1) });                             // SET_CHAR_PROOFS — свои неуязвимы
         Do(0x0568, { Ai(h), Ai(1) });                                                         // SET_CHAR_NEVER_TARGETTED
-        if(s.weapon) { Do(0x01B2, { Ai(h), Ai(s.weapon), Ai(200) }); }
+        if(s.weapon) { swat::GiveWeapon(h, s.weapon, 200); }
         Do(0x0249, { Ai(s.model) });
         s.ref = h; s.taskAt = 0; s.alarmHurt = false;
         LOG("БАЗА", "на базе: %s", s.name);
@@ -648,7 +648,7 @@ namespace
             p.z = GroundZ(p.x, p.y, layout::kZ + 2) + 0.5f;
             int h = OutI(0x009A, { Ai(7), Ai(models[i % 3]), Af(p.x), Af(p.y), Af(p.z), Aoi() });
             if(h <= 0) continue;
-            Do(0x01B2, { Ai(h), Ai(i % 2 ? 28 : 30), Ai(400) });
+            swat::GiveWeapon(h, i % 2 ? 28 : 30, 400);
             Do(0x02E2, { Ai(h), Ai(35) });
             uintptr_t guard = 0; for(auto& s : g_staff) if(s.kind == 1 && s.ref > 0) { guard = Ped(s.ref); break; }
             if(guard) Do(0x05E2, { Ai(h), Ai(Ref(guard)) });                                  // TASK_KILL_CHAR_ON_FOOT
@@ -690,7 +690,7 @@ namespace
         std::vector<std::string> items; for(auto& w : W8) items.push_back(w.name);
         ui::OpenMenu("ОРУЖЕЙНАЯ", items, [](int i) {
             if(i < 0) return;
-            auto give = [](int w, int ammo) { Do(0x01B2, { Ai(PlayerChar()), Ai(w), Ai(ammo) }); };
+            auto give = [](int w, int ammo) { swat::GiveWeapon(PlayerChar(), w, ammo); };
             if(W8[i].w == -1) { Do(0x035F, { Ai(PlayerChar()), Ai(100) }); ui::Notice("Бронежилет надет"); }
             else if(W8[i].w == -2) { for(auto& x : W8) if(x.w > 0 && x.w != 23) give(x.w, x.ammo); Do(0x035F, { Ai(PlayerChar()), Ai(100) }); ui::Notice("Полный комплект: оружие, патроны, броня"); }
             else { give(W8[i].w, W8[i].ammo); Do(0x01B9, { Ai(PlayerChar()), Ai(W8[i].w) }); ui::Notice(std::string(W8[i].name) + " — патроны пополнены"); }

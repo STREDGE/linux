@@ -33,7 +33,7 @@
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.6.0, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.6.1, SA Coop Team)
 
 const char* volatile g_where = "загрузка";
 

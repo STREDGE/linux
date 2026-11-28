@@ -1325,9 +1325,9 @@ public:
                 float d = Dist2(RefPos(x.ref), places[1]);
                 if(d > 2.0f) { GoTo(x, places[1], 7); x.doing = "бежит в оружейную"; break; }
                 // взял оружие и броню (оружейная базы — как у игрока: бесплатно, только полицейское)
-                if(!HasWeapon(p, 31)) Do(0x01B2, { Ai(x.ref), Ai(31), Ai(300) });   // M4
-                if(!HasWeapon(p, 29)) Do(0x01B2, { Ai(x.ref), Ai(29), Ai(300) });   // MP5
-                if(!HasWeapon(p, 25)) Do(0x01B2, { Ai(x.ref), Ai(25), Ai(60) });    // дробовик
+                if(!HasWeapon(p, 31)) swat::GiveWeapon(x.ref, 31, 300);   // M4
+                if(!HasWeapon(p, 29)) swat::GiveWeapon(x.ref, 29, 300);   // MP5
+                if(!HasWeapon(p, 25)) swat::GiveWeapon(x.ref, 25, 60);    // дробовик
                 if(Armour(p) < 50) Do(0x035F, { Ai(x.ref), Ai(100) });                // ADD_ARMOUR_TO_CHAR
                 Do(0x01B9, { Ai(x.ref), Ai(31) });
                 Say(x, "Взял ствол и броню.");
@@ -1458,7 +1458,7 @@ public:
         x.bodyChecked = Ref(body);
         uintptr_t me2 = Ped(x.ref);
         int w = CurWeapon(me2);
-        if(w >= 22) Do(0x01B2, { Ai(x.ref), Ai(w), Ai(ClipSize(w) * 2) });                    // патроны из магазинов убитого
+        if(w >= 22) swat::GiveWeapon(x.ref, w, ClipSize(w) * 2);                    // патроны из магазинов убитого
         Say(x, ammo ? "Забрал патроны." : "Готов. Оружие убрал.");
     }
 

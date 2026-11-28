@@ -1,3 +1,4 @@
+#include <swat/sgame.h>
 #include "engine.h"
 
 #include <mod/amlmod.h>
@@ -235,7 +236,7 @@ static int SpawnChar(const std::string& name, int pedType, int model, game::Vec 
     D(0x0173, { Arg::I(h), Arg::F(heading) });                                                  // SET_CHAR_HEADING
     if(weapon > 0)
     {
-        D(0x01B2, { Arg::I(h), Arg::I(weapon), Arg::I(ammo) });                                 // GIVE_WEAPON_TO_CHAR
+        swat::GiveWeapon(h, weapon, ammo);                                 // GIVE_WEAPON_TO_CHAR
         D(0x01B9, { Arg::I(h), Arg::I(weapon) });                                               // SET_CURRENT_CHAR_WEAPON
     }
     g_run.peds[name] = h;
@@ -267,7 +268,7 @@ void Builder::Enemy(const std::string& name, int pedType, int model, game::Vec a
 void Builder::GivePlayerWeapon(int weapon, int ammo)
 {
     m_s.push_back({ "оружие игроку", [weapon, ammo] {
-        D(0x01B2, { Arg::I(PlayerChar()), Arg::I(weapon), Arg::I(ammo) });                     // GIVE_WEAPON_TO_CHAR
+        swat::GiveWeapon(PlayerChar(), weapon, ammo);                     // GIVE_WEAPON_TO_CHAR
     }, nullptr });
 }
 

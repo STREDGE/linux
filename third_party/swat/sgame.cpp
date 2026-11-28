@@ -174,6 +174,19 @@ bool Cmd(uint16_t op, std::vector<A>& args, bool* flag, bool quiet)
 void Do(uint16_t op, std::vector<A> a) { Cmd(op, a, nullptr, true); }
 bool Is(uint16_t op, std::vector<A> a) { bool f = false; if(!Cmd(op, a, &f, true)) return false; return f; }
 int  OutI(uint16_t op, std::vector<A> a) { if(!Cmd(op, a, nullptr, true)) return -1; for(A& x : a) if(x.t == A::OI) return x.i; return -1; }
+bool GiveWeapon(int ped, int w, int ammo)
+{
+    if(ped <= 0 || w <= 0) return false;
+    int model = OutI(0x0781, { Ai(w), Aoi() });                                   // GET_WEAPONTYPE_MODEL
+    if(model > 0 && !Is(0x0248, { Ai(model) }))                                   // HAS_MODEL_LOADED
+    {
+        Do(0x0247, { Ai(model) });                                                // REQUEST_MODEL
+        Do(0x038B, {});                                                           // LOAD_ALL_MODELS_NOW
+        if(!Is(0x0248, { Ai(model) })) { Log("ОРУЖИЕ", "модель %d для оружия %d не загрузилась — не выдаю", model, w); return false; }
+    }
+    Do(0x01B2, { Ai(ped), Ai(w), Ai(ammo) });                                     // GIVE_WEAPON_TO_CHAR
+    return true;
+}
 bool Out3(uint16_t op, std::vector<A> a, V3& out)
 {
     if(!Cmd(op, a, nullptr, true)) return false;

@@ -100,7 +100,7 @@ namespace
             int ped = i == 0 ? OutI(0x0129, { Ai(car), Ai(sq.pedType), Ai(sq.ped), Aoi() })     // CREATE_CHAR_INSIDE_CAR
                              : OutI(0x01C8, { Ai(car), Ai(sq.pedType), Ai(sq.ped), Ai(i - 1), Aoi() });   // CREATE_CHAR_AS_PASSENGER
             if(ped <= 0) continue;
-            if(sq.weapon) { Do(0x01B2, { Ai(ped), Ai(sq.weapon), Ai(600) }); Do(0x01B9, { Ai(ped), Ai(sq.weapon) }); }
+            if(sq.weapon) { swat::GiveWeapon(ped, sq.weapon, 600); Do(0x01B9, { Ai(ped), Ai(sq.weapon) }); }
             Do(0x02E2, { Ai(ped), Ai(kind >= 1 && kind <= 3 ? 70 : 50) });
             Do(0x0961, { Ai(ped), Ai(1) });                                                     // SET_CHAR_KEEP_TASK
             Unit u; u.ref = ped; u.car = car; u.target = target; u.kind = kind; u.born = Now(); u.backup = backup; u.guard = near;
@@ -352,7 +352,7 @@ namespace
                     int ped = OutI(0x009A, { Ai(g_call.kind == 4 ? 7 + i % 2 * 2 : 20), Ai(models[i % 5]), Af(at.x), Af(at.y), Af(at.z), Aoi() });
                     if(ped <= 0) continue;
                     int w = g_call.kind == 3 ? 0 : (g_call.kind == 4 ? 30 : (g_call.kind == 2 ? 28 : 22));
-                    if(w) Do(0x01B2, { Ai(ped), Ai(w), Ai(300) });
+                    if(w) swat::GiveWeapon(ped, w, 300);
                     g_call.refs.push_back(ped);
                     SetStars(ped, stars, g_call.kind == 4 ? "перестрелка банд" : (g_call.kind == 2 ? "стрельба" : (g_call.kind == 3 ? "торговля" : "ограбление")));
                 }

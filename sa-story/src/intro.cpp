@@ -45,7 +45,7 @@ namespace
         {
             int ped = k == 0 ? OutI(0x0129, { Ai(car), Ai(7), Ai(102 + k), Aoi() }) : OutI(0x01C8, { Ai(car), Ai(7), Ai(102 + k), Ai(k - 1), Aoi() });
             if(ped <= 0) continue;
-            Do(0x01B2, { Ai(ped), Ai(28), Ai(500) });
+            swat::GiveWeapon(ped, 28, 500);
             if(k) Do(0x0713, { Ai(ped), Ai(PlayerRef()), Ai(-1), Af(0), Af(0), Af(0), Af(80.0f), Ai(4), Ai(0), Ai(60) });   // TASK_DRIVE_BY по Артёму
             else Do(0x05D1, { Ai(ped), Ai(car), Af(node.x + 300), Af(node.y - 300), Af(node.z), Af(20.0f), Ai(0), Ai(-1), Ai(2) });
             g_spawned.push_back(ped);
@@ -73,7 +73,8 @@ void Frame()
     {
         case S_LOAD:
         {
-            if(!Loaded({ 497, 280, 31, 412, 492, 102, 103, 104, 28 })) { if(Now() - g_stageAt > 5000) Do(0x038B, {}); return; }
+            // 356 — модель M4, 352 — модель Uzi (не номера оружия 31/28): с моделью грузится файл анимаций стрельбы
+            if(!Loaded({ 497, 280, 356, 412, 492, 102, 103, 104, 352 })) { if(Now() - g_stageAt > 5000) Do(0x038B, {}); return; }
             if(Model(Player()) != 285 && Now() - g_stageAt < 8000) return;          // сначала скин S.W.A.T. (к борту — уже Артёмом)
             V3 s = Mk(kRoute[0][0], kRoute[0][1], kRoute[0][2]);
             Do(0x01B4, { Ai(0), Ai(0) });                                                       // SET_PLAYER_CONTROL 0
@@ -84,7 +85,7 @@ void Frame()
             Do(0x02AC, { Ai(g_heli), Ai(1), Ai(1), Ai(1), Ai(1), Ai(1) });                      // SET_CAR_PROOFS — сюжетный борт не собьют
             g_pilot = OutI(0x0129, { Ai(g_heli), Ai(6), Ai(280), Aoi() });                       // пилот-сотрудник
             if(g_pilot > 0) Do(0x02AB, { Ai(g_pilot), Ai(1), Ai(1), Ai(1), Ai(1), Ai(1) });
-            Do(0x01B2, { Ai(pc), Ai(31), Ai(600) });                                             // M4
+            swat::GiveWeapon(pc, 31, 600);                                             // M4
             // прикрепить к борту, как в миссиях игры (mainV1.scm, миссия 57)
             Do(0x0464, { Ai(pc), Ai(g_heli), Af(-1.4f), Af(1.0f), Af(-0.1f), Ai(1), Af(90.0f), Ai(31) });   // ATTACH_CHAR_TO_CAR
             Do(0x01B4, { Ai(0), Ai(1) });                                                       // управление (стрельба) — есть

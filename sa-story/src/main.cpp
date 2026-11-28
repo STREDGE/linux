@@ -21,7 +21,7 @@
 #include "story.h"
 #include "ui.h"
 
-MYMODCFG(net.sastory.mod, SA Story, 0.2.1, SA Coop Team)
+MYMODCFG(net.sastory.mod, SA Story, 0.2.2, SA Coop Team)
 
 namespace missions { void RegisterAll(); }
 namespace api { void Register(); }

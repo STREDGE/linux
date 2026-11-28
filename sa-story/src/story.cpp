@@ -1,3 +1,4 @@
+#include <swat/sgame.h>
 #include "story.h"
 
 #include <mod/amlmod.h>
@@ -286,7 +287,7 @@ void Frame()
     {
         g_dead = false;
         if(game::Money() < g_keepMoney) game::AddMoney(g_keepMoney - game::Money());
-        for(int i = 0; i < 13; ++i) if(g_keepW[i] > 0 && g_keepA[i] > 0) script::Do(0x01B2, { script::Arg::I(pc), script::Arg::I(g_keepW[i]), script::Arg::I(g_keepA[i]) });
+        for(int i = 0; i < 13; ++i) if(g_keepW[i] > 0 && g_keepA[i] > 0) swat::GiveWeapon(pc, g_keepW[i], g_keepA[i]);
         ui::Notice("Медпункт базы: подлатали. Деньги и оружие при тебе.", 5.0f);
         LOG("РЕЖИМ", "возрождение: деньги ($%d) и оружие возвращены", g_keepMoney);
     }
