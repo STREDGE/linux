@@ -32,6 +32,7 @@ namespace
     game::Vec EntPos(uintptr_t e)
     {
         uintptr_t m = F<uintptr_t>(e, kMatrix);
+        if(m && (m < 0x10000 || (m & 7))) m = 0;                 // мусор вместо указателя — берём позицию из самой сущности
         const float* f = m ? (const float*)(m + 0x30) : (const float*)(e + kPlace);
         game::Vec v; v.x = f[0]; v.y = f[1]; v.z = f[2]; return v;
     }
@@ -110,7 +111,7 @@ void Frame(bool swat)
     if(now >= g_next || now + 10000 < g_next)
     {
         g_next = now + (d > 450 ? 5000 : 1000);
-        int h = Sweep(g_bld, 0x60, 1.5f, "здание") + Sweep(g_dummy, 0x60, 2.0f, "пустышка") + Sweep(g_obj, 0x1F8, 4.0f, "объект");
+        int h = Sweep(g_bld, 0x60, 1.5f, "здание") + Sweep(g_dummy, 0x60, 2.0f, "пустышка") + Sweep(g_obj, 0x220, 4.0f, "объект");   // размеры записей — из IsXxxPointerValid в libGTASA: 0x60 / 0x60 / 0x220
         g_hiddenTotal += h;
         if(h > 0)
         {
