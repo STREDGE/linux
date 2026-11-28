@@ -25,13 +25,15 @@
 #include "sim/life.h"
 #include "sim/crew.h"
 #include "sim/police.h"
+#include "squad/squad.h"
+#include <swat/sgame.h>
 #include "talk/talk.h"
 #include "ui/hud.h"
 #include "util/log.h"
 #include "trace/trace.h"
 #include "world/world.h"
 
-MYMODCFG(net.saliving.mod, SA Living, 0.5.11, SA Coop Team)
+MYMODCFG(net.saliving.mod, SA Living, 0.6.0, SA Coop Team)
 
 const char* volatile g_where = "загрузка";
 
@@ -56,6 +58,9 @@ void LogError(const char* fmt, ...)
     logger->Error("%s", buf);
     trace::Line("ОШИБКА", "%s", buf);
 }
+
+// Лог общей библиотеки тактики (third_party/swat) — в наш лог строками «И»
+static void SwatLog(const char* tag, const char* text) { trace::Line(tag, "%s", text); }
 
 static bool   g_ok = false;
 static double g_nextSave = 0, g_nextBridgeTry = 0, g_nextSync = 0;
@@ -227,6 +232,7 @@ static void Frame()
     WHERE("кадр: полиция"); police::Frame();
     WHERE("кадр: жизнь города"); life::Frame();
     WHERE("кадр: свои за своего"); crew::Frame();
+    WHERE("кадр: отряд S.W.A.T."); squad::Frame();
     WHERE("кадр: прочее");
     { std::string n; while(speech::PopNotice(n)) talk::Notify(n); }
     if(coopnet::GetRole() == coopnet::HOST && now >= g_nextSync) { g_nextSync = now + 15; HostSync(); }
@@ -261,7 +267,7 @@ SDECL_HOOKb(GenericSave, int slot)
         SaveUsageFile();
         std::string name = g_validSaveName && g_validSaveName[0] ? g_validSaveName : "default";
         // служебное сохранение SA Coop «мир для друга» — не отдельная игра, память под ним не ведём
-        if(name.find("SACoopWorld") == std::string::npos) { jarvis::BeforeGameSave(); world::SaveAs(name); jarvis::AfterGameSave(); }
+        if(name.find("SACoopWorld") == std::string::npos) { jarvis::BeforeGameSave(); world::SaveAs(name); jarvis::AfterGameSave(); squad::OnSave(name); }
     }
     return r;
 }
@@ -278,6 +284,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
         std::string n = !a.empty() && (world::HasMemory(a) || b.empty() || !world::HasMemory(b)) ? a : !b.empty() ? b : "default";
         LogInfo("Загрузка игры: файл «%s» (последнее имя «%s») — память «%s»", a.c_str(), b.c_str(), n.c_str());
         world::SwitchTo(n);
+        squad::OnLoad(n);
     }
     return r;
 }
@@ -285,7 +292,7 @@ SDECL_HOOK(bool, GenericLoad, bool& ok)
 SDECL_HOOKv(MenuNewGame)
 {
     TRACE("ИГРА", "новая игра");
-    if(g_ok) { talk::EndConversation(); talk::EndFriendConversation(); jarvis::OnWorldSwitch(true); police::Reset(); crew::Reset(); claude::AbortAll("новая игра"); world::NewGame(); }
+    if(g_ok) { talk::EndConversation(); talk::EndFriendConversation(); jarvis::OnWorldSwitch(true); police::Reset(); crew::Reset(); claude::AbortAll("новая игра"); world::NewGame(); squad::Reset(); }
     MenuNewGame();
 }
 
@@ -325,6 +332,8 @@ ON_MOD_LOAD()
     bool hudOk = hud::Init(h);
     bridge::Init();
     jarvis::Init(h, world::BaseDir());
+    swat::SetLog(SwatLog);
+    squad::Init(h);
     InstallCleoScript();
     g_validSaveName = (char*)aml->GetSym(h, "_ZN19CGenericGameStorage16ms_ValidSaveNameE");
     g_loadFileName  = (char*)aml->GetSym(h, "_ZN19CGenericGameStorage15ms_LoadFileNameE");

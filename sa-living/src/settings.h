@@ -13,6 +13,7 @@ namespace settings
         std::string model = "claude-haiku-5-5";
         std::string effort = "medium";      // педы: medium | high (0.5.9, решение игрока)
         std::string jarvisEffort = "high";  // Джарвис: high | xhigh (0.5.9)
+        std::string squadEffort = "xhigh";  // отряд S.W.A.T.: xhigh (по умолчанию, решение игрока) | high
         bool  voices = true;                // голоса педов (TextToSpeech)
         bool  subtitles = true;
         std::string lang = "ru-RU";

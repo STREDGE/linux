@@ -34,13 +34,13 @@ namespace layout
     constexpr float kLiftU = 23.0f, kLiftV = -24.5f;
     constexpr float kRoofLiftU = 12.0f, kRoofLiftV = -36.0f;
     // 6 служебный гараж (2 ангара), стоянки машин
-    constexpr float kGarageU = -67.0f;
+    constexpr float kGarageU = -67.0f;                          // ангары 20×30: u −77…−57
     // 7 личный гараж
-    constexpr float kOwnGarageU = -66.0f, kOwnGarageV = -38.0f;
+    constexpr float kOwnGarageU = -67.0f, kOwnGarageV = -43.0f;
     // 8 оружейная
     constexpr float kArmoryU = -23.9f, kArmoryV = 43.8f;
     // 9 тир
-    constexpr float kRangeStandU = -38.0f, kRangeV = 51.5f, kRangeTargetsU = -73.0f;
+    constexpr float kRangeStandU = -38.0f, kRangeV = 48.5f, kRangeTargetsU = -68.0f;   // дорожка 30 м (у угла — вышка)
     // 10 медпункт
     constexpr float kMedU = 27.0f, kMedV = 43.4f;
     // 11/12 комнаты

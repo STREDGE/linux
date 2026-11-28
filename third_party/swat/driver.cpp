@@ -101,6 +101,20 @@ namespace
         float th = tv ? EntHeading(tv) : 0;
         float tspeed = tv ? Speed(tv) : 0;
         c.precise = false;
+        if(VehType(v) == 5)
+        {   // лодка (ТЗ-SQUAD §4: к точке, погоня) — команды лодок игры, цель обновляем
+            if(Every(c.lastNative, 1500))
+            {
+                if(c.mode == D_WAIT) Do(0x02D4, { Ai(c.car) });                                  // BOAT_STOP
+                else
+                {
+                    V3 to = tv ? Add(tp, Mul(Velocity(tv), 1.5f)) : c.point;
+                    Do(0x02DB, { Ai(c.car), Af(c.speed) });                                       // SET_BOAT_CRUISE_SPEED
+                    Do(0x02D3, { Ai(c.car), Af(to.x), Af(to.y), Af(to.z) });                     // BOAT_GOTO_COORDS
+                }
+            }
+            return;
+        }
         switch(c.mode)
         {
             case D_ROUTE:

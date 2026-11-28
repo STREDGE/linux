@@ -106,10 +106,10 @@ void Frame(bool swat)
         script::Do(0x022B, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_PED_ROADS_OFF
         LOG("СНОС", "дороги и пешие пути внутри базы выключены");
     }
-    if(d > 450) return;
-    if(now >= g_next || now + 5000 < g_next)
+    // рядом — каждую секунду (порт подгружается), издалека — раз в 5 с (дальние копии зданий видно за километр)
+    if(now >= g_next || now + 10000 < g_next)
     {
-        g_next = now + 1000;
+        g_next = now + (d > 450 ? 5000 : 1000);
         int h = Sweep(g_bld, 0x60, 1.5f, "здание") + Sweep(g_dummy, 0x60, 2.0f, "пустышка") + Sweep(g_obj, 0x1F8, 4.0f, "объект");
         g_hiddenTotal += h;
         if(h > 0)

@@ -17,6 +17,7 @@
 #include "sim/life.h"
 #include "sim/crew.h"
 #include "sim/police.h"
+#include "squad/squad.h"
 #include "speech/speech.h"
 #include "util/log.h"
 #include "trace/trace.h"
@@ -1013,6 +1014,8 @@ static bool ToFriend(uintptr_t ped, bool inTalk)
     return sf < sp;
 }
 
+static bool g_squadCapture = false;   // «Говорить» зажата для отряда S.W.A.T. (человека перед тобой нет)
+
 void PttDown()
 {
     TRACE("КНОПКА", "«Говорить» нажата");
@@ -1044,6 +1047,10 @@ void PttDown()
         {   // говоришь другу — его голосовой чат, людям не распознаём
             TRACE("РАЗГОВОР", "говоришь другу (он перед тобой) — людям не отвечаем");
             g_voiceOnly = true; return;
+        }
+        if(!inTalk && squad::ListenForSquad(ped))
+        {   // режим S.W.A.T.: перед тобой никого (или боец отряда) — слушаем приказ отряду
+            g_squadCapture = true; BeginListen(); return;
         }
         if(!ped)
         {
@@ -1099,10 +1106,23 @@ static void OnPlayerSaid(const std::string& text)
     g_heardAt = Now();
     if(g_captureActive) { auto fn = std::move(g_capture); g_capture = nullptr; g_captureActive = false; if(fn) fn(text); return; }
     if(g_sink) { if(!text.empty()) { Say(world::W().playerNick, text, true, 0, 1, 1, false); g_sink(text); } return; }
+    if(g_squadCapture)
+    {   // приказ отряду S.W.A.T.
+        g_squadCapture = false;
+        if(text.empty()) { Notify("Не расслышал — попробуй ещё раз"); return; }
+        Say(MyName(), text, true, 0, 1, 1, false);
+        squad::OnSpeech(text, 0);
+        return;
+    }
     g_c.lastAt = Now();
     Character* c = Current();
     if(!c) return;
     if(text.empty()) { Notify("Не расслышал — попробуй ещё раз"); return; }
+    if(squad::OnSpeech(text, CurrentPed()))
+    {   // «пойдём со мной» сотруднику базы или фраза отряду — не разговор с человеком
+        Say(MyName(), text, true, 0, 1, 1, false);
+        return;
+    }
     Say(MyName(), text, true, 0, 1, 1, false);
     if(!g_c.phone && OtherNear(game::Player())) SendHear(MyName(), text, true, nullptr);   // второй CJ рядом — видит, что я сказал
     if(text.size() > 12)

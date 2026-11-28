@@ -62,6 +62,7 @@ void Start()
     LOG("ВСТУПЛЕНИЕ", "старт: вертолёт к базе");
 }
 bool Active() { return g_stage != S_OFF && g_stage != S_DONE; }
+bool Attached() { return g_stage == S_FLY || g_stage == S_LAND; }
 void Abort() { g_stage = S_OFF; }
 
 void Frame()
@@ -73,6 +74,7 @@ void Frame()
         case S_LOAD:
         {
             if(!Loaded({ 497, 280, 31, 412, 492, 102, 103, 104, 28 })) { if(Now() - g_stageAt > 5000) Do(0x038B, {}); return; }
+            if(Model(Player()) != 285 && Now() - g_stageAt < 8000) return;          // сначала скин S.W.A.T. (к борту — уже Артёмом)
             V3 s = Mk(kRoute[0][0], kRoute[0][1], kRoute[0][2]);
             Do(0x01B4, { Ai(0), Ai(0) });                                                       // SET_PLAYER_CONTROL 0
             g_heli = OutI(0x00A5, { Ai(497), Af(s.x), Af(s.y), Af(s.z), Aoi() });

@@ -23,6 +23,8 @@ void Load()
     if(d.effort != "medium" && d.effort != "high") d.effort = "medium";           // 0.5.9: «Быстро» (low) больше нет
     d.jarvisEffort = Str("JarvisEffort", "high", "AI");
     if(d.jarvisEffort != "high" && d.jarvisEffort != "xhigh") d.jarvisEffort = "high";
+    d.squadEffort = Str("SquadEffort", "xhigh", "AI");
+    if(d.squadEffort != "high" && d.squadEffort != "xhigh") d.squadEffort = "xhigh";
     d.voices     = cfg->GetBool("Voices", true, "AI");
     d.subtitles  = cfg->GetBool("Subtitles", true, "AI");
     d.lang       = Str("Language", "ru-RU", "AI");
@@ -62,7 +64,7 @@ void Save()
     #define SETI(k, v, s) e = cfg->Bind(k, 0, s); e->SetInt(v); delete e
     #define SETS(k, v, s) e = cfg->Bind(k, "", s); e->SetString((v).c_str()); delete e
     SETB("Enabled", d.enabled, "General");
-    SETS("ApiKey", d.key, "AI"); SETS("Model", d.model, "AI"); SETS("Effort", d.effort, "AI"); SETS("JarvisEffort", d.jarvisEffort, "AI");
+    SETS("ApiKey", d.key, "AI"); SETS("Model", d.model, "AI"); SETS("Effort", d.effort, "AI"); SETS("JarvisEffort", d.jarvisEffort, "AI"); SETS("SquadEffort", d.squadEffort, "AI");
     SETI("VoiceLoudness", d.voiceLoud, "AI");
     SETB("Voices", d.voices, "AI"); SETB("Subtitles", d.subtitles, "AI"); SETS("Language", d.lang, "AI");
     SETI("Initiative", d.initiative, "AI"); SETI("DailyLimit", d.dailyLimit, "AI2"); SETI("Tier", d.tier, "AI2");

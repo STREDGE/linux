@@ -94,9 +94,9 @@ namespace
         p.push_back({ 6946, layout::kHqU, layout::kHqV, 0, 0, -1, "штаб" });
         p.push_back({ 3928, layout::kPadU, layout::kPadV, 0, layout::kRoofZ - layout::kZ + 0.03f, -1, "площадка на крыше" });
         // ---- гаражи (ангары), оружейная, тир, медпункт, комнаты, отдых, камера ----
-        p.push_back({ 3268, layout::kGarageU, 18.0f, 90, 0, -1, "служебный гараж 1" });
-        p.push_back({ 3268, layout::kGarageU, -8.0f, 90, 0, -1, "служебный гараж 2" });
-        p.push_back({ 3268, layout::kOwnGarageU, layout::kOwnGarageV, 90, 0, -1, "личный гараж" });
+        p.push_back({ 3268, layout::kGarageU, 19.0f, 0, 0, -1, "служебный гараж 1" });
+        p.push_back({ 3268, layout::kGarageU, -12.0f, 0, 0, -1, "служебный гараж 2" });
+        p.push_back({ 3268, layout::kOwnGarageU, layout::kOwnGarageV, 0, 0, -1, "личный гараж" });
         p.push_back({ 2934, layout::kArmoryU, layout::kArmoryV + 1.5f, 90, 0, -1, "оружейная" });
         p.push_back({ 3041, layout::kArmoryU, layout::kArmoryV - 1.6f, 0, 0, -1, "прилавок оружейной" });
         for(int i = 0; i < 4; ++i) p.push_back({ 3025, layout::kRangeTargetsU, layout::kRangeV - 4.5f + i * 3.0f, 90, 0, -1, "мишень" });
@@ -123,10 +123,10 @@ namespace
         }
         // плац, флаг, вышки
         p.push_back({ 7090, layout::kFlagU, layout::kFlagV, 0, 0, -1, "флаг" });
-        p.push_back({ 3279, -76, 56, 0, 0, -1, "вышка" });
-        p.push_back({ 3279, 76, 56, 0, 0, -1, "вышка" });
-        p.push_back({ 3279, -76, -56, 0, 0, -1, "вышка" });
-        p.push_back({ 3279, 76, -56, 0, 0, -1, "вышка" });
+        p.push_back({ 3279, -74, 54, 0, 0, -1, "вышка" });
+        p.push_back({ 3279, 74, 54, 0, 0, -1, "вышка" });
+        p.push_back({ 3279, -74, -54, 0, 0, -1, "вышка" });
+        p.push_back({ 3279, 74, -54, 0, 0, -1, "вышка" });
         // ---- вид «Обычная»: яркие фонари, флажки, порядок ----
         const float lamps[][2] = { { -40, 30 }, { 40, 30 }, { -40, -15 }, { 40, -15 }, { 0, 25 }, { 30, -20 } };
         for(auto& l : lamps) p.push_back({ 1226, l[0], l[1], 0, 0, 0, "фонарь" });
@@ -514,7 +514,7 @@ namespace
         g_def->Clear();
         g_def->SetHome(Mk(W(0, 0).x, W(0, 0).y, W(0, 0).z), 95.0f);
         std::vector<V3> posts;
-        const float P[][3] = { { -76, 56, 17 }, { 76, 56, 17 }, { -76, -56, 17 }, { 76, -56, 17 }, { -22, -26, 0 }, { 22, -26, 0 },
+        const float P[][3] = { { -74, 54, 17 }, { 74, 54, 17 }, { -74, -54, 17 }, { 74, -54, 17 }, { -22, -26, 0 }, { 22, -26, 0 },
                                { -55, 20, 0 }, { -55, -5, 0 }, { 12, 50, 0 }, { 0, -42, 9 } };   // вышки, углы штаба, гараж, будка, крыша
         for(auto& q : P) { game::Vec w = W(q[0], q[1], q[2]); posts.push_back(Mk(w.x, w.y, w.z)); }
         g_def->SetPosts(posts);

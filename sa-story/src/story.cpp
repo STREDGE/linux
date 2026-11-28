@@ -298,7 +298,7 @@ void Frame()
         for(int i = 0; i < 13; ++i) { uintptr_t w = p + 0x730 + (uintptr_t)i * 0x20; g_keepW[i] = *(int*)w; g_keepA[i] = *(int*)(w + 12); }
     }
     // герой: модель S.W.A.T. (после смерти/загрузки/интерьера игра ставит CJ)
-    if(g_st.hero > 0 && !game::CutsceneRunning() && game::Model(game::Player()) != g_st.hero && hp > 0 && (now - g_heroTryMs > 1000 || now < g_heroTryMs))
+    if(g_st.hero > 0 && !intro::Attached() && !game::CutsceneRunning() && game::Model(game::Player()) != g_st.hero && hp > 0 && (now - g_heroTryMs > 1000 || now < g_heroTryMs))
     {
         g_heroTryMs = now;
         WHERE("режим: модель героя");

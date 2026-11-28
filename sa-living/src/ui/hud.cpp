@@ -25,6 +25,7 @@
 #include "sim/police.h"
 #include "speech/speech.h"
 #include "talk/talk.h"
+#include "squad/squad.h"
 #include "ui/fonts_data.h"
 #include "ui/imgui_rw.h"
 #include "util/log.h"
@@ -466,6 +467,10 @@ namespace
         int ei = s.effort == "high" ? 1 : 0;
         int ne = Chips(y, x0, x1, "Размышление людей (выше — умнее, но ответ дольше)", efforts, 2, ei);
         if(ne != ei) { s.effort = ne ? "high" : "medium"; claude::Settings cs = claude::Get(); cs.effort = s.effort; claude::Configure(cs); }
+        static const char* seff[] = { "Высокий", "Сверхвысокий" };
+        int se = s.squadEffort == "high" ? 0 : 1;
+        int nse = Chips(y, x0, x1, "Размышление отряда S.W.A.T. (выше — умнее, но решение дольше)", seff, 2, se);
+        if(nse != se) s.squadEffort = nse ? "xhigh" : "high";
         static const char* inits[] = { "Выкл", "Редко", "Часто" };
         s.initiative = Chips(y, x0, x1, "Педы сами заговаривают", inits, 3, s.initiative);
         static const char* limits[] = { "Без лимита", "1500", "400" };
@@ -819,6 +824,31 @@ namespace
         }
     }
 
+    // Панель отряда S.W.A.T. сбоку: имя, здоровье, что делает («за рулём», «прикрывает», «в пути 0:40»)
+    void DrawSquad()
+    {
+        std::vector<squad::Card> cards = squad::Cards();
+        if(cards.empty()) return;
+        float W = Ww(), H = Hh();
+        float cw = W * 0.19f, ch = U(9.5f), x = U(1.5f), y = H * 0.30f;
+        for(auto& c : cards)
+        {
+            ImVec2 a(x, y), b(x + cw, y + ch);
+            Panel(a, b, U(1.2f), 0.78f);
+            Rgb col = !c.alive ? kRed : (c.traveling ? kGold : kGrove);
+            std::string head = c.name + "  ·  " + c.role;
+            Tx(F_SMALL, ImVec2(a.x + U(1.2f), a.y + U(0.6f)), C(kInk), head.c_str(), cw - U(2));
+            float bw = cw - U(2.4f), bh = U(0.9f), by = a.y + U(4.0f);
+            DL()->AddRectFilled(ImVec2(a.x + U(1.2f), by), ImVec2(a.x + U(1.2f) + bw, by + bh), C(kLine), U(0.4f));
+            float hp = c.hp > 100 ? 1.0f : (c.hp < 0 ? 0 : c.hp / 100.0f);
+            DL()->AddRectFilled(ImVec2(a.x + U(1.2f), by), ImVec2(a.x + U(1.2f) + bw * hp, by + bh), C(col), U(0.4f));
+            if(c.armour > 1) { float ar = c.armour > 100 ? 1.0f : c.armour / 100.0f; DL()->AddRectFilled(ImVec2(a.x + U(1.2f), by + bh + U(0.2f)), ImVec2(a.x + U(1.2f) + bw * ar, by + bh * 1.6f + U(0.2f)), C(kBlue), U(0.3f)); }
+            Tx(F_SMALL, ImVec2(a.x + U(1.2f), a.y + U(6.0f)), C(kDim), c.doing.c_str(), cw - U(2));
+            y += ch + U(0.8f);
+        }
+        if(squad::HeadThinking()) Tx(F_SMALL, ImVec2(x + U(1.2f), y), C(kDim), "Отряд думает…");
+    }
+
     void DrawSubtitles()
     {
         float W = Ww(), H = Hh();
@@ -970,6 +1000,7 @@ namespace
                 {
                     DrawJarvis(settings::Get());
                     DrawSubtitles();
+                    DrawSquad();
                     DrawContextButtons();
                     DrawTalkButton(settings::Get());
                     if(!talk::MissionLock()) DrawPhoneButton(settings::Get());   // звонки — это ИИ: во время миссии нет
