@@ -224,14 +224,22 @@ namespace
         for(int m : models) if(!Is(0x0248, { Ai(m) })) { Do(0x0247, { Ai(m) }); all = false; }   // HAS_MODEL_LOADED / REQUEST_MODEL
         return all;
     }
-    int CreateObj(int model, const game::Vec& center, float worldH, float dz, const char* what)
+    // где окажется начало модели, если её центр поставить в center (модели не центрированы)
+    game::Vec ObjOrigin(int model, const game::Vec& center, float worldH, float dz)
     {
         const Box* b = BoxOf(model);
         float cx = b ? b->cx : 0, cy = b ? b->cy : 0, zmin = b ? b->zmin : 0;
         float r = worldH * 0.0174533f;
-        float ox = center.x - (cx * cosf(r) - cy * sinf(r));
-        float oy = center.y - (cx * sinf(r) + cy * cosf(r));
-        float oz = layout::kZ + dz - zmin;
+        game::Vec o;
+        o.x = center.x - (cx * cosf(r) - cy * sinf(r));
+        o.y = center.y - (cx * sinf(r) + cy * cosf(r));
+        o.z = layout::kZ + dz - zmin;
+        return o;
+    }
+    int CreateObj(int model, const game::Vec& center, float worldH, float dz, const char* what)
+    {
+        game::Vec o = ObjOrigin(model, center, worldH, dz);
+        float ox = o.x, oy = o.y, oz = o.z;
         int h = OutI(0x0107, { Ai(model), Af(ox), Af(oy), Af(oz), Aoi() });                 // CREATE_OBJECT
         if(h <= 0) { LOG("ОШИБКА", "База: объект %s (модель %d) не создан", what, model); return 0; }
         Do(0x0177, { Ai(h), Af(worldH) });                                                   // SET_OBJECT_HEADING
@@ -247,8 +255,85 @@ namespace
     }
 
     // ---------------------------------------------------------------- постройка
+    void PlaceOf(const Piece& p, game::Vec& c, float& wh)
+    {
+        c = W(p.u, p.v);
+        wh = PlanToWorldH(p.planH);
+        if(p.model == 987)
+        {   // звено забора: начало в точке, ось X модели — вдоль стороны
+            game::Vec e = W(p.u + 12.0f * cosf(p.planH * 0.0174533f), p.v + 12.0f * sinf(p.planH * 0.0174533f));
+            wh = atan2f(e.y - c.y, e.x - c.x) * 57.29578f;
+            float r = wh * 0.0174533f; c.x += 6.0f * cosf(r); c.y += 6.0f * sinf(r);   // центр звена
+        }
+    }
+    game::Vec BarrierSpot() { return W(-8.5f, 60.5f, 1.05f); }
+
+    // Сохранение игры записывает объекты и машины, созданные скриптом. Удалять их ПЕРЕД сохранением нельзя:
+    // автосохранение телефона идёт посреди отрисовки кадра — игра обращается к удалённому и падает.
+    // Поэтому после загрузки, перед постройкой, убираем старые копии: та же модель на том же месте по плану.
+    template<typename T> T& Fld(uintptr_t p, uintptr_t off) { return *(T*)(p + off); }
+    game::Vec EntPos(uintptr_t e)
+    {
+        uintptr_t m = Fld<uintptr_t>(e, 0x18);
+        if(m && (m < 0x10000 || (m & 7))) m = 0;
+        const float* f = m ? (const float*)(m + 0x30) : (const float*)(e + 0x08);
+        game::Vec v; v.x = f[0]; v.y = f[1]; v.z = f[2]; return v;
+    }
+    uintptr_t g_objPoolSym = 0, g_vehPoolSym = 0;
+    void CleanStale()
+    {
+        struct Spot { int model; float x, y, r; };
+        std::vector<Spot> spots;
+        for(auto& p : Pieces())
+        {
+            game::Vec c; float wh; PlaceOf(p, c, wh);
+            game::Vec o = ObjOrigin(p.model, c, wh, p.dz);
+            spots.push_back({ p.model, o.x, o.y, 0.8f });
+        }
+        { game::Vec a = BarrierSpot(); spots.push_back({ 966, a.x, a.y, 0.8f }); }
+        for(auto& c : g_cars) { game::Vec w = W(c.u, c.v); spots.push_back({ c.model, w.x, w.y, 5.0f }); }
+        for(auto& h : g_helis) { game::Vec w = W(h.u, h.v); spots.push_back({ h.model, w.x, w.y, 6.0f }); }
+        auto mine = [](int h) {
+            for(auto& o : g_objs) if(o.handle == h) return true;
+            for(auto& c : g_cars) if(c.handle == h) return true;
+            for(auto& x : g_helis) if(x.handle == h) return true;
+            return h == g_introHeli;
+        };
+        int objs = 0, cars = 0;
+        for(int pass = 0; pass < 2; ++pass)
+        {
+            uintptr_t sym = pass == 0 ? g_objPoolSym : g_vehPoolSym;
+            uintptr_t pp = sym ? *(uintptr_t*)sym : 0;
+            if(!pp) continue;
+            uintptr_t arr = Fld<uintptr_t>(pp, 0), flags = Fld<uintptr_t>(pp, 8); int size = Fld<int>(pp, 0x10);
+            if(!arr || !flags || size <= 0 || size > 60000) continue;
+            uintptr_t stride = pass == 0 ? 0x220 : 0xC68;                                   // из IsObjectPointerValid / IsVehiclePointerValid
+            for(int i = 0; i < size; ++i)
+            {
+                uint8_t fl = Fld<uint8_t>(flags, i);
+                if(fl & 0x80) continue;
+                uintptr_t e = arr + (uintptr_t)i * stride;
+                int model = Fld<int16_t>(e, 0x32);
+                game::Vec p = EntPos(e);
+                for(auto& sp : spots)
+                {
+                    if(sp.model != model) continue;
+                    float dx = p.x - sp.x, dy = p.y - sp.y;
+                    if(dx * dx + dy * dy > sp.r * sp.r) continue;
+                    int h = (i << 8) | fl;                                                  // как CPools::GetObjectRef / GetVehicleRef
+                    if(mine(h)) break;
+                    if(pass == 0) { Do(0x0108, { Ai(h) }); objs++; }                          // DELETE_OBJECT
+                    else if(!VehDriver(e)) { Do(0x00A6, { Ai(h) }); cars++; }                 // DELETE_CAR (только пустую)
+                    break;
+                }
+            }
+        }
+        if(objs || cars) LOG("БАЗА", "после загрузки убраны старые копии базы из сохранения: объектов %d, машин %d", objs, cars);
+    }
+
     bool Build()
     {
+        CleanStale();
         int look = story::GetInt("look", 1);
         std::vector<Piece> ps = Pieces();
         std::vector<int> models;
@@ -259,19 +344,11 @@ namespace
         for(auto& p : ps)
         {
             if(p.look >= 0 && p.look != look) continue;
-            game::Vec c = W(p.u, p.v);
-            float wh = PlanToWorldH(p.planH);
-            if(p.model == 987)
-            {   // звено забора: начало в точке, ось X модели — вдоль стороны
-                c = W(p.u, p.v);
-                game::Vec e = W(p.u + 12.0f * cosf(p.planH * 0.0174533f), p.v + 12.0f * sinf(p.planH * 0.0174533f));
-                wh = atan2f(e.y - c.y, e.x - c.x) * 57.29578f;
-                float r = wh * 0.0174533f; c.x += 6.0f * cosf(r); c.y += 6.0f * sinf(r);   // центр звена
-            }
+            game::Vec c; float wh; PlaceOf(p, c, wh);
             if(CreateObj(p.model, c, wh, p.dz, p.what)) n++;
         }
         // стрела шлагбаума — отдельно (поднимается/опускается)
-        game::Vec arm = W(-8.5f, 60.5f, 1.05f); arm.x += 0;
+        game::Vec arm = BarrierSpot();
         g_barrier = OutI(0x0107, { Ai(966), Af(arm.x), Af(arm.y), Af(arm.z), Aoi() });
         if(g_barrier > 0) { Do(0x0177, { Ai(g_barrier), Af(PlanToWorldH(0)) }); Do(0x0392, { Ai(g_barrier), Ai(0) }); g_objs.push_back({ g_barrier, 966, "стрела шлагбаума" }); n++; }
         g_barrierUp = false;
@@ -889,7 +966,12 @@ namespace
 }
 
 // ======================================================================================================
-bool Init(void* h) { (void)h; return true; }
+bool Init(void* h)
+{
+    g_objPoolSym = aml->GetSym(h, "_ZN6CPools14ms_pObjectPoolE");
+    g_vehPoolSym = aml->GetSym(h, "_ZN6CPools15ms_pVehiclePoolE");
+    return true;
+}
 
 void Reset()
 {
@@ -903,8 +985,15 @@ void Reset()
 
 void BeforeSave()
 {
+    // ничего не удаляем: автосохранение идёт посреди отрисовки — удаление роняет игру. Копии из сохранения
+    // убирает CleanStale после загрузки. Значок базы снимаем — иначе после загрузки их будет два.
+    if(g_blipBase > 0) { Do(0x0164, { Ai(g_blipBase) }); g_blipBase = 0; }
+}
+
+void Teardown()
+{
     if(!g_built) return;
-    LOG("БАЗА", "сохранение игры: созданное базой убрано (после сохранения появится снова)");
+    LOG("БАЗА", "игрок далеко — созданное базой убрано (появится снова, когда вернёшься)");
     DeleteObjs();
     for(auto& s : g_staff) RemoveStaff(s, true);
     for(auto& c : g_cars) { if(c.handle > 0 && Is(0x056E, { Ai(c.handle) })) { uintptr_t v = Veh(c.handle); if(v && !VehDriver(v)) Do(0x00A6, { Ai(c.handle) }); else Do(0x01C3, { Ai(c.handle) }); } c.handle = 0; c.goneAt = 0; }
@@ -928,8 +1017,13 @@ void Frame()
         g_built = Build();
         WHERE("кадр: S.W.A.T.");
     }
-    if(!wantBuild && g_built && d > 600.0f) { BeforeSave(); return; }   // уехал далеко — освободить память
+    if(!wantBuild && g_built && d > 600.0f) { Teardown(); return; }   // уехал далеко — освободить память
     if(!g_built) return;
+    if(g_blipBase <= 0)
+    {
+        game::Vec bc = W(0, 0);
+        g_blipBase = OutI(0x04CE, { Af(bc.x), Af(bc.y), Af(bc.z), Ai(30), Aoi() });           // значок базы (снят перед сохранением)
+    }
     if(now >= g_nextCars || now + 10000 < g_nextCars) { g_nextCars = now + 1500; WHERE("база: транспорт"); KeepCars(); }
     WHERE("база: шлагбаум"); Barrier();
     g_live = d < layout::kLiveRadius;
@@ -1010,8 +1104,24 @@ void SetLook(int look)
     story::SetInt("look", look);
     LOG("БАЗА", "вид базы: %s", look ? "Готэм" : "Обычная");
     ui::Notice(look ? "Вид базы: «Готэм» — пасмурно, туман, дождь" : "Вид базы: «Обычная»", 5.0f);
-    if(look) Do(0x01B6, { Ai(RndI(0, 1) ? 8 : 9) });                                           // FORCE_WEATHER_NOW дождь/туман
+    if(look) { int w = RndI(0, 1) ? 8 : 9; Do(0x01B5, { Ai(w) }); Do(0x01B6, { Ai(w) }); }    // FORCE_WEATHER + _NOW: дождь/туман
     else Do(0x01B7, {});                                                                       // RELEASE_WEATHER
+}
+// Родной скрипт игры сбрасывает погоду — раз в 5 с проверяем и возвращаем «Готэм»
+void KeepWeather()
+{
+    static int16_t* forced = nullptr; static bool tried = false;
+    static uint32_t next = 0;
+    if(!tried) { tried = true; forced = (int16_t*)aml->GetSym(aml->GetLibHandle("libGTASA.so"), "_ZN8CWeather17ForcedWeatherTypeE"); }
+    uint32_t now = Now();
+    if(now < next && next - now < 10000) return;
+    next = now + 5000;
+    if(!forced || Look() != 1) return;
+    if(*forced == 8 || *forced == 9) return;
+    LOG("БАЗА", "погода сброшена игрой (%d) — снова «Готэм»", (int)*forced);
+    int w = RndI(0, 1) ? 8 : 9;
+    Do(0x01B5, { Ai(w) });                                                                     // FORCE_WEATHER
+    Do(0x01B6, { Ai(w) });                                                                     // FORCE_WEATHER_NOW
 }
 void HeliIntroLanded(int heliRef) { g_introHeli = heliRef; for(auto& hh : g_helis) if(hh.model == 497) { if(hh.handle > 0 && hh.handle != heliRef) Do(0x00A6, { Ai(hh.handle) }); hh.handle = heliRef; } }
 void AddCall() { story::SetInt("calls", story::GetInt("calls", 0) + 1); }

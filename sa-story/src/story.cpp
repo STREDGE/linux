@@ -157,6 +157,26 @@ SDECL_HOOKb(GenericSaveH, int slot)
     return r;
 }
 
+// Игра (и родной скрипт — команда «пересобрать игрока») надевает одежду CJ на того, кто сейчас игрок.
+// На скелете другой модели (S.W.A.T. 285) это даёт «CJ с вытянутыми руками». Пока герой в своём скине — не даём.
+static bool SkipRebuild(uintptr_t ped)
+{
+    if(!g_st.on || g_st.hero <= 0 || !ped || game::Model(ped) != g_st.hero) return false;
+    static uint32_t s_logAt = 0; uint32_t now = game::TimeMs();
+    if(now - s_logAt > 10000 || now < s_logAt) { s_logAt = now; LOG("РЕЖИМ", "игра хотела надеть одежду CJ на героя (модель %d) — пропущено", g_st.hero); }
+    return true;
+}
+SDECL_HOOKv(RebuildPlayerH, uintptr_t ped, bool ignoreFat)
+{
+    if(SkipRebuild(ped)) return;
+    RebuildPlayerH(ped, ignoreFat);
+}
+SDECL_HOOKv(RebuildPlayerIfNeededH, uintptr_t ped)
+{
+    if(SkipRebuild(ped)) return;
+    RebuildPlayerIfNeededH(ped);
+}
+
 SDECL_HOOK(bool, GenericLoadH, bool& ok)
 {
     WHERE("загрузка игры");
@@ -224,6 +244,11 @@ bool Install(void* h)
     aml->Hook(gs, (void*)HookOf_GenericSaveH, (void**)&GenericSaveH);
     aml->Hook(gl, (void*)HookOf_GenericLoadH, (void**)&GenericLoadH);
     aml->Hook(pc, (void*)HookOf_Cmd1000H, (void**)&Cmd1000H);
+    void* rb  = (void*)aml->GetSym(h, "_ZN8CClothes13RebuildPlayerEP10CPlayerPedb");
+    void* rbn = (void*)aml->GetSym(h, "_ZN8CClothes21RebuildPlayerIfNeededEP10CPlayerPed");
+    if(rb)  aml->Hook(rb,  (void*)HookOf_RebuildPlayerH, (void**)&RebuildPlayerH);
+    if(rbn) aml->Hook(rbn, (void*)HookOf_RebuildPlayerIfNeededH, (void**)&RebuildPlayerIfNeededH);
+    if(!rb || !rbn) LOG("ОШИБКА", "нет функций одежды игрока (%p, %p) — скин героя может ломаться", rb, rbn);
     ui::SetNewGameHandler([](int choice) { g_pendingChoice = choice; });
     g_installed = true;
     LOG("РЕЖИМ", "готов: при «Новой игре» — выбор «Обычная GTA / S.W.A.T.»");
@@ -265,6 +290,7 @@ void Frame()
     if(now >= g_nextContactScan || now + 10000 < g_nextContactScan) { g_nextContactScan = now + 2000; game::HideStoryContacts(); }
     ApplyStart();
     if(!g_weatherSet) { g_weatherSet = true; base::SetLook(GetInt("look", 1)); }
+    else base::KeepWeather();
 
     // неприкосновенность: героям звёзды не даются никогда, полиция дружественна
     if(now >= g_nextImmunity || now + 10000 < g_nextImmunity)
