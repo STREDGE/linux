@@ -394,6 +394,62 @@ namespace
     }
 
     // кнопка «Рация»
+    // Розыск по выбору Артёма (ТЗ §8): взял человека в прицел или стоит перед ним вплотную — кнопка «Розыск»,
+    // в меню 0–6 звёзд. Человек в машине — звёзды на водителе (вылезет — розыск идёт за ним, а не за машиной).
+    // Своих (сотрудники базы, подмога) не трогаем. Назначение звёзд не штрафуется.
+    bool Ours(uintptr_t p)
+    {
+        int ref = Ref(p);
+        if(base::StaffIndexOf(ref) >= 0) return true;
+        for(auto& u : g_units) if(u.ref == ref) return true;
+        return false;
+    }
+    uintptr_t PickStarsTarget()
+    {
+        uintptr_t pl = Player(); if(!pl) return 0;
+        uintptr_t t = PlayerTargetPed();
+        if(t && t != pl && PedAlive(t) && !Ours(t) && Dist(Pos(t), Pos(pl)) < 60) return t;
+        if(PedVehicle(pl)) return 0;                                                           // за рулём — только через прицел
+        V3 me = Pos(pl); float h = EntHeading(pl) * 0.0174533f; float fx = -sinf(h), fy = cosf(h);
+        uintptr_t best = 0; float bestScore = 1e9f;
+        ForEachPed([&](uintptr_t p) {
+            if(p == pl || !PedAlive(p) || Ours(p) || PedType(p) <= 1) return;                 // игроки — нет
+            V3 v = Pos(p); float d = Dist(v, me);
+            if(d > 4.0f) return;
+            float facing = ((v.x - me.x) * fx + (v.y - me.y) * fy) / (d + 0.01f);
+            if(facing < 0.3f) return;
+            float score = d * (1.6f - facing);
+            if(score < bestScore) { bestScore = score; best = p; }
+        });
+        return best;
+    }
+    void StarsButton()
+    {
+        if(ui::MenuOpen() || game::CutsceneRunning()) return;
+        uintptr_t p = PickStarsTarget();
+        if(!p) return;
+        int ref = Ref(p);
+        auto it = g_sus.find(ref);
+        int cur = it == g_sus.end() ? 0 : it->second.stars;
+        // звёзды над тем, кого выбрал (видно, кому дашь розыск)
+        if(!cur) ui::Stars(layout::G(Pos(p)), 0, false);
+        ui::ActionButton(1, cur ? "Розыск: " + std::to_string(cur) : std::string("Розыск"), [ref, cur]() {
+            static const char* kItems[] = { "Снять розыск", "1 — ближайший патруль", "2 — ещё патрули", "3 — усиленный розыск",
+                                            "4 — S.W.A.T.", "5 — + FBI и вертолёт", "6 — армия" };
+            std::vector<std::string> items(kItems, kItems + 7);
+            std::string title = cur ? "РОЗЫСК — сейчас " + std::to_string(cur) + " зв." : std::string("РОЗЫСК — СКОЛЬКО ЗВЁЗД?");
+            ui::OpenMenu(title, items, [ref](int i) {
+                if(i < 0) return;
+                ui::CloseMenu();
+                if(!Is(0x056D, { Ai(ref) })) { ui::Notice("Человек пропал"); return; }      // DOES_CHAR_EXIST
+                if(i == 0) { SetStars(ref, 0, "снят Артёмом"); ui::Notice("Розыск снят"); return; }
+                SetStars(ref, i, "по приказу Артёма");
+                ui::Notice(std::string("Розыск: ") + std::to_string(i) + (i == 1 ? " звезда" : i < 5 ? " звезды" : " звёзд"));
+                ui::Subtitle("Артём", i >= 4 ? "Центр, особо опасный! Всем постам!" : "Центр, объявляю в розыск.", 2.5f, 0x5AAAFF);
+            }, "Город реагирует по звёздам, как на CJ. Тебе за это ничего не будет.");
+        });
+    }
+
     void RadioButton()
     {
         if(ui::MenuOpen() || game::CutsceneRunning()) return;
@@ -516,6 +572,7 @@ void Frame()
     WHERE("розыск: подозреваемые"); SuspectsFrame();
     WHERE("розыск: подмога"); UnitsFrame();
     WHERE("розыск: вызов"); CallFrame();
+    StarsButton();
     RadioButton();
 }
 }

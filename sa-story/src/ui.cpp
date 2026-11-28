@@ -218,6 +218,7 @@ namespace
             game::Vec head = s.at; head.z += 1.25f;
             if(!game::WorldToScreen(head, sx, sy)) continue;
             if(s.surr) { Text(F_SMALL, sx, sy - U(4), Col(0x9AD08A, 1), 1, "сдался", U(30)); continue; }
+            if(s.stars <= 0) { Text(F_SMALL, sx, sy - U(4), Col(0xFFFFFF, 0.9f), 0.9f, "цель", U(30)); continue; }   // кого выбрал для розыска
             float r = U(1.3f), step = r * 2.3f;
             float x0 = sx - step * (s.stars - 1) * 0.5f;
             for(int i = 0; i < s.stars; ++i) { Star(ImVec2(x0 + step * i, sy - U(2.5f)), r * 1.25f, IM_COL32(0, 0, 0, 200)); Star(ImVec2(x0 + step * i, sy - U(2.5f)), r, Col(kGold, 1)); }

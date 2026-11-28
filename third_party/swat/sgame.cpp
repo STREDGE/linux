@@ -364,6 +364,17 @@ void Doors(const V3& near, float radius, std::vector<Door>& out)
     }
 }
 
+// Кого держит в захвате игрок: человек — он сам; машина — её водитель
+uintptr_t PlayerTargetPed()
+{
+    uintptr_t p = Player(); if(!p) return 0;
+    uintptr_t t = F<uintptr_t>(p, kPedLockOn);
+    if(!t) return 0;
+    int type = F<uint8_t>(t, kEntType) & 7;
+    if(type == 3) return t;
+    if(type == 2) return VehDriver(t);
+    return 0;
+}
 uintptr_t PlayerTarget()
 {
     uintptr_t p = Player(); if(!p) return 0;
