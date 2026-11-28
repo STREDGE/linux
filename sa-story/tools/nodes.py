@@ -63,3 +63,35 @@ if '--chains' in sys.argv:
     print('  узлы цепочки вне базы:')
     for k in sorted(seen - set(inside), key=lambda k: (nodes[k]['x'], nodes[k]['y'])):
         nd = nodes[k]; print('   %d:%d (%.0f, %.0f, %.0f) n=%d' % (k[0], k[1], nd['x'], nd['y'], nd['z'], nd['n']))
+
+# --- заголовок для мода: узлы, которые надо выключить, чтобы через базу не шло движение ---
+if '--roads' in sys.argv:
+    out = sys.argv[sys.argv.index('--roads') + 1]
+    B = [2600, -2460, 2768, -2332]
+    def nb2(k):
+        nd = nodes[k]; r = []
+        for j in range(nd['n']):
+            a, i = links[k[0]][nd['link'] + j]
+            if (a, i) in nodes: r.append((a, i))
+        return r
+    off = set(k for k, nd in nodes.items() if nd['veh'] and B[0] < nd['x'] < B[2] and B[1] < nd['y'] < B[3])
+    changed = True
+    while changed:
+        changed = False
+        for k in list(off):
+            for o in nb2(k):
+                if o in off: continue
+                outside = [q for q in nb2(o) if q not in off]
+                if len(outside) <= 1:          # узел цепочки или развилка, которая без нашей дороги стала бы тупиком
+                    off.add(o); changed = True
+    pts = sorted((nodes[k]['x'], nodes[k]['y'], nodes[k]['z']) for k in off)
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    o = ['// СГЕНЕРИРОВАНО tools/nodes.py --roads — руками не править.',
+         '// Узлы дорог для машин, которые выключаются в режиме S.W.A.T.: вся сквозная дорога через базу от развилки до развилки',
+         '// (мост из Уиллоуфилда → база → южная дорога порта, плюс восточная петля). Иначе машины с моста едут через базу:',
+         '// у них нет другого пути. Узлов: %d, охват x %.0f…%.0f, y %.0f…%.0f.' % (len(pts), min(xs), max(xs), min(ys), max(ys)),
+         '#pragma once', 'struct RoadNode { float x, y, z; };', 'static const RoadNode kRoadsOff[] = {']
+    for i in range(0, len(pts), 4): o.append('    ' + ' '.join('{ %.1ff, %.1ff, %.1ff },' % p for p in pts[i:i + 4]))
+    o += ['};', 'static const int kRoadsOffCount = (int)(sizeof(kRoadsOff) / sizeof(kRoadsOff[0]));', '']
+    open(out, 'w', encoding='utf-8', newline='\n').write('\n'.join(o))
+    print('узлов к выключению: %d, охват x %.0f..%.0f y %.0f..%.0f' % (len(pts), min(xs), max(xs), min(ys), max(ys)))

@@ -26,125 +26,32 @@ namespace base
 {
 namespace
 {
-    // ---------------------------------------------------------------- модели и детали
-    struct Box { int model; float cx, cy, zmin; };       // центр коллизии (x, y) и низ — из *.col игры
-    const Box kBoxes[] = {
-        { 987, 6.0f, 0.15f, 0.0f },      // elecfence_BAR (забор 12 м; начало в 0)
-        { 6946, -7.95f, -3.1f, -0.2f },  // vgnwalgren1 — штаб
-        { 3268, 0, 0, 0 },               // mil_hangar1_ — гаражи
-        { 2934, 0, 0, -1.5f },           // kmb_container_red — оружейная
-        { 2932, 0, 0, -1.5f },           // kmb_container_blue
-        { 3041, 0, 0, -0.5f },           // ct_table — прилавок
-        { 3626, 0, 0, -1.6f },           // dckwrkhut — медпункт, комнаты
-        { 3430, 0, 0, -1.7f },           // vegasbooth01 — будка КПП
-        { 966, -3.35f, 0, 0 },           // bar_gatebar01 — стрела шлагбаума
-        { 967, 0, 0, 0 },                // bar_gatebox01 — стойка шлагбаума
-        { 3279, 0.2f, -0.25f, -0.1f },   // a51_spottower — вышка
-        { 1280, 0, 0, -0.4f },           // parkbench1
-        { 1281, 0, 0, -0.8f },           // parktable1
-        { 914, 0, 0, -0.8f },            // GRILL
-        { 7090, 4.0f, 0, -3.4f },        // vegasflag1 — флаг
-        { 3928, -0.1f, -0.1f, 0.0f },    // helipad — площадка (наклейка)
-        { 974, 0, 0, -2.8f },            // tall_fence — решётка камеры
-        { 2603, 0, 0, 0 },               // Police_Cell_Bed
-        { 2602, 0, 0, 0 },               // Police_cell_Toilet
-        { 3025, -0.1f, 0, -3.6f },       // target_frame — мишень тира
-        { 1238, 0, 0, -0.3f },           // trafficcone
-        { 918, 0, 0, -0.4f },            // CJ_FLAME_Drum — бочка с огнём (Готэм)
-        { 1358, 0, 0, -1.2f },           // CJ_SKIP_Rubbish
-        { 1345, 0, 0, -0.8f },           // CJ_Dumpster
-        { 1226, 0, 0.2f, -3.9f },        // lamppost3
-        { 3864, 0, 0, -6.1f },           // WS_floodlight
-        { 1215, 0, 0, -0.6f },           // bollardlight
-        { 3577, 0, 0, -0.8f },           // DockCrates1_LA
-        { 2977, 0, 0, 0.1f },            // kmilitary_crate
-        { 3807, 0, 0, -0.7f },           // sfx_flag02
-    };
-    const Box* BoxOf(int m) { for(auto& b : kBoxes) if(b.model == m) return &b; return nullptr; }
+    // План построек — layout::kPieces (base_plan.h, сгенерирован tools/base_plan.py из файлов игры).
 
-    struct Piece { int model; float u, v, planH; float dz; int look; const char* what; };   // look: -1 всегда, 0 обычная, 1 Готэм
-    std::vector<Piece> Pieces()
+    // Чужие машины внутри забора: мод их НЕ удаляет (решение игрока — без костылей), только пишет в лог,
+    // чтобы найти и закрыть дыру, через которую они попали.
+    void IntruderLog()
     {
-        std::vector<Piece> p;
-        // ---- забор по периметру (электрозабор, звенья 12 м), разрыв под КПП ----
-        auto side = [&](float u0, float v0, float u1, float v1, float gapA, float gapB)
-        {
-            float len = sqrtf((u1 - u0) * (u1 - u0) + (v1 - v0) * (v1 - v0));
-            int n = (int)ceilf(len / 12.0f);
-            for(int i = 0; i < n; ++i)
-            {
-                float t0 = i * 12.0f, t1 = t0 + 12.0f;
-                float uu = u0 + (u1 - u0) * (t0 / len), vv = v0 + (v1 - v0) * (t0 / len);
-                float along = v0 == v1 ? uu : vv;
-                if(gapA < gapB && ((along + 12.0f > gapA && along < gapB) || (along > gapA && along < gapB))) continue;
-                (void)t1;
-                // курс по схеме: звено идёт от (u0,v0) к (u1,v1); planH — угол, на который повернуть ось X модели
-                float planH = atan2f(v1 - v0, u1 - u0) * 57.29578f;
-                p.push_back({ 987, uu, vv, planH, 0, -1, "забор" });
-            }
-        };
-        side(-80, 60, 80, 60, -10, 10);      // «север» схемы — сторона КПП (в мире — юг, к портовой дороге)
-        side(-80, -60, 80, -60, 1, 0);
-        side(-80, -60, -80, 60, 1, 0);
-        side(80, -60, 80, 60, 1, 0);
-        // ---- КПП ----
-        p.push_back({ 967, -8.5f, 60.5f, 0, 0, -1, "стойка шлагбаума" });
-        p.push_back({ 3430, 12.0f, 53.0f, 0, 0, -1, "будка КПП" });
-        // ---- штаб, площадка ----
-        p.push_back({ 6946, layout::kHqU, layout::kHqV, 0, 0, -1, "штаб" });
-        p.push_back({ 3928, layout::kPadU, layout::kPadV, 0, layout::kRoofZ - layout::kZ + 0.03f, -1, "площадка на крыше" });
-        // ---- гаражи (ангары), оружейная, тир, медпункт, комнаты, отдых, камера ----
-        p.push_back({ 3268, layout::kGarageU, 19.0f, 0, 0, -1, "служебный гараж 1" });
-        p.push_back({ 3268, layout::kGarageU, -12.0f, 0, 0, -1, "служебный гараж 2" });
-        p.push_back({ 3268, layout::kOwnGarageU, layout::kOwnGarageV, 0, 0, -1, "личный гараж" });
-        p.push_back({ 2934, layout::kArmoryU, layout::kArmoryV + 1.5f, 90, 0, -1, "оружейная" });
-        p.push_back({ 3041, layout::kArmoryU, layout::kArmoryV - 1.6f, 0, 0, -1, "прилавок оружейной" });
-        for(int i = 0; i < 4; ++i) p.push_back({ 3025, layout::kRangeTargetsU, layout::kRangeV - 4.5f + i * 3.0f, 90, 0, -1, "мишень" });
-        p.push_back({ 3041, layout::kRangeStandU + 1.5f, layout::kRangeV, 90, 0, -1, "стойка тира" });
-        p.push_back({ 3626, layout::kMedU, layout::kMedV + 1.0f, 0, 0, -1, "медпункт" });
-        p.push_back({ 3626, layout::kRoomU, layout::kArtyomV, 90, 0, -1, "комната Артёма" });
-        p.push_back({ 3626, layout::kRoomU, layout::kMagaV, 90, 0, -1, "комната Маги" });
-        p.push_back({ 1280, layout::kRestU - 2.5f, layout::kRestV, 0, 0, -1, "лавка" });
-        p.push_back({ 1280, layout::kRestU + 2.5f, layout::kRestV, 0, 0, -1, "лавка" });
-        p.push_back({ 1281, layout::kRestU, layout::kRestV + 0.2f, 90, 0, -1, "стол" });
-        p.push_back({ 914, layout::kRestU, layout::kRestV + 3.5f, 0, 0, -1, "мангал" });
-        // камера: решётка 13.4 × 13.4 (по 2 звена на сторону), кровать и унитаз
-        {
-            float cu = layout::kCellU, cv = layout::kCellV, h = 6.7f;
-            for(int s = -1; s <= 1; s += 2)
-            {
-                p.push_back({ 974, cu - 3.35f, cv + s * h, 0, 0, -1, "решётка камеры" });
-                p.push_back({ 974, cu + 3.35f, cv + s * h, 0, 0, -1, "решётка камеры" });
-                p.push_back({ 974, cu + s * h, cv - 3.35f, 90, 0, -1, "решётка камеры" });
-                if(s > 0) p.push_back({ 974, cu + s * h, cv + 3.35f, 90, 0, -1, "решётка камеры" });
-            }
-            p.push_back({ 2603, cu + 4.0f, cv - 4.0f, 0, 0, -1, "нары" });
-            p.push_back({ 2602, cu - 4.0f, cv - 4.5f, 0, 0, -1, "унитаз" });
-        }
-        // плац, флаг, вышки
-        p.push_back({ 7090, layout::kFlagU, layout::kFlagV, 0, 0, -1, "флаг" });
-        p.push_back({ 3279, -74, 54, 0, 0, -1, "вышка" });
-        p.push_back({ 3279, 74, 54, 0, 0, -1, "вышка" });
-        p.push_back({ 3279, -74, -54, 0, 0, -1, "вышка" });
-        p.push_back({ 3279, 74, -54, 0, 0, -1, "вышка" });
-        // ---- вид «Обычная»: яркие фонари, флажки, порядок ----
-        const float lamps[][2] = { { -40, 30 }, { 40, 30 }, { -40, -15 }, { 40, -15 }, { 0, 25 }, { 30, -20 } };
-        for(auto& l : lamps) p.push_back({ 1226, l[0], l[1], 0, 0, 0, "фонарь" });
-        p.push_back({ 3807, -8.0f, 58.5f, 0, 0, 0, "флажок у КПП" });
-        p.push_back({ 3807, 8.0f, 58.5f, 0, 0, 0, "флажок у КПП" });
-        for(int i = 0; i < 4; ++i) p.push_back({ 1215, -5.0f + i * 3.3f, -24.0f, 0, 0, 0, "фонарик у штаба" });
-        // ---- вид «Готэм»: мусор, бочки с огнём, ржавые контейнеры, половина фонарей не горит (их нет) ----
-        const float drums[][2] = { { -8, 46 }, { 20, 12 }, { -30, -18 }, { 58, 10 }, { 45, -40 }, { -50, 40 } };
-        for(auto& d : drums) p.push_back({ 918, d[0], d[1], 0, 0, 1, "бочка с огнём" });
-        p.push_back({ 1358, 30, 55, 0, 0, 1, "мусорный контейнер" });
-        p.push_back({ 1358, -50, -50, 90, 0, 1, "мусорный контейнер" });
-        p.push_back({ 1345, 70, 25, 90, 0, 1, "мусорка" });
-        p.push_back({ 1345, -30, -25, 0, 0, 1, "мусорка" });
-        p.push_back({ 2932, 40, 52, 30, 0, 1, "ржавый контейнер" });
-        p.push_back({ 3577, 44, 46, 15, 0, 1, "ящики" });
-        p.push_back({ 1226, -40, 30, 0, 0, 1, "фонарь" });
-        p.push_back({ 1226, 40, -15, 0, 0, 1, "фонарь" });
-        return p;
+        static std::vector<int> seen; static uint32_t next = 0, lastSum = 0; static int total = 0;
+        uint32_t now = NowMs();
+        if(now < next && next - now < 10000) return;
+        next = now + 2000;
+        uintptr_t mine = PedVehicle(Player());
+        ForEachVehicle([&](uintptr_t v) {
+            if(v == mine) return;
+            game::Vec p = layout::G(Pos(v));
+            if(!Inside(p, -4.0f) || !VehDriver(v)) return;
+            int m = Model(v);
+            bool service = m == 427 || m == 601 || m == 596 || m == 490 || m == 599 || m == 523 || m == 416 || m == 497 || m == 487 || m == 597 || m == 598 || m == 528 || m == 433 || m == 470;
+            if(service) return;
+            int ref = VehRef(v);
+            if(std::find(seen.begin(), seen.end(), ref) != seen.end()) return;
+            seen.push_back(ref); if(seen.size() > 64) seen.erase(seen.begin());
+            total++;
+            V3 vel = Velocity(v);
+            LOG("БАЗА", "ЧУЖАЯ МАШИНА внутри забора: модель %d в (%.0f, %.0f), едет (%.1f, %.1f) м/с — всего за игру %d", m, p.x, p.y, vel.x, vel.y, total);
+        });
+        if(now - lastSum > 120000) { lastSum = now; LOG("БАЗА", "чужих машин внутри забора за игру: %d", total); }
     }
 
     // ---------------------------------------------------------------- люди
@@ -154,20 +61,21 @@ namespace
         int ref = 0; bool released = false; uint32_t lineAt = 0, taskAt = 0; int route = 0; int animStep = 0;
         bool alarmHurt = false; uint32_t hurtAt = 0;
     };
+#define SPOT(i) layout::kStaffSpots[i].u, layout::kStaffSpots[i].v, layout::kStaffSpots[i].planH
     std::vector<Staff> g_staff = {
-        { "Охранник Бойко", 1, 280, -6.0f, 56.0f, 0, 22 },
-        { "Охранник Мартинес", 1, 282, 9.0f, 46.0f, 180, 22 },
-        { "Фрэнк", 2, 286, layout::kFrankU, layout::kFrankV + 4.0f, 180, 24 },
-        { "Томми", 3, 281, layout::kRestU + 4.5f, layout::kRestV - 1.0f, 270, 22 },
-        { "Сержант Ковальски", 0, 280, -30, 20, 90, 0 },
-        { "Офицер Рейес", 0, 282, 20, 30, 0, 0 },
-        { "Офицер Ли", 0, 281, -10, -10, 45, 0 },
-        { "Офицер Карлос", 0, 288, 35, 0, 270, 0 },
-        { "Офицер Ньюман", 0, 280, 10, 10, 135, 0 },
+        { "Охранник Бойко", 1, 280, SPOT(0), 22 },
+        { "Охранник Мартинес", 1, 282, SPOT(1), 22 },
+        { "Фрэнк", 2, 286, SPOT(2), 24 },
+        { "Томми", 3, 281, SPOT(3), 22 },
+        { "Сержант Ковальски", 0, 280, SPOT(4), 0 },
+        { "Офицер Рейес", 0, 282, SPOT(5), 0 },
+        { "Офицер Ли", 0, 281, SPOT(6), 0 },
+        { "Офицер Карлос", 0, 288, SPOT(7), 0 },
+        { "Офицер Ньюман", 0, 280, SPOT(8), 0 },
     };
-    // маршрут сотрудников по двору (пунктир на схеме)
-    const float kRoute[][2] = { { -50, 25 }, { -30, 30 }, { 20, 30 }, { 40, 15 }, { 40, -25 }, { 13, -23 }, { -30, -22 }, { -50, -10 } };
-    constexpr int kRouteN = (int)(sizeof(kRoute) / sizeof(kRoute[0]));
+#undef SPOT
+    // маршрут сотрудников по двору — layout::kRoute (вдоль проездов базы)
+    constexpr int kRouteN = (int)(sizeof(layout::kRoute) / sizeof(layout::kRoute[0]));
 
     const char* kGuardLines[2][4] = {
         { "Проезжай.", "С возвращением, Артём.", "На посту без происшествий.", "Документы? Шучу, проезжай." },
@@ -180,26 +88,30 @@ namespace
         { "Артём, тут даже шашлык мрачный.", "Я машину «починил». Она сама не знает.", "Говорят, в доках опять стреляли.", "Не смотри на меня так, я в форме!" } };
     const char* kStaffLines[2][3] = {
         { "Здравия желаю!", "Всё по графику.", "Хорошая погода сегодня." },
-        { "Опять туман…", "Лишь бы ночь пережить.", "Слышал сирены? Опять Гроув." } };
+        { "Опять льёт…", "Лишь бы ночь пережить.", "Слышал сирены? Опять Гроув." } };
 
     // ---------------------------------------------------------------- состояние
     struct Created { int handle; int model; const char* what; };
     std::vector<Created> g_objs;
-    int g_barrier = 0; bool g_barrierUp = false;
+    int g_gate[2] = { 0, 0 }; float g_gateOpen = 0; bool g_gateWant = false; uint32_t g_gateFreeAt = 0;   // створки ворот: 0 закрыты … 1 открыты
+    layout::Piece g_gatePiece[2] = {};
     int g_builtLook = -1;
     bool g_built = false, g_peopleOn = false, g_live = false;
     uint32_t g_nextCars = 0, g_nextAmbient = 0;
     int g_blipBase = 0;
     struct Car { int model; float u, v, planH; int handle; const char* what; uint32_t goneAt; };
     std::vector<Car> g_cars = {
-        { 427, -52.0f, 28.0f, 90, 0, "Enforcer", 0 }, { 601, -52.0f, 19.0f, 90, 0, "фургон S.W.A.T.", 0 },
-        { 596, -52.0f, 10.0f, 90, 0, "полицейская машина", 0 }, { 490, -52.0f, 1.0f, 90, 0, "FBI Rancher", 0 },
-        { 599, -52.0f, -8.0f, 90, 0, "полицейский джип", 0 }, { 523, -52.0f, -15.0f, 90, 0, "полицейский мотоцикл", 0 },
-        { 416, layout::kMedU + 9.0f, layout::kMedV, 0, 0, "скорая у медпункта", 0 },
+        { 427, layout::kFleetU, layout::kFleetV, 0, 0, "Enforcer", 0 }, { 601, layout::kFleetU - 4.0f, layout::kFleetV, 0, 0, "фургон S.W.A.T.", 0 },
+        { 596, layout::kFleetU - 8.0f, layout::kFleetV, 0, 0, "полицейская машина", 0 }, { 490, layout::kFleetU - 12.0f, layout::kFleetV, 0, 0, "FBI Rancher", 0 },
+        { 599, layout::kFleetU - 16.0f, layout::kFleetV, 0, 0, "полицейский джип", 0 }, { 523, layout::kFleetU - 20.0f, layout::kFleetV, 0, 0, "полицейский мотоцикл", 0 },
+        { 416, layout::kMedU - 13.0f, layout::kMedV + 1.0f, 90, 0, "скорая у медпункта", 0 },
     };
     struct Heli { int model; float u, v; int handle; uint32_t goneAt; const char* what; };
     std::vector<Heli> g_helis = { { 497, layout::kPadU, layout::kPadV, 0, 0, "полицейский «Маврик»" }, { 487, layout::kHeli2U, layout::kHeli2V, 0, 0, "«Маврик»" } };
     int g_introHeli = 0;
+    bool g_holdPad = false;                 // идёт вступление: площадка занята его вертолётом — свой «Маврик» не ставим
+    bool g_gateBlocked = false;             // Т149: Enforcer стоит в воротах
+    std::vector<int> g_blips;               // значки точек базы на карте
 
     // тревога и оборона
     bool g_alarm = false; uint32_t g_alarmAt = 0, g_quietSince = 0; std::string g_alarmWhy;
@@ -224,50 +136,30 @@ namespace
         for(int m : models) if(!Is(0x0248, { Ai(m) })) { Do(0x0247, { Ai(m) }); all = false; }   // HAS_MODEL_LOADED / REQUEST_MODEL
         return all;
     }
-    // где окажется начало модели, если её центр поставить в center (модели не центрированы)
-    game::Vec ObjOrigin(int model, const game::Vec& center, float worldH, float dz)
+    // Объект ставится командой «без смещения» (029B): начало модели — ровно в заданной точке.
+    // Обычная команда создания (0107) сама поднимает объект на высоту его низа — из-за этого первая база «висела».
+    int CreateAt(const layout::Piece& p, int* offCount)
     {
-        const Box* b = BoxOf(model);
-        float cx = b ? b->cx : 0, cy = b ? b->cy : 0, zmin = b ? b->zmin : 0;
-        float r = worldH * 0.0174533f;
-        game::Vec o;
-        o.x = center.x - (cx * cosf(r) - cy * sinf(r));
-        o.y = center.y - (cx * sinf(r) + cy * cosf(r));
-        o.z = layout::kZ + dz - zmin;
-        return o;
-    }
-    int CreateObj(int model, const game::Vec& center, float worldH, float dz, const char* what)
-    {
-        game::Vec o = ObjOrigin(model, center, worldH, dz);
-        float ox = o.x, oy = o.y, oz = o.z;
-        int h = OutI(0x0107, { Ai(model), Af(ox), Af(oy), Af(oz), Aoi() });                 // CREATE_OBJECT
-        if(h <= 0) { LOG("ОШИБКА", "База: объект %s (модель %d) не создан", what, model); return 0; }
-        Do(0x0177, { Ai(h), Af(worldH) });                                                   // SET_OBJECT_HEADING
+        int h = OutI(0x029B, { Ai(p.model), Af(p.x), Af(p.y), Af(p.z), Aoi() });               // CREATE_OBJECT_NO_OFFSET
+        if(h <= 0) { LOG("ОШИБКА", "База: объект %s (модель %d) не создан", p.what, p.model); return 0; }
+        Do(0x0177, { Ai(h), Af(p.h) });                                                      // SET_OBJECT_HEADING
         Do(0x0392, { Ai(h), Ai(0) });                                                        // SET_OBJECT_DYNAMIC 0 — не сдвинуть
         Do(0x09CA, { Ai(h), Ai(1), Ai(1), Ai(1), Ai(1), Ai(1) });                            // SET_OBJECT_PROOFS
-        g_objs.push_back({ h, model, what });
+        V3 at;
+        if(Out3(0x01BB, { Ai(h), Aof(), Aof(), Aof() }, at) && fabsf(at.z - p.z) > 0.05f)     // GET_OBJECT_COORDINATES — проверка высоты
+        {
+            if(offCount && (*offCount)++ < 6) LOG("БАЗА", "ВНИМАНИЕ: %s (модель %d) встал на высоту %.2f вместо %.2f", p.what, p.model, at.z, p.z);
+        }
+        g_objs.push_back({ h, p.model, p.what });
         return h;
     }
     void DeleteObjs()
     {
         for(auto& o : g_objs) if(Is(0x03CA, { Ai(o.handle) })) Do(0x0108, { Ai(o.handle) }); // DOES_OBJECT_EXIST / DELETE_OBJECT
-        g_objs.clear(); g_barrier = 0; g_builtLook = -1;
+        g_objs.clear(); g_gate[0] = g_gate[1] = 0; g_gateOpen = 0; g_builtLook = -1;
     }
 
     // ---------------------------------------------------------------- постройка
-    void PlaceOf(const Piece& p, game::Vec& c, float& wh)
-    {
-        c = W(p.u, p.v);
-        wh = PlanToWorldH(p.planH);
-        if(p.model == 987)
-        {   // звено забора: начало в точке, ось X модели — вдоль стороны
-            game::Vec e = W(p.u + 12.0f * cosf(p.planH * 0.0174533f), p.v + 12.0f * sinf(p.planH * 0.0174533f));
-            wh = atan2f(e.y - c.y, e.x - c.x) * 57.29578f;
-            float r = wh * 0.0174533f; c.x += 6.0f * cosf(r); c.y += 6.0f * sinf(r);   // центр звена
-        }
-    }
-    game::Vec BarrierSpot() { return W(-8.5f, 60.5f, 1.05f); }
-
     // Сохранение игры записывает объекты и машины, созданные скриптом. Удалять их ПЕРЕД сохранением нельзя:
     // автосохранение телефона идёт посреди отрисовки кадра — игра обращается к удалённому и падает.
     // Поэтому после загрузки, перед постройкой, убираем старые копии: та же модель на том же месте по плану.
@@ -284,13 +176,7 @@ namespace
     {
         struct Spot { int model; float x, y, r; };
         std::vector<Spot> spots;
-        for(auto& p : Pieces())
-        {
-            game::Vec c; float wh; PlaceOf(p, c, wh);
-            game::Vec o = ObjOrigin(p.model, c, wh, p.dz);
-            spots.push_back({ p.model, o.x, o.y, 0.8f });
-        }
-        { game::Vec a = BarrierSpot(); spots.push_back({ 966, a.x, a.y, 0.8f }); }
+        for(auto& p : layout::kPieces) spots.push_back({ p.model, p.x, p.y, p.model == 2933 ? 10.0f : 0.8f });   // створки ворот могли быть сдвинуты
         for(auto& c : g_cars) { game::Vec w = W(c.u, c.v); spots.push_back({ c.model, w.x, w.y, 5.0f }); }
         for(auto& h : g_helis) { game::Vec w = W(h.u, h.v); spots.push_back({ h.model, w.x, w.y, 6.0f }); }
         auto mine = [](int h) {
@@ -331,36 +217,47 @@ namespace
         if(objs || cars) LOG("БАЗА", "после загрузки убраны старые копии базы из сохранения: объектов %d, машин %d", objs, cars);
     }
 
+    // Дальность прорисовки: у объектов базы нет «дальних копий», игра рисует их только вблизи (30–200 м).
+    // На время режима поднимаем дальность моделей базы до 300 м — поле CBaseModelInfo::m_fDrawDistance.
+    uintptr_t g_modelInfoPtrs = 0;
+    constexpr uintptr_t kDrawDistOff = 0x38;                                                // CBaseModelInfo::Init пишет сюда 2000.0
+    void RaiseDrawDistance()
+    {
+        if(!g_modelInfoPtrs) return;
+        int done = 0, odd = 0;
+        for(auto& p : layout::kPieces)
+        {
+            uintptr_t mi = ((uintptr_t*)g_modelInfoPtrs)[p.model];
+            if(!mi) continue;
+            float& dd = Fld<float>(mi, kDrawDistOff);
+            if(dd >= 299.0f) continue;
+            if(dd < 5.0f || dd > 1500.0f) { odd++; continue; }                                // не похоже на дальность — не трогаем
+            dd = 300.0f; done++;
+        }
+        if(done || odd) LOG("БАЗА", "дальность прорисовки поднята до 300 м у %d моделей%s", done, odd ? " (у части поле не опознано — пропущены)" : "");
+    }
+
     bool Build()
     {
         CleanStale();
         int look = story::GetInt("look", 1);
-        std::vector<Piece> ps = Pieces();
         std::vector<int> models;
-        for(auto& p : ps) if((p.look < 0 || p.look == look) && std::find(models.begin(), models.end(), p.model) == models.end()) models.push_back(p.model);
-        models.push_back(966);
+        for(auto& p : layout::kPieces) if((p.look < 0 || p.look == look) && std::find(models.begin(), models.end(), p.model) == models.end()) models.push_back(p.model);
         if(!LoadModels(models)) return false;
-        int n = 0;
-        for(auto& p : ps)
+        RaiseDrawDistance();
+        int n = 0, off = 0, gates = 0;
+        for(auto& p : layout::kPieces)
         {
             if(p.look >= 0 && p.look != look) continue;
-            game::Vec c; float wh; PlaceOf(p, c, wh);
-            if(CreateObj(p.model, c, wh, p.dz, p.what)) n++;
+            int h = CreateAt(p, &off);
+            if(!h) continue;
+            n++;
+            if(p.model == 2933 && gates < 2) { g_gate[gates] = h; g_gatePiece[gates] = p; gates++; }   // створки ворот
         }
-        // стрела шлагбаума — отдельно (поднимается/опускается)
-        game::Vec arm = BarrierSpot();
-        g_barrier = OutI(0x0107, { Ai(966), Af(arm.x), Af(arm.y), Af(arm.z), Aoi() });
-        if(g_barrier > 0) { Do(0x0177, { Ai(g_barrier), Af(PlanToWorldH(0)) }); Do(0x0392, { Ai(g_barrier), Ai(0) }); g_objs.push_back({ g_barrier, 966, "стрела шлагбаума" }); n++; }
-        g_barrierUp = false;
+        g_gateOpen = 0; g_gateWant = false;
         for(int m : models) Do(0x0249, { Ai(m) });                                           // MARK_MODEL_AS_NO_LONGER_NEEDED
         g_builtLook = look;
-        LOG("БАЗА", "построена: %d объектов (вид «%s»)", n, look ? "Готэм" : "Обычная");
-        if(g_blipBase <= 0)
-        {
-            game::Vec c = W(0, 0);
-            g_blipBase = OutI(0x04CE, { Af(c.x), Af(c.y), Af(c.z), Ai(30), Aoi() });         // ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD (значок S)
-            if(g_blipBase <= 0) g_blipBase = OutI(0x02A8, { Af(c.x), Af(c.y), Af(c.z), Ai(30), Aoi() });
-        }
+        LOG("БАЗА", "построена: %d объектов (вид «%s»), створок ворот %d%s", n, look ? "Готэм" : "Обычная", gates, off ? " — у части объектов высота не та, см. выше" : "");
         return true;
     }
 
@@ -378,7 +275,7 @@ namespace
             {
                 // машину увели далеко — «вернётся сама», когда игрок отъедет (новая на месте, старую отпускаем)
                 uintptr_t v = Veh(c.handle);
-                bool away = v && Dist2(Pos(v), layout::V(W(c.u, c.v))) > 30;
+                bool away = v && Dist2(Pos(v), layout::V(W(c.u, c.v))) > 30 && !(g_gateBlocked && &c == &g_cars[0]);   // Enforcer в воротах — на службе
                 bool used = v && VehDriver(v) != 0;
                 if(away && !used && far) { Do(0x01C3, { Ai(c.handle) }); c.handle = 0; LOG("БАЗА", "%s оставлен в городе — на базе будет новый", c.what); }
                 continue;
@@ -398,6 +295,7 @@ namespace
         }
         for(auto& hh : g_helis)
         {
+            if(hh.model == 497 && g_holdPad && g_introHeli <= 0) continue;                      // вертолёт вступления ещё летит сюда
             if(hh.model == 497 && g_introHeli > 0)
             {
                 if(Is(0x056E, { Ai(g_introHeli) }) && !Is(0x0119, { Ai(g_introHeli) })) { hh.handle = g_introHeli; continue; }
@@ -426,27 +324,34 @@ namespace
     }
 
     // ---------------------------------------------------------------- шлагбаум
-    void Barrier()
+    // Откатные ворота: две створки разъезжаются в стороны. Открываются только своим: Артёму, служебным машинам
+    // и подмоге; закрываются через 3 с после того, как проезд свободен. Тревога (Т143) — закрыты.
+    void Gate()
     {
-        if(g_barrier <= 0) return;
+        if(g_gate[0] <= 0 || g_gate[1] <= 0) return;
         V3 gate = layout::WV(layout::kGateU, layout::kGateV);
-        bool open = false;
+        bool want = false;
         uintptr_t pl = Player();
-        if(pl && Dist(Pos(pl), gate) < 14.0f) open = true;                                     // герой
-        if(!open && !g_alarm)
-            ForEachVehicle([&](uintptr_t v) {                                                  // служебная машина
-                if(open) return;
+        if(pl && Dist(Pos(pl), gate) < 16.0f) want = true;                                     // герой
+        if(!want && !g_alarm)
+            ForEachVehicle([&](uintptr_t v) {                                                  // служебная машина / подмога
+                if(want) return;
                 int m = Model(v);
-                bool service = m == 427 || m == 601 || m == 596 || m == 490 || m == 599 || m == 523 || m == 416 || m == 597 || m == 598;
-                if(service && Dist(Pos(v), gate) < 16.0f && VehDriver(v)) open = true;
+                bool service = m == 427 || m == 601 || m == 596 || m == 490 || m == 599 || m == 523 || m == 416 || m == 597 || m == 598 || m == 528 || m == 433 || m == 470;
+                if(service && Dist(Pos(v), gate) < 20.0f && VehDriver(v)) want = true;
             });
-        if(g_alarm) open = false;                                                              // Т143: тревога — шлагбаум вниз
-        if(open == g_barrierUp) return;
-        g_barrierUp = open;
-        // стрела поворачивается вверх вокруг стойки
-        Do(0x0453, { Ai(g_barrier), Af(0), Af(open ? -80.0f : 0.0f), Af(PlanToWorldH(0)) });     // SET_OBJECT_ROTATION
-        Do(0x0382, { Ai(g_barrier), Ai(open ? 0 : 1) });                                       // SET_OBJECT_COLLISION
-        LOG("БАЗА", "шлагбаум %s", open ? "поднят" : "опущен");
+        uint32_t now = Now();
+        if(want) g_gateFreeAt = now;
+        bool open = want || (g_gateFreeAt && !Ago(g_gateFreeAt, 3000));
+        if(g_alarm) open = false;
+        if(open != g_gateWant) { g_gateWant = open; LOG("БАЗА", "ворота %s", open ? "открываются" : "закрываются"); }
+        for(int k = 0; k < 2; ++k)
+        {
+            const layout::Piece& gp = g_gatePiece[k];
+            float dir = gp.x > gate.x ? 1.0f : -1.0f;                                          // каждая створка уезжает от середины проезда
+            float tx = gp.x + (open ? dir * 8.9f : 0.0f);
+            Is(0x034E, { Ai(g_gate[k]), Af(tx), Af(gp.y), Af(gp.z), Af(0.09f), Af(0.09f), Af(0.09f), Ai(0) });   // SLIDE_OBJECT
+        }
     }
 
     // ---------------------------------------------------------------- люди
@@ -490,9 +395,11 @@ namespace
             V3 sp = Pos(ped);
             float d = Dist(sp, pp);
             // реплики, когда подходишь
-            if(d < 4.5f && Ago(s.lineAt, 25000))
+            static uint32_t lastLineAt = 0;
+            if(d < 4.5f && Ago(s.lineAt, 40000) && Ago(lastLineAt, 20000))
             {
-                int k = RndI(0, 3);
+                lastLineAt = Now();
+                int k = s.animStep++ % 4;                                                     // по кругу: фраза не повторяется, пока не сказаны остальные
                 if(s.kind == 1) SayLine(s, kGuardLines[look][k]);
                 else if(s.kind == 2) SayLine(s, kFrankLines[look][k]);
                 else if(s.kind == 3) SayLine(s, kTommyLines[look][k]);
@@ -514,7 +421,7 @@ namespace
                 case 2:   // Фрэнк: ходит туда-сюда у кабинета
                 {
                     s.route ^= 1;
-                    game::Vec t = W(layout::kFrankU + (s.route ? 4.0f : -2.0f), layout::kFrankV + 3.0f);
+                    game::Vec t = W(layout::kFrankU + (s.route ? 5.0f : -1.0f), layout::kFrankV - 2.5f);
                     Do(0x05D3, { Ai(s.ref), Af(t.x), Af(t.y), Af(t.z), Ai(4), Ai(12000) });
                     break;
                 }
@@ -523,7 +430,7 @@ namespace
                     s.route = (s.route + 1) % 4;
                     if(s.route == 3)
                     {
-                        game::Vec t = W(-48.0f, 10.0f);
+                        game::Vec t = W(layout::kFleetU - 6.0f, layout::kFleetV + 4.0f);
                         Do(0x05D3, { Ai(s.ref), Af(t.x), Af(t.y), Af(t.z), Ai(4), Ai(20000) });
                     }
                     else
@@ -540,7 +447,7 @@ namespace
                     if(r < kRouteN)
                     {
                         int k = (r + (int)(&s - &g_staff[0]) * 2) % kRouteN;
-                        game::Vec t = W(kRoute[k][0], kRoute[k][1]);
+                        game::Vec t = W(layout::kRoute[k].u, layout::kRoute[k].v);
                         Do(0x05D3, { Ai(s.ref), Af(t.x), Af(t.y), Af(t.z), Ai(4), Ai(15000) });
                     }
                     else if(r == kRouteN) Do(0x0605, { Ai(s.ref), As("M_smk_in"), As("SMOKING"), Af(4), Ai(0), Ai(0), Ai(0), Ai(0), Ai(6000) });
@@ -591,11 +498,12 @@ namespace
         g_def->Clear();
         g_def->SetHome(Mk(W(0, 0).x, W(0, 0).y, W(0, 0).z), 95.0f);
         std::vector<V3> posts;
-        const float P[][3] = { { -74, 54, 17 }, { 74, 54, 17 }, { -74, -54, 17 }, { 74, -54, 17 }, { -22, -26, 0 }, { 22, -26, 0 },
-                               { -55, 20, 0 }, { -55, -5, 0 }, { 12, 50, 0 }, { 0, -42, 9 } };   // вышки, углы штаба, гараж, будка, крыша
+        for(auto& t : layout::kTowers) { game::Vec w = W(t.u * 0.92f, t.v * 0.9f, 0); posts.push_back(Mk(w.x, w.y, w.z)); }   // у вышек
+        const float P[][3] = { { 26, 1, 0 }, { -26, 1, 0 }, { -46, -14, 0 }, { -30, 18, 0 }, { 12, 50, 0 }, { 30, 14, 0 } };  // углы штаба, ангары, городок, КПП, оружейная
         for(auto& q : P) { game::Vec w = W(q[0], q[1], q[2]); posts.push_back(Mk(w.x, w.y, w.z)); }
+        { game::Vec w = W(layout::kPadU, layout::kPadV); posts.push_back(Mk(w.x, w.y, layout::kRoofZ)); }                    // крыша
         g_def->SetPosts(posts);
-        game::Vec med = W(layout::kMedU, layout::kMedV - 3), arm = W(layout::kArmoryU, layout::kArmoryV - 3), cell = W(layout::kCellDropU, layout::kCellDropV), pad = W(layout::kPadU, layout::kPadV);
+        game::Vec med = W(layout::kMedU, layout::kMedV), arm = W(layout::kArmoryU, layout::kArmoryV), cell = W(layout::kCellDropU, layout::kCellDropV), pad = W(layout::kPadU, layout::kPadV);
         pad.z = layout::kRoofZ;
         g_def->SetPlace(0, Mk(med.x, med.y, med.z)); g_def->SetPlace(1, Mk(arm.x, arm.y, arm.z));
         g_def->SetPlace(2, Mk(cell.x, cell.y, cell.z)); g_def->SetPlace(3, Mk(pad.x, pad.y, pad.z));
@@ -627,6 +535,18 @@ namespace
                 Do(0x0687, { Ai(s.ref) });
                 s.taskAt = 0;
             }
+        if(g_gateBlocked && g_cars.size() && g_cars[0].handle > 0 && Is(0x056E, { Ai(g_cars[0].handle) }))
+        {   // Enforcer из ворот — обратно на стоянку
+            uintptr_t v = Veh(g_cars[0].handle);
+            if(v && !VehDriver(v))
+            {
+                game::Vec b = W(g_cars[0].u, g_cars[0].v, 0.6f);
+                Do(0x00AB, { Ai(g_cars[0].handle), Af(b.x), Af(b.y), Af(b.z) });               // SET_CAR_COORDINATES
+                Do(0x0175, { Ai(g_cars[0].handle), Af(PlanToWorldH(g_cars[0].planH)) });
+                LOG("ОБОРОНА", "Enforcer возвращён из ворот на стоянку");
+            }
+        }
+        g_gateBlocked = false;
         ui::Notice("Отбой тревоги. Чисто, все по местам.", 5.0f);
         ui::Subtitle("Фрэнк", "Чисто. Доклад принят. По местам!", 3.5f, 0xF2C14E);   // Т153: доклад Артёму
         g_raiders.clear();
@@ -669,8 +589,7 @@ namespace
         static uint32_t backupAt = 0;
         if(alive >= 6 && Ago(backupAt, 60000)) { backupAt = Now(); wanted::CallBackup(1, c.x, c.y, c.z, "много нападающих на базу"); ui::Subtitle("Фрэнк", "Центр, база атакована! Нужен S.W.A.T.!", 3.5f, 0xF2C14E); }
         // Т149: перекрыть въезд Enforcer'ом поперёк ворот
-        static bool blocked = false;
-        if(!blocked && g_cars.size() && g_cars[0].handle > 0)
+        if(!g_gateBlocked && g_cars.size() && g_cars[0].handle > 0)
         {
             uintptr_t v = Veh(g_cars[0].handle);
             if(v && !VehDriver(v))
@@ -678,7 +597,7 @@ namespace
                 game::Vec g = W(layout::kGateU, layout::kGateV - 4, 0.6f);
                 Do(0x00AB, { Ai(g_cars[0].handle), Af(g.x), Af(g.y), Af(g.z) });               // SET_CAR_COORDINATES
                 Do(0x0175, { Ai(g_cars[0].handle), Af(PlanToWorldH(90)) });
-                blocked = true;
+                g_gateBlocked = true;
                 LOG("ОБОРОНА", "Т149: въезд перекрыт Enforcer'ом");
             }
         }
@@ -693,7 +612,7 @@ namespace
                 s.alarmHurt = true; s.hurtAt = Now();
                 Do(0x0223, { Ai(s.ref), Ai(30) });
                 Do(0x02AB, { Ai(s.ref), Ai(1), Ai(1), Ai(1), Ai(1), Ai(1) });
-                game::Vec m = W(layout::kMedU, layout::kMedV - 3);
+                game::Vec m = W(layout::kMedU, layout::kMedV);
                 if(g_def) g_def->Remove(s.ref);
                 Do(0x05D3, { Ai(s.ref), Af(m.x), Af(m.y), Af(m.z), Ai(6), Ai(20000) });
                 ui::Subtitle(s.name, "Меня задело! Ухожу в медпункт!", 3, 0xFF8A65);
@@ -711,7 +630,7 @@ namespace
         while(g_def->PopEvent(e)) LOG("ОБОРОНА", "%s: %s", e.kind.c_str(), e.text.c_str());
         if(alive == 0 && g_def->Threats() == 0) { if(!g_quietSince) g_quietSince = Now(); }
         else g_quietSince = 0;
-        if(g_quietSince && Ago(g_quietSince, 15000)) { blocked = false; StopAlarm(); }
+        if(g_quietSince && Ago(g_quietSince, 15000)) StopAlarm();
         ui::Status(alive ? "ТРЕВОГА: на базе бой" : "ТРЕВОГА: осмотр периметра", 0xFF4D4D);
     }
     // учебное нападение (кабинет Фрэнка): банда у ворот
@@ -739,19 +658,20 @@ namespace
 
     // ---------------------------------------------------------------- маркеры и меню
     enum MarkerId { M_SAVE_A, M_SAVE_M, M_ARMORY, M_MED, M_LIFT_UP, M_LIFT_DOWN, M_FRANK, M_RANGE, M_OWN_GARAGE, M_CELL, M_COUNT };
-    struct Marker { int id; float u, v; float dz; bool inCar; const char* label; };
+    struct Marker { int id; float u, v; float dz; bool inCar; const char* label; const char* sign; const char* hint; };
     const Marker kMarkers[] = {
-        { M_SAVE_A, layout::kRoomDoorU, layout::kArtyomV, 0, false, "Комната Артёма" },
-        { M_SAVE_M, layout::kRoomDoorU, layout::kMagaV, 0, false, "Комната Маги" },
-        { M_ARMORY, layout::kArmoryU, layout::kArmoryV - 3.2f, 0, false, "Оружейная" },
-        { M_MED, layout::kMedU, layout::kMedV - 3.0f, 0, false, "Медпункт" },
-        { M_LIFT_UP, layout::kLiftU, layout::kLiftV, 0, false, "Наверх" },
-        { M_LIFT_DOWN, layout::kRoofLiftU, layout::kRoofLiftV, layout::kRoofZ - layout::kZ, false, "Вниз" },
-        { M_FRANK, layout::kFrankU, layout::kFrankV, 0, false, "Кабинет Фрэнка" },
-        { M_RANGE, layout::kRangeStandU + 3.0f, layout::kRangeV, 0, false, "Тир" },
-        { M_OWN_GARAGE, layout::kOwnGarageU + 14.0f, layout::kOwnGarageV, 0, true, "Личный гараж" },
-        { M_CELL, layout::kCellDropU, layout::kCellDropV, 0, false, "Сдать задержанного" },
+        { M_SAVE_A, layout::kArtyomU, layout::kArtyomV, 0, false, "Комната Артёма", "КОМНАТА АРТЁМА", "сохранить игру, отдохнуть" },
+        { M_SAVE_M, layout::kMagaU, layout::kMagaV, 0, false, "Комната Маги", "КОМНАТА МАГИ", "сохранить игру, отдохнуть" },
+        { M_ARMORY, layout::kArmoryU, layout::kArmoryV, 0, false, "Оружейная", "ОРУЖЕЙНАЯ", "оружие и бронежилет" },
+        { M_MED, layout::kMedU, layout::kMedV, 0, false, "Медпункт", "МЕДПУНКТ", "встань в круг — вылечат" },
+        { M_LIFT_UP, layout::kLiftU, layout::kLiftV, 0, false, "Наверх", "НА КРЫШУ", "к вертолётам" },
+        { M_LIFT_DOWN, layout::kRoofLiftU, layout::kRoofLiftV, layout::kRoofZ - layout::kZ, false, "Вниз", "ВНИЗ", "во двор" },
+        { M_FRANK, layout::kFrankU, layout::kFrankV, 0, false, "Кабинет Фрэнка", "ШТАБ — ФРЭНК", "вызовы, зарплата, сводка" },
+        { M_RANGE, layout::kRangeStandU + 3.0f, layout::kRangeV, 0, false, "Тир", "ТИР", "стрельба на время" },
+        { M_OWN_GARAGE, layout::kOwnGarageU, layout::kOwnGarageV, 0, true, "Личный гараж", "ЛИЧНЫЙ ГАРАЖ", "заезжай на машине" },
+        { M_CELL, layout::kCellDropU, layout::kCellDropV, 0, false, "Сдать задержанного", "КАМЕРА", "сдать задержанного" },
     };
+
     void Fade(int ms, bool in) { Do(0x016A, { Ai(ms), Ai(in ? 1 : 0) }); }
     void Teleport(const game::Vec& p, float h)
     {
@@ -827,7 +747,7 @@ namespace
             story::SetInt("garage_m" + std::to_string(n), model);
             story::SetInt("garage_c" + std::to_string(n), c[1].i * 256 + c[2].i);
             story::SetInt("garage_n", n + 1);
-            Do(0x0362, { Ai(PlayerChar()), Af(W(layout::kOwnGarageU + 16, layout::kOwnGarageV).x), Af(W(layout::kOwnGarageU + 16, layout::kOwnGarageV).y), Af(layout::kZ + 0.5f) });   // WARP_CHAR_FROM_CAR_TO_COORD
+            Do(0x0362, { Ai(PlayerChar()), Af(W(layout::kOwnGarageU + 6, layout::kOwnGarageV + 4).x), Af(W(layout::kOwnGarageU + 6, layout::kOwnGarageV + 4).y), Af(layout::kZ + 0.5f) });   // WARP_CHAR_FROM_CAR_TO_COORD
             Do(0x00A6, { Ai(carRef) });                                                         // DELETE_CAR
             ui::Notice("Машина поставлена в личный гараж (запишется при сохранении игры)");
             LOG("БАЗА", "личный гараж: машина %d на хранении (%d из 4)", model, n + 1);
@@ -894,7 +814,7 @@ namespace
         else if(Now() >= g_range.nextPop)
         {
             g_range.lane = RndI(0, 3);
-            game::Vec t = W(layout::kRangeTargetsU + 1.5f, layout::kRangeV - 4.5f + g_range.lane * 3.0f, 1.4f);
+            game::Vec t = W(layout::kRangeTargetsU - 1.5f, layout::kRangeV - 4.5f + g_range.lane * 3.0f, 1.4f);
             int h = OutI(0x0107, { Ai(1218), Af(t.x), Af(t.y), Af(t.z), Aoi() });                // barrel1 как мишень-поплавок (у мишеней тира нет «урона»)
             if(h > 0) { Do(0x0392, { Ai(h), Ai(0) }); g_range.target = h; g_range.popAt = Now(); }
         }
@@ -909,9 +829,12 @@ namespace
         for(auto& m : kMarkers)
         {
             game::Vec p = W(m.u, m.v, m.dz);
-            if(Dist2(Pos(Player()), Mk(p.x, p.y, p.z)) > 60) continue;
-            bool in = m.inCar ? Is(0x00FE, { Ai(pc), Af(p.x), Af(p.y), Af(p.z), Af(3.0f), Af(3.0f), Af(2.5f), Ai(1) })   // LOCATE_CHAR_ANY_MEANS_3D (рисует круг)
-                              : (!inCar && Is(0x00FF, { Ai(pc), Af(p.x), Af(p.y), Af(p.z), Af(1.2f), Af(1.2f), Af(2.0f), Ai(1) }));   // LOCATE_CHAR_ON_FOOT_3D
+            float md = Dist(Pos(Player()), Mk(p.x, p.y, p.z));
+            if(md > 120) continue;
+            // надпись над точкой: издалека — название, вблизи — ещё и что тут делают
+            if(md < 90) { game::Vec sg = p; sg.z += 3.2f; ui::Sign(sg, m.sign, md < 18 ? m.hint : "", md < 40 ? 0xF2C14E : 0xD8DCE2); }
+            bool in = m.inCar ? Is(0x00FE, { Ai(pc), Af(p.x), Af(p.y), Af(p.z), Af(3.5f), Af(3.5f), Af(2.5f), Ai(1) })   // LOCATE_CHAR_ANY_MEANS_3D (рисует круг)
+                              : (!inCar && Is(0x00FF, { Ai(pc), Af(p.x), Af(p.y), Af(p.z), Af(2.0f), Af(2.0f), Af(2.0f), Ai(1) }));   // LOCATE_CHAR_ON_FOOT_3D
             if(in) now = m.id;
         }
         if(now == g_inMarker) return;
@@ -925,12 +848,13 @@ namespace
             case M_ARMORY: ArmoryMenu(); break;
             case M_MED:
                 Do(0x0223, { Ai(pc), Ai(176) });                                                  // SET_CHAR_HEALTH (игра сама ограничит максимумом игрока)
-                ui::Notice("Медпункт: здоровье восстановлено");
+                Do(0x035F, { Ai(pc), Ai(100) });                                                  // ADD_ARMOUR_TO_CHAR — заодно бронежилет
+                ui::Notice("Медпункт: здоровье и броня восстановлены");
                 break;
             case M_LIFT_UP:
             {
                 Fade(400, false);
-                game::Vec r = W(layout::kRoofLiftU - 2.0f, layout::kRoofLiftV - 2.0f, layout::kRoofZ - layout::kZ + 0.3f);
+                game::Vec r = W(layout::kRoofLiftU - 2.5f, layout::kRoofLiftV - 2.5f, layout::kRoofZ - layout::kZ + 0.5f);
                 Teleport(r, PlanToWorldH(180)); Fade(700, true);
                 g_inMarker = M_LIFT_DOWN;
                 break;
@@ -938,7 +862,7 @@ namespace
             case M_LIFT_DOWN:
             {
                 Fade(400, false);
-                game::Vec r = W(layout::kLiftU, layout::kLiftV + 2.5f, 0.3f);
+                game::Vec r = W(layout::kLiftU, layout::kLiftV + 3.0f, 0.5f);
                 Teleport(r, PlanToWorldH(0)); Fade(700, true);
                 g_inMarker = M_LIFT_UP;
                 break;
@@ -969,18 +893,19 @@ namespace
 bool Init(void* h)
 {
     g_objPoolSym = aml->GetSym(h, "_ZN6CPools14ms_pObjectPoolE");
+    g_modelInfoPtrs = aml->GetSym(h, "_ZN10CModelInfo16ms_modelInfoPtrsE");
     g_vehPoolSym = aml->GetSym(h, "_ZN6CPools15ms_pVehiclePoolE");
     return true;
 }
 
 void Reset()
 {
-    g_objs.clear(); g_barrier = 0; g_builtLook = -1; g_built = false; g_peopleOn = false; g_blipBase = 0;
+    g_objs.clear(); g_gate[0] = g_gate[1] = 0; g_gateOpen = 0; g_gateWant = false; g_builtLook = -1; g_built = false; g_peopleOn = false; g_blipBase = 0;
     for(auto& s : g_staff) { s.ref = 0; s.released = false; }
     for(auto& c : g_cars) { c.handle = 0; c.goneAt = 0; }
     for(auto& hh : g_helis) { hh.handle = 0; hh.goneAt = 0; }
     g_alarm = false; g_raiders.clear(); if(g_def) g_def->Clear();
-    g_range = Range(); g_jailed.clear(); g_inMarker = -1; g_introHeli = 0;
+    g_range = Range(); g_jailed.clear(); g_inMarker = -1; g_introHeli = 0; g_holdPad = false; g_gateBlocked = false; g_blips.clear();
 }
 
 void BeforeSave()
@@ -988,6 +913,8 @@ void BeforeSave()
     // ничего не удаляем: автосохранение идёт посреди отрисовки — удаление роняет игру. Копии из сохранения
     // убирает CleanStale после загрузки. Значок базы снимаем — иначе после загрузки их будет два.
     if(g_blipBase > 0) { Do(0x0164, { Ai(g_blipBase) }); g_blipBase = 0; }
+    for(int b : g_blips) Do(0x0164, { Ai(b) });
+    g_blips.clear();
 }
 
 void Teardown()
@@ -1009,7 +936,7 @@ void Frame()
     game::Vec c = W(0, 0);
     float d = Dist2(Pos(pl), Mk(c.x, c.y, c.z));
     uint32_t now = Now();
-    bool wantBuild = d < 450.0f;
+    bool wantBuild = d < 700.0f;                                       // заранее: на подлёте база уже стоит целиком
     if(wantBuild && (!g_built || g_builtLook != story::GetInt("look", 1)))
     {
         if(g_built) { DeleteObjs(); g_built = false; }
@@ -1017,22 +944,29 @@ void Frame()
         g_built = Build();
         WHERE("кадр: S.W.A.T.");
     }
-    if(!wantBuild && g_built && d > 600.0f) { Teardown(); return; }   // уехал далеко — освободить память
+    if(!wantBuild && g_built && d > 900.0f) { Teardown(); return; }   // уехал далеко — освободить память
     if(!g_built) return;
     if(g_blipBase <= 0)
     {
         game::Vec bc = W(0, 0);
-        g_blipBase = OutI(0x04CE, { Af(bc.x), Af(bc.y), Af(bc.z), Ai(30), Aoi() });           // значок базы (снят перед сохранением)
+        g_blipBase = OutI(0x02A8, { Af(bc.x), Af(bc.y), Af(bc.z), Ai(30), Aoi() });           // значок базы на всей карте (снимается перед сохранением)
+    }
+    if(g_blips.empty() && d < 400.0f)
+    {   // значки точек базы на мини-карте: медпункт, оружейная, комната (сохранение), гараж
+        const struct { float u, v; int sprite; } B[] = { { layout::kMedU, layout::kMedV, 22 }, { layout::kArmoryU, layout::kArmoryV, 6 },
+            { layout::kArtyomU, layout::kArtyomV, 35 }, { layout::kOwnGarageU, layout::kOwnGarageV, 55 } };
+        for(auto& b : B) { game::Vec w = W(b.u, b.v); int h = OutI(0x04CE, { Af(w.x), Af(w.y), Af(w.z), Ai(b.sprite), Aoi() }); if(h > 0) g_blips.push_back(h); }
     }
     if(now >= g_nextCars || now + 10000 < g_nextCars) { g_nextCars = now + 1500; WHERE("база: транспорт"); KeepCars(); }
-    WHERE("база: шлагбаум"); Barrier();
+    WHERE("база: ворота"); Gate();
+    IntruderLog();
     g_live = d < layout::kLiveRadius;
     if(g_live)
     {
         // надпись при заходе в ворота
         static bool wasInside = false;
         bool inside = Inside(game::PlayerPos(), 0);
-        if(inside && !wasInside) ui::Title("БАЗА S.W.A.T.", 2.5f);
+        if(inside && !wasInside && !g_holdPad) ui::Title("БАЗА S.W.A.T.", 2.5f);
         wasInside = inside;
         if(AnimsReady() && (now >= g_nextAmbient || now + 10000 < g_nextAmbient)) { g_nextAmbient = now + 400; WHERE("база: люди"); PeopleFrame(); }
         g_peopleOn = true;
@@ -1103,8 +1037,8 @@ void SetLook(int look)
 {
     story::SetInt("look", look);
     LOG("БАЗА", "вид базы: %s", look ? "Готэм" : "Обычная");
-    ui::Notice(look ? "Вид базы: «Готэм» — пасмурно, туман, дождь" : "Вид базы: «Обычная»", 5.0f);
-    if(look) { int w = RndI(0, 1) ? 8 : 9; Do(0x01B5, { Ai(w) }); Do(0x01B6, { Ai(w) }); }    // FORCE_WEATHER + _NOW: дождь/туман
+    ui::Notice(look ? "Вид базы: «Готэм» — пасмурно, дождь" : "Вид базы: «Обычная»", 5.0f);
+    if(look) { int w = RndI(0, 3) ? 4 : 8; Do(0x01B5, { Ai(w) }); Do(0x01B6, { Ai(w) }); }    // FORCE_WEATHER + _NOW: пасмурно, реже дождь (туман 9 убран — не видно базы)
     else Do(0x01B7, {});                                                                       // RELEASE_WEATHER
 }
 // Родной скрипт игры сбрасывает погоду — раз в 5 с проверяем и возвращаем «Готэм»
@@ -1117,13 +1051,14 @@ void KeepWeather()
     if(now < next && next - now < 10000) return;
     next = now + 5000;
     if(!forced || Look() != 1) return;
-    if(*forced == 8 || *forced == 9) return;
+    if(*forced == 4 || *forced == 8) return;
     LOG("БАЗА", "погода сброшена игрой (%d) — снова «Готэм»", (int)*forced);
-    int w = RndI(0, 1) ? 8 : 9;
+    int w = RndI(0, 3) ? 4 : 8;
     Do(0x01B5, { Ai(w) });                                                                     // FORCE_WEATHER
     Do(0x01B6, { Ai(w) });                                                                     // FORCE_WEATHER_NOW
 }
-void HeliIntroLanded(int heliRef) { g_introHeli = heliRef; for(auto& hh : g_helis) if(hh.model == 497) { if(hh.handle > 0 && hh.handle != heliRef) Do(0x00A6, { Ai(hh.handle) }); hh.handle = heliRef; } }
+void HoldPad(bool on) { g_holdPad = on; }
+void HeliIntroLanded(int heliRef) { g_holdPad = false; g_introHeli = heliRef; for(auto& hh : g_helis) if(hh.model == 497) { if(hh.handle > 0 && hh.handle != heliRef) Do(0x00A6, { Ai(hh.handle) }); hh.handle = heliRef; } }
 void AddCall() { story::SetInt("calls", story::GetInt("calls", 0) + 1); }
 void AddEarned(int usd) { story::SetInt("earned", story::GetInt("earned", 0) + usd); }
 }

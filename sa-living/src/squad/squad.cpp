@@ -510,6 +510,14 @@ bool Active() { return ModeOn() && !g_m.empty(); }
 bool IsMember(uintptr_t ped) { int r = game::Ref(ped); return ped && ByRef(r) != nullptr; }
 bool HeadThinking() { return g_req != 0; }
 
+// Сотрудник базы S.W.A.T. или боец отряда: создан скриптом SA Story, но говорить с ним можно (иначе отряд не набрать)
+bool CanTalk(uintptr_t ped)
+{
+    if(!ped || !Active()) return false;
+    if(IsMember(ped)) return true;
+    return g_api && g_api->StaffIndexOf && g_api->StaffIndexOf(game::Ref(ped)) >= 0;
+}
+
 bool ListenForSquad(uintptr_t picked)
 {
     if(!Active()) return false;

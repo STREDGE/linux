@@ -36,6 +36,8 @@ namespace ui
     void ActionButton(int slot, const std::string& label, std::function<void()> fn);
     // Звёзды розыска над человеком (в этом кадре)
     void Stars(const game::Vec& world, int stars, bool surrendered);
+    // Надпись над точкой в мире (в этом кадре): название и подсказка под ним
+    void Sign(const game::Vec& world, const std::string& text, const std::string& hint, unsigned rgb);
     // Строка справа вверху (статус базы/тревога) в этом кадре
     void Status(const std::string& text, unsigned rgb);
 }

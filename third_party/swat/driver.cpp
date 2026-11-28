@@ -282,14 +282,20 @@ namespace
             {
                 V3 want = Mk(tgt.x, tgt.y, tgt.z + h.alt);
                 float d = Dist(p, want);
-                if(d > 12) HeliGoto(h, want, h.alt, h.alt + 10);
+                if(d > 70)
+                {   // точка может быть над крышей: высоты полёта считаем от земли под вертолётом, а не от точки
+                    float rel = want.z - ground;
+                    HeliGoto(h, want, rel > 12 ? rel - 4 : 8, rel + 12);
+                }
                 else
-                {
+                {   // последние 70 м ведём сами: скорость падает с расстоянием (14 м/с → 1,5 м/с), без рывка и без проскока
                     h.kinematic = true;
-                    V3 vel = Mul(Sub(want, p), 0.8f);
-                    float l = sqrtf(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
-                    if(l > 6) vel = Mul(vel, 6 / l);
-                    SetMoveSpeed(v, vel);
+                    V3 dir = Sub(want, p);
+                    float l = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+                    float sp = Clamp(l * 0.45f, d < 1.0f ? 0.0f : 1.5f, 14.0f);
+                    V3 desired = l > 0.01f ? Mul(dir, sp / l) : Mk(0, 0, 0);
+                    V3 cur = Velocity(v);
+                    SetMoveSpeed(v, Add(cur, Mul(Sub(desired, cur), 0.08f)));
                 }
                 break;
             }
@@ -321,7 +327,7 @@ namespace
                 {
                     if(Now() - h.lastCmd > 2500) { h.lastCmd = Now(); Do(0x0743, { Ai(h.heli), Af(tgt.x), Af(tgt.y), Af(tgt.z), Af(5.0f), Af(25.0f) }); }   // HELI_LAND_AT_COORDS
                 }
-                else if(above > 0.9f)
+                else if(above > 1.6f)                 // начало модели вертолёта стоит ~1,3 м над поверхностью
                 {
                     h.kinematic = true;
                     V3 vel = Mk((tgt.x - p.x) * 0.9f, (tgt.y - p.y) * 0.9f, -Clamp(above * 0.5f, 0.8f, 3.0f));

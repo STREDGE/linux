@@ -23,8 +23,8 @@ namespace
         switch(id)
         {
             case SWAT_PLACE_CENTER: break;
-            case SWAT_PLACE_MEDBAY: u = layout::kMedU; v = layout::kMedV - 4; break;
-            case SWAT_PLACE_ARMORY: u = layout::kArmoryU; v = layout::kArmoryV - 3.2f; break;
+            case SWAT_PLACE_MEDBAY: u = layout::kMedU; v = layout::kMedV + 2; break;
+            case SWAT_PLACE_ARMORY: u = layout::kArmoryU; v = layout::kArmoryV; break;
             case SWAT_PLACE_CELL: u = layout::kCellDropU; v = layout::kCellDropV; break;
             case SWAT_PLACE_HELIPAD: u = layout::kPadU; v = layout::kPadV; dz = layout::kRoofZ - layout::kZ; break;
             case SWAT_PLACE_GATE: u = layout::kGateU; v = layout::kGateV - 6; break;

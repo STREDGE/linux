@@ -12,6 +12,7 @@
 
 #include "demolish_list.h"
 #include "layout.h"
+#include "roads_off.h"
 #include "log.h"
 #include "script.h"
 
@@ -104,6 +105,15 @@ void Frame(bool swat)
     {   // дороги для машин и пешеходов внутри базы — выключить (как INTRO)
         g_roadsOff = true;
         script::Do(0x01E8, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_ROADS_OFF
+        // Дорога через базу — сквозная (мост → база → юг порта): выключаем её всю, от развилки до развилки (roads_off.h),
+        // иначе у машин с моста нет другого пути и они едут через базу. Так же делает игра в миссиях.
+        for(int i = 0; i < kRoadsOffCount; ++i)
+        {
+            const RoadNode& n = kRoadsOff[i];
+            std::vector<script::Arg> a = { script::Arg::F(n.x - 3), script::Arg::F(n.y - 3), script::Arg::F(n.z - 20), script::Arg::F(n.x + 3), script::Arg::F(n.y + 3), script::Arg::F(n.z + 20) };
+            script::Run(0x01E8, a, nullptr, true);                                              // SWITCH_ROADS_OFF (без записи каждой в лог)
+        }
+        LOG("СНОС", "сквозная дорога через базу выключена целиком: %d узлов (мост, южная дорога порта, петля)", kRoadsOffCount);
         script::Do(0x022B, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_PED_ROADS_OFF
         LOG("СНОС", "дороги и пешие пути внутри базы выключены");
     }

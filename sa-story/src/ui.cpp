@@ -180,6 +180,8 @@ namespace
     Act g_act[3];
     struct StarMark { game::Vec at; int stars; bool surr; };
     std::vector<StarMark> g_stars;
+    struct SignMark { game::Vec at; std::string text, hint; unsigned rgb; };
+    std::vector<SignMark> g_signs;
     std::string g_status; unsigned g_statusRgb = 0xFFFFFF; bool g_statusOn = false;
 
     void DrawActs()
@@ -222,6 +224,17 @@ namespace
         }
         g_stars.clear();
     }
+    void DrawSigns()
+    {
+        for(auto& s : g_signs)
+        {
+            float sx, sy;
+            if(!game::WorldToScreen(s.at, sx, sy)) continue;
+            Text(F_SMALL, sx, sy, Col(s.rgb, 1), 1, s.text, U(60));
+            if(!s.hint.empty()) Text(F_SMALL, sx, sy + U(3.2f), Col(0xFFFFFF, 0.85f), 0.85f, s.hint, U(70));
+        }
+        g_signs.clear();
+    }
 
     void DrawHud()
     {
@@ -234,7 +247,7 @@ namespace
             if(!g_result.b.empty()) Text(F_HEAD, W * 0.5f, H * 0.40f, Col(0xFFFFFF, a), a, g_result.b, W * 0.8f);
         }
         else if(float a = Alpha(g_title, now)) Text(F_BIG, W * 0.5f, H * 0.34f, Col(kGold, a), a, g_title.a, W * 0.9f);
-        if(float a = Alpha(g_notice, now)) Text(F_BODY, W * 0.5f, H * 0.08f, Col(0x4FD15A, a), a, g_notice.a, W * 0.8f);
+        if(float a = Alpha(g_notice, now)) Text(F_BODY, W * 0.5f, H * 0.21f, Col(0x4FD15A, a), a, g_notice.a, W * 0.8f);
         if(!cut)
         {
             if(g_timer >= 0)
@@ -249,7 +262,9 @@ namespace
             }
             if(g_statusOn) Text(F_SMALL, W * 0.84f, H * 0.32f, Col(g_statusRgb, 1), 1, g_status, W * 0.3f);
             DrawStars();
+            DrawSigns();
         }
+        g_stars.clear(); g_signs.clear();
         g_statusOn = false;
         if(float a = Alpha(g_sub, now))
         {
@@ -383,5 +398,6 @@ void CloseMenu() { g_menu.open = false; }
 bool MenuOpen() { return g_menu.open; }
 void ActionButton(int slot, const std::string& label, std::function<void()> fn) { if(slot < 0 || slot > 2) return; g_act[slot].label = label; g_act[slot].fn = std::move(fn); g_act[slot].on = true; }
 void Stars(const game::Vec& w, int stars, bool surr) { if(g_stars.size() < 32) g_stars.push_back({ w, stars, surr }); }
+void Sign(const game::Vec& w, const std::string& text, const std::string& hint, unsigned rgb) { if(g_signs.size() < 24) g_signs.push_back({ w, text, hint, rgb }); }
 void Status(const std::string& t, unsigned rgb) { g_status = t; g_statusRgb = rgb; g_statusOn = true; }
 }

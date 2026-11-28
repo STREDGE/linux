@@ -116,7 +116,7 @@ namespace
     {   // однократно после новой игры/загрузки в режиме: точка возрождения — медпункт базы, вид базы
         if(g_restartSet || !game::Player()) return;
         g_restartSet = true;
-        game::Vec m = layout::W(layout::kMedU, layout::kMedV - 4.0f, 0.5f);
+        game::Vec m = layout::W(layout::kMedU, layout::kMedV + 3.0f, 0.5f);
         script::Do(0x08DF, { script::Arg::F(m.x), script::Arg::F(m.y), script::Arg::F(m.z), script::Arg::F(6000.0f), script::Arg::F(layout::H(0)) });   // SET_EXTRA_HOSPITAL_RESTART_POINT
         script::Do(0x08E0, { script::Arg::F(m.x), script::Arg::F(m.y), script::Arg::F(m.z), script::Arg::F(6000.0f), script::Arg::F(layout::H(0)) });   // ..._POLICE_STATION_ (на всякий)
         LOG("РЕЖИМ", "точка возрождения — медпункт базы");
@@ -305,7 +305,7 @@ void Frame()
     if(hp <= 0 && !g_dead)
     {
         g_dead = true;
-        game::Vec m = layout::W(layout::kMedU, layout::kMedV - 4.0f, 0.5f);
+        game::Vec m = layout::W(layout::kMedU, layout::kMedV + 3.0f, 0.5f);
         script::Do(0x016E, { script::Arg::F(m.x), script::Arg::F(m.y), script::Arg::F(m.z), script::Arg::F(layout::H(0)) });   // OVERRIDE_NEXT_RESTART
         LOG("РЕЖИМ", "Артём погиб — возрождение в медпункте базы");
     }

@@ -89,7 +89,17 @@ namespace
         V3 at; float h = 0;
         bool heli = kind == 4;
         if(heli) { at = Add(near, Mul(Dir(Rnd(0, 360)), 140.0f)); at.z = near.z + 45; }
-        else if(!OffscreenNode(near, 70, 140, at, h)) { LOG("РОЗЫСК", "подмога (%d): нет точки «из-за угла» — позже", kind); return false; }
+        else if(!OffscreenNode(near, 70, 140, at, h) && !OffscreenNode(near, 120, 300, at, h))
+        {   // скрытой точки рядом нет (например, игрок на базе: вокруг открытая площадка) — берём дорогу подальше
+            V3 probe = base::Inside(layout::G(near), 10.0f) ? layout::WV(0, 110.0f) : Add(near, Mul(Dir(Rnd(0, 360)), 160.0f));
+            if(!NthCarNode(probe, 1, at, h))
+            {
+                LOG("РОЗЫСК", "подмога (%d): рядом нет дороги — не может проехать", kind);
+                ui::Notice("Подмога не может проехать к тебе");
+                return false;
+            }
+            LOG("РОЗЫСК", "подмога (%d): скрытой точки нет — появится на дороге в %.0f м", kind, Dist2(at, near));
+        }
         int car = OutI(0x00A5, { Ai(sq.car), Af(at.x), Af(at.y), Af(at.z + (heli ? 0 : 0.5f)), Aoi() });
         if(car <= 0) return false;
         Do(0x0175, { Ai(car), Af(heli ? Heading(at, near) : h) });

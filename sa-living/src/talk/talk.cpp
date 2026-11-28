@@ -755,11 +755,11 @@ namespace
         float h = game::Heading(pl);
         float fx = -sinf(h), fy = cosf(h);
         uintptr_t target = game::PlayerTarget();
-        if(target && target != game::Player2() && game::Alive(target) && (!game::IsScriptPed(target) || CoopCopy(target)) && game::Dist(game::Pos(target), me) < 15) return target;
+        if(target && target != game::Player2() && game::Alive(target) && (!game::IsScriptPed(target) || CoopCopy(target) || squad::CanTalk(target)) && game::Dist(game::Pos(target), me) < 15) return target;
         uintptr_t best = 0; float bestScore = 1e9f;
         game::ForEachPed([&](uintptr_t p) {
             if(p == pl || p == game::Player2() || game::IsPlayer(p) || !game::Alive(p)) return;
-            if(game::IsScriptPed(p) && !CoopCopy(p)) return;   // педы миссий — не трогаем (сломается сценарий); копии хоста у друга — можно
+            if(game::IsScriptPed(p) && !CoopCopy(p) && !squad::CanTalk(p)) return;   // педы миссий — не трогаем (сломается сценарий); копии хоста у друга и сотрудники базы S.W.A.T. — можно
             game::Vec v = game::Pos(p);
             float d = game::Dist(v, me);
             if(d > 8.0f) return;

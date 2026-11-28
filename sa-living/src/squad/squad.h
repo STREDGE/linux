@@ -23,6 +23,7 @@ namespace squad
     // true — фраза отряду (или набор/отпуск) — разговору с человеком её не отдавать.
     bool OnSpeech(const std::string& text, uintptr_t talkPed);
     // Кнопку «Говорить» зажали без человека перед собой — слушаем для отряда
+    bool CanTalk(uintptr_t ped);                 // сотрудник базы или боец отряда — с ним можно говорить
     bool ListenForSquad(uintptr_t pickedPed);
 
     struct Card { std::string name, role, doing; float hp = 0, armour = 0; bool alive = true, traveling = false; int eta = 0; };
