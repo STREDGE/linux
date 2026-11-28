@@ -12,7 +12,7 @@ ID = {'vgnpolicebuild2': 7009, 'des_stmedicentre_': 16564, 'cunts_ammun': 18552,
       'tall_fence': 974, 'parkbench1': 1280, 'parktable1': 1281, 'grill': 914, 'satdishsml': 1596, 'ap_radar1_01': 1682,
       'cxrf_watertwr': 3286, 'cxrf_oiltank': 3287, 'generator_big': 934, 'kmilitary_crate': 2977, 'crates': 18257,
       'cj_flame_drum': 918, 'cj_dumpster': 1345, 'cj_skip_rubbish': 1358, 'sfx_flag02': 3807, 'vegasflag1': 7090, 'ct_table': 3041,
-      'trafficcone': 1238, 'police_cell_bed': 2603, 'police_cell_toilet': 2602}
+      'trafficcone': 1238, 'lhouse_barrier2': 994, 'lhouse_barrier3': 997, 'a51_ventcoverb': 3117, 'police_cell_bed': 2603, 'police_cell_toilet': 2602}
 pieces = []   # dict(model, name, x, y, z, h, look, what, color)
 def W(u, v): return CX - u, CY - v
 def put(name, u, v, h=0.0, dz=0.0, look=-1, what='', color=(150, 160, 175)):
@@ -59,8 +59,37 @@ P['Pad'] = local(hqp, -16, 10); P['Heli2'] = local(hqp, 10, 10)
 for key in ('Pad', 'Heli2'):
     u, v = P[key]; put('helipad' if key == 'Pad' else 'helipad01', u, v, 0, dz=ROOF + 0.04, what='вертолётная площадка', color=(230, 230, 120))
 P['Frank'] = local(hqp, 8, -17)                         # на площади перед крыльцом штаба (крыльцо поднято на 4 м, к нему пандус)
-P['Lift'] = local(hqp, -20, -4.5)                       # подъём на крышу — у левого крыла
-P['RoofLift'] = local(hqp, -28, 4)
+# ЛИФТ: настоящая платформа (металлическая крышка с Зоны 51, 5,6 × 5,6 м) у западной стены башни — стена там идёт
+# от крыши прямо до земли, до медцентра 9 м свободно. Платформа ездит между землёй и крышей (base.cpp, LiftFrame).
+LIFT_LX, LIFT_LY = -33.07 - 2.85, 9.9
+P['Lift'] = local(hqp, LIFT_LX, LIFT_LY)
+P['RoofLift'] = P['Lift']
+# ограждение по краю крыши башни (перила маяка, 1 м): край по коллизии здания — x −33.07…28.56, y −1.76/−4.73…21.58;
+# разрыв на западной стороне — выход на лифт
+RAIL_Z = KZ + 14.03 + 13.93 + 0.1
+def rail(x0, y0, x1, y1, gap=None):
+    L = math.hypot(x1 - x0, y1 - y0); h = math.degrees(math.atan2(y1 - y0, x1 - x0)); ux, uy = (x1 - x0) / L, (y1 - y0) / L
+    t = 0.0
+    while t < L - 0.3:
+        seg = 6.29 if L - t > 4.0 else 3.25
+        name = 'lhouse_barrier2' if seg > 4 else 'lhouse_barrier3'
+        a, b = t, min(t + seg, L)
+        if gap and not (b <= gap[0] or a >= gap[1]):
+            if a < gap[0] - 0.5: seg = gap[0] - a; name = 'lhouse_barrier3' if seg < 4 else 'lhouse_barrier2'
+            else: t = gap[1]; continue
+            if seg < 1.0: t = gap[1]; continue
+        lx, ly = x0 + ux * t, y0 + uy * t
+        gx, gy = hq['x'] + lx, hq['y'] + ly
+        put_origin(name, gx, gy, RAIL_Z, h, what='ограждение крыши', color=(210, 200, 120))
+        t += min(seg, 6.29)
+        if gap and t > gap[0] - 0.01 and t < gap[1]: t = gap[1]
+i = 0.25
+rail(-33.07 + i, 21.58 - i, 28.56 - i, 21.58 - i)                 # север
+rail(28.56 - i, 21.58 - i, 28.56 - i, -4.73 + i)                  # восток
+rail(28.56 - i, -4.73 + i, -2.71 + i, -4.73 + i)                  # юг (восточная часть)
+rail(-2.71 + i, -4.73 + i, -2.71 + i, -1.76 + i)                  # уступ
+rail(-2.71 + i, -1.76 + i, -33.07 + i, -1.76 + i)                 # юг (западная часть)
+rail(-33.07 + i, -1.76 + i, -33.07 + i, 21.58 - i, gap=(LIFT_LY + 1.76 - i - 3.0, LIFT_LY + 1.76 - i + 3.0))   # запад, разрыв у лифта
 u, v = local(hqp, 24, 16); put('satdishsml', u, v, 200, dz=ROOF, what='антенна на крыше', color=(210, 210, 215))
 for lx in (-24, -10):                                   # флаги на фасаде (настенная модель — на стене, как задумано)
     u, v = local(hqp, lx, -2.1); x, y = W(u, v); put_origin('vegasflag1', x, y, KZ + 10.0, -90, what='флаг на фасаде штаба', color=(200, 60, 60))
@@ -133,7 +162,7 @@ def check():
     """Пересечения коробок построек (по осям, с учётом поворота на 90°) — грубая проверка плана."""
     boxes = []
     for p in pieces:
-        if p['look'] == 0 or p['name'] in ('elecfence_bar', 'helipad', 'helipad01', 'satdishsml', 'vegasflag1', 'police_cell_bed', 'police_cell_toilet'): continue
+        if p['look'] == 0 or p['name'] in ('lhouse_barrier2', 'lhouse_barrier3', 'elecfence_bar', 'helipad', 'helipad01', 'satdishsml', 'vegasflag1', 'police_cell_bed', 'police_cell_toilet'): continue
         b = cols[p['name']]; r = math.radians(p['h'])
         cs = [(b[i], b[j]) for i in (0, 3) for j in (1, 4)]
         xs = [p['x'] + a * math.cos(r) - c * math.sin(r) for a, c in cs]; ys = [p['y'] + a * math.sin(r) + c * math.cos(r) for a, c in cs]
@@ -155,6 +184,9 @@ def header(path):
     for k in ('Gate', 'Hq', 'Pad', 'Heli2', 'Frank', 'Lift', 'RoofLift', 'Med', 'OwnGarage', 'Fleet', 'Park', 'Armory', 'RangeStand', 'RangeTargets', 'Cell', 'CellDrop', 'Artyom', 'Maga', 'Rest'):
         o.append('    constexpr float k%sU = %.2ff, k%sV = %.2ff;' % (k, P[k][0], k, P[k][1]))
     o.append('    constexpr float kRangeV = %.2ff;' % P['RangeStand'][1])
+    o.append('    // лифт: платформа a51_ventcoverb (3117), низ коллизии −0.12, верх +0.13; начало модели — в центре')
+    o.append('    constexpr int kLiftModel = 3117;')
+    o.append('    constexpr float kLiftLowZ = kZ + 0.12f, kLiftHighZ = kZ + %.2ff;          // начало платформы внизу и наверху' % (ROOF - 0.13))
     o.append('    struct Pt { float u, v; };')
     o.append('    constexpr Pt kTowers[] = { %s };' % ', '.join('{ %.1ff, %.1ff }' % t for t in P['Towers']))
     o.append('    constexpr Pt kRoute[] = { %s };' % ', '.join('{ %.1ff, %.1ff }' % t for t in ROUTE))
@@ -197,6 +229,10 @@ def render(folder, look=1):
         x, y = W(*P[key]); z = KZ + ROOF + 0.1
         items.append((np.array([[[x - 4, y - 3.6, z], [x + 4, y - 3.6, z], [x + 4, y + 3.6, z]], [[x - 4, y - 3.6, z], [x + 4, y + 3.6, z], [x - 4, y + 3.6, z]]], float), (235, 225, 90)))
         labels.append((x, y, z + 1, 'ПЛОЩАДКА'))
+    lx, ly = W(*P['Lift'])
+    for zz in (KZ + 0.25, KZ + ROOF):
+        items.append((np.array([[[lx - 2.8, ly - 2.8, zz], [lx + 2.8, ly - 2.8, zz], [lx + 2.8, ly + 2.8, zz]], [[lx - 2.8, ly - 2.8, zz], [lx + 2.8, ly + 2.8, zz], [lx - 2.8, ly + 2.8, zz]]], float), (240, 140, 40)))
+    labels.append((lx, ly, KZ + ROOF + 2, 'ЛИФТ'))
     for nm, (u, v) in (('ТИР', (57, 34.5)), ('КАМЕРА', P['Cell']), ('ВОРОТА', (0, 62)), ('ЗОНА ОТДЫХА', P['Rest']), ('СТОЯНКА', (-46, -8))):
         x, y = W(u, v); labels.append((x, y, KZ + 4, nm))
     os.makedirs(folder, exist_ok=True)

@@ -30,6 +30,34 @@ namespace
     bool g_found[sizeof(kDemolish) / sizeof(kDemolish[0])] = {};
     constexpr int kCount = (int)(sizeof(kDemolish) / sizeof(kDemolish[0]));
 
+    // ---- дороги ----
+    // Команда скрипта «выключить дороги» (01E8) кладёт участок в таблицу игры на 64 места; её почти целиком занимает
+    // родной скрипт, а при подгрузке куска карты игра восстанавливает дороги только из этой таблицы — наши 95 участков
+    // туда не влезали, и машины снова ехали через базу. Поэтому выключаем сами — для каждого куска карты — и повторяем
+    // после каждой его подгрузки (перехват CPathFind::LoadPathFindData).
+    typedef void (*ForOneFn)(void*, float, float, float, float, float, float, bool, bool, int, bool);
+    void* g_paths = nullptr; ForOneFn ForOne = nullptr;
+    bool g_roadsActive = false;
+    struct RBox { float x0, x1, y0, y1, z0, z1; bool car; };
+    std::vector<RBox> RoadBoxes()
+    {
+        std::vector<RBox> b;
+        for(int i = 0; i < kRoadsOffCount; ++i) { const RoadNode& n = kRoadsOff[i]; b.push_back({ n.x - 3, n.x + 3, n.y - 3, n.y + 3, n.z - 20, n.z + 20, true }); }
+        b.push_back({ layout::kRx0, layout::kRx1, layout::kRy0, layout::kRy1, 0, 60, true });     // машины внутри базы
+        b.push_back({ layout::kRx0, layout::kRx1, layout::kRy0, layout::kRy1, 0, 60, false });    // пешеходы внутри базы
+        return b;
+    }
+    void RoadsRegion(int region, bool off)
+    {
+        static std::vector<RBox> boxes = RoadBoxes();
+        for(auto& r : boxes) ForOne(g_paths, r.x0, r.x1, r.y0, r.y1, r.z0, r.z1, off, r.car, region, !off);   // !off — «вернуть как было»
+    }
+    SDECL_HOOKv(LoadPathH, void* self, void* stream, int region)
+    {
+        LoadPathH(self, stream, region);
+        if(g_roadsActive && ForOne && self == g_paths && region >= 0 && region < 64) RoadsRegion(region, true);
+    }
+
     game::Vec EntPos(uintptr_t e)
     {
         uintptr_t m = F<uintptr_t>(e, kMatrix);
@@ -81,11 +109,21 @@ bool Init(void* h)
     g_bld   = aml->GetSym(h, "_ZN6CPools16ms_pBuildingPoolE");
     g_dummy = aml->GetSym(h, "_ZN6CPools13ms_pDummyPoolE");
     g_obj   = aml->GetSym(h, "_ZN6CPools14ms_pObjectPoolE");
+    g_paths = (void*)aml->GetSym(h, "ThePaths");
+    ForOne  = (ForOneFn)aml->GetSym(h, "_ZN9CPathFind32SwitchRoadsOffInAreaForOneRegionEffffffbbib");
+    void* lp = (void*)aml->GetSym(h, "_ZN9CPathFind16LoadPathFindDataEP8RwStreami");
+    if(g_paths && ForOne && lp) aml->Hook(lp, (void*)HookOf_LoadPathH, (void**)&LoadPathH);
+    else LOG("ОШИБКА", "Снос: нет функций дорог игры (%p %p %p) — дороги через базу выключатся только командой", g_paths, (void*)ForOne, lp);
     if(!g_bld || !g_dummy || !g_obj) LOG("ОШИБКА", "Снос: нет пулов игры (здания %p, пустышки %p, объекты %p)", (void*)g_bld, (void*)g_dummy, (void*)g_obj);
     return g_bld && g_dummy;
 }
 
-void Reset() { g_roadsOff = false; g_lastHidden = -1; memset(g_found, 0, sizeof(g_found)); g_hiddenTotal = 0; }
+void Reset()
+{
+    if(g_roadsActive && ForOne) for(int r = 0; r < 64; ++r) RoadsRegion(r, false);   // вернуть дороги как были (новая игра может быть обычной)
+    g_roadsActive = false; g_roadsOff = false;
+    g_lastHidden = -1; memset(g_found, 0, sizeof(g_found)); g_hiddenTotal = 0;
+}
 
 void Frame(bool swat)
 {
@@ -104,17 +142,19 @@ void Frame(bool swat)
     if(!g_roadsOff)
     {   // дороги для машин и пешеходов внутри базы — выключить (как INTRO)
         g_roadsOff = true;
-        script::Do(0x01E8, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_ROADS_OFF
+        if(!ForOne || !g_paths) script::Do(0x01E8, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_ROADS_OFF
         // Дорога через базу — сквозная (мост → база → юг порта): выключаем её всю, от развилки до развилки (roads_off.h),
-        // иначе у машин с моста нет другого пути и они едут через базу. Так же делает игра в миссиях.
-        for(int i = 0; i < kRoadsOffCount; ++i)
-        {
-            const RoadNode& n = kRoadsOff[i];
-            std::vector<script::Arg> a = { script::Arg::F(n.x - 3), script::Arg::F(n.y - 3), script::Arg::F(n.z - 20), script::Arg::F(n.x + 3), script::Arg::F(n.y + 3), script::Arg::F(n.z + 20) };
-            script::Run(0x01E8, a, nullptr, true);                                              // SWITCH_ROADS_OFF (без записи каждой в лог)
-        }
+        // иначе у машин с моста нет другого пути и они едут через базу. Своими силами — в каждом куске карты и после подгрузки.
+        if(ForOne && g_paths) { g_roadsActive = true; for(int r = 0; r < 64; ++r) RoadsRegion(r, true); }
+        else
+            for(int i = 0; i < kRoadsOffCount; ++i)
+            {
+                const RoadNode& n = kRoadsOff[i];
+                std::vector<script::Arg> a = { script::Arg::F(n.x - 3), script::Arg::F(n.y - 3), script::Arg::F(n.z - 20), script::Arg::F(n.x + 3), script::Arg::F(n.y + 3), script::Arg::F(n.z + 20) };
+                script::Run(0x01E8, a, nullptr, true);                                          // SWITCH_ROADS_OFF (запасной путь)
+            }
         LOG("СНОС", "сквозная дорога через базу выключена целиком: %d узлов (мост, южная дорога порта, петля)", kRoadsOffCount);
-        script::Do(0x022B, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_PED_ROADS_OFF
+        if(!ForOne || !g_paths) script::Do(0x022B, { script::Arg::F(layout::kRx0), script::Arg::F(layout::kRy0), script::Arg::F(0), script::Arg::F(layout::kRx1), script::Arg::F(layout::kRy1), script::Arg::F(60) });   // SWITCH_PED_ROADS_OFF
         LOG("СНОС", "дороги и пешие пути внутри базы выключены");
     }
     // рядом — каждую секунду (порт подгружается), издалека — раз в 5 с (дальние копии зданий видно за километр)

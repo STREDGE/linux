@@ -109,7 +109,9 @@ namespace
     struct Heli { int model; float u, v; int handle; uint32_t goneAt; const char* what; };
     std::vector<Heli> g_helis = { { 497, layout::kPadU, layout::kPadV, 0, 0, "полицейский «Маврик»" }, { 487, layout::kHeli2U, layout::kHeli2V, 0, 0, "«Маврик»" } };
     int g_introHeli = 0;
-    bool g_holdPad = false;                 // идёт вступление: площадка занята его вертолётом — свой «Маврик» не ставим
+    bool g_holdPad = false;
+    // лифт: платформа у западной стены штаба, ездит между землёй и крышей
+    int g_lift = 0; float g_liftZ = layout::kLiftLowZ; int g_liftDir = 0; bool g_liftRider = false; uint32_t g_liftLast = 0;                 // идёт вступление: площадка занята его вертолётом — свой «Маврик» не ставим
     bool g_gateBlocked = false;             // Т149: Enforcer стоит в воротах
     std::vector<int> g_blips;               // значки точек базы на карте
 
@@ -157,6 +159,7 @@ namespace
     {
         for(auto& o : g_objs) if(Is(0x03CA, { Ai(o.handle) })) Do(0x0108, { Ai(o.handle) }); // DOES_OBJECT_EXIST / DELETE_OBJECT
         g_objs.clear(); g_gate[0] = g_gate[1] = 0; g_gateOpen = 0; g_builtLook = -1;
+        g_lift = 0; g_liftDir = 0; if(g_liftRider) { Do(0x01B4, { Ai(0), Ai(1) }); g_liftRider = false; }
     }
 
     // ---------------------------------------------------------------- постройка
@@ -178,6 +181,7 @@ namespace
         std::vector<Spot> spots;
         for(auto& p : layout::kPieces) spots.push_back({ p.model, p.x, p.y, p.model == 2933 ? 10.0f : 0.8f });   // створки ворот могли быть сдвинуты
         for(auto& c : g_cars) { game::Vec w = W(c.u, c.v); spots.push_back({ c.model, w.x, w.y, 5.0f }); }
+        { game::Vec w = W(layout::kLiftU, layout::kLiftV); spots.push_back({ layout::kLiftModel, w.x, w.y, 1.5f }); }
         for(auto& h : g_helis) { game::Vec w = W(h.u, h.v); spots.push_back({ h.model, w.x, w.y, 6.0f }); }
         auto mine = [](int h) {
             for(auto& o : g_objs) if(o.handle == h) return true;
@@ -255,6 +259,14 @@ namespace
             if(p.model == 2933 && gates < 2) { g_gate[gates] = h; g_gatePiece[gates] = p; gates++; }   // створки ворот
         }
         g_gateOpen = 0; g_gateWant = false;
+        {   // лифт — отдельно (двигается); после постройки стоит внизу
+            if(!Is(0x0248, { Ai(layout::kLiftModel) })) { Do(0x0247, { Ai(layout::kLiftModel) }); Do(0x038B, {}); }
+            game::Vec c = W(layout::kLiftU, layout::kLiftV);
+            layout::Piece lp = { layout::kLiftModel, c.x, c.y, layout::kLiftLowZ, 0.0f, -1, "платформа лифта" };
+            g_lift = CreateAt(lp, nullptr); g_liftZ = layout::kLiftLowZ; g_liftDir = 0; g_liftRider = false;
+            Do(0x0249, { Ai(layout::kLiftModel) });
+            if(g_lift > 0) n++;
+        }
         for(int m : models) Do(0x0249, { Ai(m) });                                           // MARK_MODEL_AS_NO_LONGER_NEEDED
         g_builtLook = look;
         LOG("БАЗА", "построена: %d объектов (вид «%s»), створок ворот %d%s", n, look ? "Готэм" : "Обычная", gates, off ? " — у части объектов высота не та, см. выше" : "");
@@ -355,6 +367,64 @@ namespace
     }
 
     // ---------------------------------------------------------------- люди
+    // ---------------------------------------------------------------- лифт
+    // Встал на платформу — кнопка «Лифт: на крышу / вниз». Стоишь у лифта, а платформа на другом этаже — «Вызвать лифт».
+    // Платформа едет командой «координаты и скорость» (0815): игра знает её скорость и везёт стоящего на ней.
+    // Пока едешь — управление снято (не сойдёшь на полпути), а если физика отстала — мод ставит Артёма обратно на платформу.
+    void LiftMove(int dir, bool rider)
+    {
+        if(g_lift <= 0 || g_liftDir) return;
+        g_liftDir = dir; g_liftRider = rider; g_liftLast = Now();
+        if(rider) Do(0x01B4, { Ai(0), Ai(0) });                                                 // SET_PLAYER_CONTROL 0
+        Do(0x018C, { Af(W(layout::kLiftU, layout::kLiftV).x), Af(W(layout::kLiftU, layout::kLiftV).y), Af(g_liftZ + 1), Ai(1052) });   // ADD_ONE_OFF_SOUND — сигнал
+        LOG("БАЗА", "лифт едет %s%s", dir > 0 ? "наверх" : "вниз", rider ? " с Артёмом" : " (вызван)");
+    }
+    void LiftFrame()
+    {
+        if(g_lift <= 0 || !Is(0x03CA, { Ai(g_lift) })) return;
+        game::Vec c = W(layout::kLiftU, layout::kLiftV);
+        uintptr_t pl = Player(); V3 pp = Pos(pl);
+        bool inCar = PedVehicle(pl) != 0;
+        float top = g_liftZ + 0.13f;
+        if(g_liftDir != 0)
+        {
+            uint32_t now = Now(); float dt = (now - g_liftLast) / 1000.0f; if(dt > 0.1f || dt < 0) dt = 0.016f; g_liftLast = now;
+            float target = g_liftDir > 0 ? layout::kLiftHighZ : layout::kLiftLowZ;
+            float remain = fabsf(target - g_liftZ);
+            float speed = std::min(3.0f, 0.5f + remain * 0.7f);                                 // плавно трогается и тормозит
+            float step = std::min(remain, speed * dt);
+            g_liftZ += g_liftDir > 0 ? step : -step;
+            Do(0x0815, { Ai(g_lift), Af(c.x), Af(c.y), Af(g_liftZ) });                          // SET_OBJECT_COORDINATES_AND_VELOCITY
+            if(g_liftRider)
+            {
+                float ptop = g_liftZ + 0.13f;
+                float rx = std::max(c.x - 2.2f, std::min(c.x + 2.2f, pp.x)), ry = std::max(c.y - 2.2f, std::min(c.y + 2.2f, pp.y));
+                if(pp.z < ptop + 0.55f || pp.z > ptop + 1.9f || rx != pp.x || ry != pp.y)
+                    Do(0x00A1, { Ai(PlayerChar()), Af(rx), Af(ry), Af(ptop + 1.05f) });            // на платформу
+            }
+            if(remain - step < 0.005f)
+            {
+                g_liftDir = 0;
+                if(g_liftRider) { Do(0x01B4, { Ai(0), Ai(1) }); g_liftRider = false; }
+                LOG("БАЗА", "лифт: %s", g_liftZ > layout::kLiftLowZ + 1 ? "наверху" : "внизу");
+            }
+            return;
+        }
+        bool atTop = g_liftZ > layout::kLiftLowZ + 1.0f;
+        float h2 = Dist2(pp, Mk(c.x, c.y, 0));
+        bool onPad = !inCar && fabsf(pp.x - c.x) < 2.7f && fabsf(pp.y - c.y) < 2.7f && pp.z - top > -0.3f && pp.z - top < 2.4f;
+        bool nearBottom = !inCar && h2 < 8.0f && fabsf(pp.z - (layout::kZ + 1.0f)) < 1.8f;
+        bool nearTop = !inCar && h2 < 8.0f && fabsf(pp.z - (layout::kRoofZ + 1.0f)) < 1.8f;
+        // надписи на обоих этажах
+        float dB = Dist(pp, Mk(c.x, c.y, layout::kZ)), dT = Dist(pp, Mk(c.x, c.y, layout::kRoofZ));
+        if(dB < 90) { game::Vec s = c; s.z = layout::kZ + 3.6f; ui::Sign(s, "ЛИФТ", dB < 18 ? (atTop ? "вызови или поднимись" : "встань на платформу") : "", 0xF2C14E); }
+        if(dT < 60) { game::Vec s = c; s.z = layout::kRoofZ + 3.6f; ui::Sign(s, "ЛИФТ ВНИЗ", dT < 18 ? (atTop ? "встань на платформу" : "вызови лифт") : "", 0xF2C14E); }
+        if(ui::MenuOpen()) return;
+        if(onPad) ui::ActionButton(0, atTop ? "Лифт: вниз" : "Лифт: на крышу", [atTop]() { LiftMove(atTop ? -1 : 1, true); });
+        else if(nearBottom && atTop) ui::ActionButton(0, "Вызвать лифт", []() { LiftMove(-1, false); });
+        else if(nearTop && !atTop) ui::ActionButton(0, "Вызвать лифт", []() { LiftMove(1, false); });
+    }
+
     void SayLine(Staff& s, const char* text)
     {
         unsigned rgb = s.kind == 2 ? 0xF2C14E : (s.kind == 3 ? 0x5AAAFF : 0xB8C0CC);
@@ -828,6 +898,7 @@ namespace
         int now = -1;
         for(auto& m : kMarkers)
         {
+            if(m.id == M_LIFT_UP || m.id == M_LIFT_DOWN) continue;                                // вместо телепорта — лифт (LiftFrame)
             game::Vec p = W(m.u, m.v, m.dz);
             float md = Dist(Pos(Player()), Mk(p.x, p.y, p.z));
             if(md > 120) continue;
@@ -971,6 +1042,7 @@ void Frame()
         if(AnimsReady() && (now >= g_nextAmbient || now + 10000 < g_nextAmbient)) { g_nextAmbient = now + 400; WHERE("база: люди"); PeopleFrame(); }
         g_peopleOn = true;
         WHERE("база: маркеры"); MarkersFrame();
+        WHERE("база: лифт"); LiftFrame();
         WHERE("база: тир"); RangeFrame();
         WHERE("база: тревога"); AlarmTriggers(); DefenseFrame();
         JailFrame();

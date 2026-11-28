@@ -38,6 +38,8 @@ namespace
     bool (*LosFn)(const V3&, const V3&, void*, uintptr_t&, bool, bool, bool, bool, bool, bool, bool, bool) = nullptr;
     uintptr_t (*WeaponInfoFn)(int, int8_t) = nullptr;
     bool (*OnScreenFn)(const V3&, float, bool) = nullptr;
+    uintptr_t g_camera = 0;
+    void (*SetCreatedByFn)(uintptr_t, uint8_t) = nullptr;
     void (*LogFn)(const char*, const char*) = nullptr;
     int g_rays = 0;
     bool g_ready = false;
@@ -109,12 +111,32 @@ bool Init(void* h)
                   Sym(h, "_ZN6CWorld18ProcessLineOfSightERK7CVectorS2_R9CColPointRP7CEntitybbbbbbbb");
     WeaponInfoFn= (uintptr_t(*)(int, int8_t))aml->GetSym(h, "_ZN11CWeaponInfo13GetWeaponInfoE11eWeaponTypea");
     OnScreenFn  = (bool(*)(const V3&, float, bool))aml->GetSym(h, "_Z10IsOnScreenRK7CVectorfb");
+    g_camera    = aml->GetSym(h, "TheCamera");
+    SetCreatedByFn = (void(*)(uintptr_t, uint8_t))aml->GetSym(h, "_ZN4CPed16SetCharCreatedByEh");
     g_ready = g_players && g_timeMs && ProcessOne && GetPedRefFn && GetPedFn && g_pedPool && g_vehPool;
     Log("ТАКТИКА", "игра: %s (луч %s, вода %s, входы %s)", g_ready ? "готово" : "НЕ ВСЁ НАЙДЕНО", LosFn ? "да" : "нет",
         WaterFn ? "да" : "нет", g_entryPool ? "да" : "нет");
     return g_ready;
 }
 bool Ready() { return g_ready; }
+// Камера игры: позиция и направление взгляда (CCamera::m_cameraMatrix, как в SA Living — проверено в игре)
+bool Camera(V3& pos, V3& front)
+{
+    if(!g_camera) return false;
+    uintptr_t m = g_camera + 0x970;
+    front = Mk(F<float>(m, 0x10), F<float>(m, 0x14), F<float>(m, 0x18));
+    pos   = Mk(F<float>(m, 0x30), F<float>(m, 0x34), F<float>(m, 0x38));
+    return true;
+}
+// Случайного прохожего — в «сюжетные» (как делает игра в GET_RANDOM_CHAR…): игра его больше не удалит сама.
+// Счётчики населения игра ведёт по типу педа, не по «кто создал», поэтому этого достаточно. Отпустить — 01C2.
+bool MakeMissionPed(uintptr_t ped)
+{
+    if(!ped || !SetCreatedByFn) return false;
+    if(F<uint8_t>(ped, 0x548) == 2) return false;                    // уже сюжетный (создан скриптом)
+    SetCreatedByFn(ped, 2);
+    return true;
+}
 uint32_t NowMs() { return g_timeMs ? *(uint32_t*)g_timeMs : 0; }
 bool Paused() { return (g_userPause && *(uint8_t*)g_userPause) || (g_codePause && *(uint8_t*)g_codePause); }
 

@@ -143,6 +143,7 @@ SDECL_HOOKb(GenericSaveH, int slot)
     WHERE("сохранение игры");
     if(g_st.on) { engine::BeforeSave(); base::BeforeSave(); wanted::BeforeSave(); }
     bool r = GenericSaveH(slot);
+    if(g_st.on) wanted::AfterSave();
     if(r)
     {
         std::string key = KeyOf(g_validSaveName);
@@ -166,6 +167,20 @@ static bool SkipRebuild(uintptr_t ped)
     if(now - s_logAt > 10000 || now < s_logAt) { s_logAt = now; LOG("РЕЖИМ", "игра хотела надеть одежду CJ на героя (модель %d) — пропущено", g_st.hero); }
     return true;
 }
+// Страховка от вылета (лог 16:29): задача игры «идти к цели, целясь» (CTaskComplexSeekEntityAiming) не проверяет,
+// жива ли цель. Если цель удалили (игра убрала прохожего), игра падала. Цели нет — задача просто заканчивается
+// (пустой ответ игра обрабатывает штатно: снимает подзадачу).
+SDECL_HOOK(uintptr_t, SeekAimingCtrlH, uintptr_t task, uintptr_t ped)
+{
+    if(task && *(uintptr_t*)(task + 0x18) == 0)
+    {
+        static uint32_t s_logAt = 0; uint32_t now = game::TimeMs();
+        if(now - s_logAt > 10000 || now < s_logAt) { s_logAt = now; LOG("ЗАЩИТА", "задача «идти к цели целясь» без цели — завершена (вместо вылета)"); }
+        return 0;
+    }
+    return SeekAimingCtrlH(task, ped);
+}
+
 SDECL_HOOKv(RebuildPlayerH, uintptr_t ped, bool ignoreFat)
 {
     if(SkipRebuild(ped)) return;
@@ -249,6 +264,9 @@ bool Install(void* h)
     if(rb)  aml->Hook(rb,  (void*)HookOf_RebuildPlayerH, (void**)&RebuildPlayerH);
     if(rbn) aml->Hook(rbn, (void*)HookOf_RebuildPlayerIfNeededH, (void**)&RebuildPlayerIfNeededH);
     if(!rb || !rbn) LOG("ОШИБКА", "нет функций одежды игрока (%p, %p) — скин героя может ломаться", rb, rbn);
+    void* sa = (void*)aml->GetSym(h, "_ZN28CTaskComplexSeekEntityAiming14ControlSubTaskEP4CPed");
+    if(sa) aml->Hook(sa, (void*)HookOf_SeekAimingCtrlH, (void**)&SeekAimingCtrlH);
+    else LOG("ОШИБКА", "нет задачи игры SeekEntityAiming — страховка от вылета не стоит");
     ui::SetNewGameHandler([](int choice) { g_pendingChoice = choice; });
     g_installed = true;
     LOG("РЕЖИМ", "готов: при «Новой игре» — выбор «Обычная GTA / S.W.A.T.»");

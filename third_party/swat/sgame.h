@@ -116,6 +116,8 @@ namespace swat
     // ---------- полезное ----------
     uintptr_t PlayerTarget();                               // в кого целится игрок
     uintptr_t PlayerTargetPed();                            // в кого целится игрок; машина в прицеле — её водитель
+    bool      Camera(V3& pos, V3& front);                   // камера игры: где стоит и куда смотрит
+    bool      MakeMissionPed(uintptr_t ped);                // прохожего — в сюжетные (игра не удалит); true — был прохожим
     bool      PlayerWaypoint(V3& out);                      // метка игрока на карте
     bool      IsCopType(int pedType);
 }

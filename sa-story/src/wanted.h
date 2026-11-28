@@ -17,5 +17,6 @@ namespace wanted
     void Delivered(int ref);            // доставлен в камеру отрядом
     void Surrendered(int ref);
     int  Custody();                     // сколько задержанных ведёт игрок/отряд
-    void BeforeSave();
+    void BeforeSave();                  // снять метки людей (не в файл сохранения)
+    void AfterSave();                   // поставить их обратно
 }
